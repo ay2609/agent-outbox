@@ -1,0 +1,46 @@
+{
+  "name": "agent-outbox",
+  "version": "0.1.0",
+  "description": "A review-and-approve outbox that lets AI agents draft iMessages and contact changes, and sends them from your Mac only after you approve with Touch ID.",
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ay2609/agent-outbox"
+  },
+  "type": "module",
+  "bin": {
+    "outbox": "src/cli/index.ts"
+  },
+  "scripts": {
+    "server": "bun run src/server.ts",
+    "mcp": "bun run src/mcp/index.ts",
+    "cli": "bun run src/cli/index.ts",
+    "web:dev": "vite --config web/vite.config.ts",
+    "web:build": "vite build --config web/vite.config.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@simplewebauthn/browser": "14.0.0",
+    "@simplewebauthn/server": "14.1.0",
+    "hono": "4.13.17",
+    "libphonenumber-js": "1.13.15",
+    "papaparse": "5.7.0",
+    "react": "19",
+    "react-dom": "19",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/papaparse": "^5.5.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "bun-types": "^1.4.4",
+    "playwright": "1.60.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.7"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "exported_at": "2026-03-01",
+  "contacts": [
+    {"name": "Jane Smith", "phone": "301-555-0123", "email": "jane@example.com", "company": "Acme", "tags": ["vip", "gala"]},
+    {"name": "Bob Jones", "phone": 13015550188, "address": {"city": "Silver Spring"}},
+    {"name": "Alice Nguyen", "phones": ["202-555-0143", "202-555-0199"]}
+  ]
+}

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- outbox-exec: the only process that can send. The job's program is the executable INSIDE OutboxExec.app
+     (not osascript, a terminal or bun), so macOS charges the Messages and Contacts permissions to this one
+     signed binary. This is a template: install.sh fills in the double-underscore placeholders below. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>io.github.ay2609.agent-outbox.exec</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__REPO__/exec/build/OutboxExec.app/Contents/MacOS/outbox-exec</string>
+		<string>run</string>
+	</array>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>io.github.ay2609.agent-outbox.exec</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>__HOME__</string>
+		<key>OUTBOX_HOME</key>
+		<string>__STATE__</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>StandardOutPath</key>
+	<string>__STATE__/logs/outbox-exec.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>__STATE__/logs/outbox-exec.err.log</string>
+</dict>
+</plist>

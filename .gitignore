@@ -1,0 +1,12 @@
+node_modules/
+dist/
+web/dist/
+exec/.build/
+exec/build/
+*.db
+*.db-*
+.env
+.env.*
+var/
+.DS_Store
+.claude/
