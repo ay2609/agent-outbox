@@ -30,6 +30,12 @@ The executor never trusts a `status` column in the database. Editing a message a
 - **Single use and expiry.** Each approval is valid for 24 hours and is consumed per message.
 - **Local only.** The dashboard binds to `127.0.0.1`, rejects requests with a foreign `Host` header (DNS rebinding), and checks `Origin` plus a custom header on every change. The agent API is a unix socket with mode 0600.
 
+### First-run setup token
+
+While no sign-in key exists, anything that can reach `http://localhost:<port>` could register its own sign-in and approval keys before you do. To prevent that, the server creates a one-time setup token when it starts with no sign-in key. It is 32 random bytes, stored in `<state>/setup-token` (mode 0600) and printed in the installer's setup link (`http://localhost:<port>/#/setup?token=...`, also written to the server's log). Registering a key without a session needs the token, in both steps of the request; a missing or wrong token is refused (403) and counts against the registration rate limit. The token is deleted once your sign-in key exists, and the server never returns it from any API. Run `./install.sh --setup-link` to print the link again while setup is pending.
+
+What this defends: a local process that can reach localhost but cannot read your files, such as many sandboxed agents, can no longer claim the first-run keys. What it does not: a program running as you that can read `~/Library/Application Support/agent-outbox` can read the token (and the database) too, the same limit as simple mode generally.
+
 ### What simple mode does NOT defend
 
 In simple mode the executor reads its trusted approval keys from a file in your state directory, `<state>/passkeys.json`. Any program running as your user that is not confined by a sandbox can write that file, put in a key it controls, write a matching approval into the database and have it sent. That includes an AI agent with an unrestricted shell that decides to do it.
@@ -38,13 +44,13 @@ So simple mode is safe against agents using their tools and against prompt injec
 
 ### How hardened mode fixes that
 
-Hardened mode keeps the trusted keys in `/usr/local/etc/agent-outbox/passkeys.json`, owned by root and not writable by anyone else. When that file exists the executor uses only it, and refuses to run if it is invalid; there is no fallback to the user file, so it cannot be downgraded by deleting or corrupting it. Settings > "Harden your install" shows a single command that checks the file's SHA-256 and installs it with `sudo`. Run it yourself, in Terminal, after reading it. An agent must never run it.
+Hardened mode keeps the trusted keys in `/Library/Application Support/agent-outbox/passkeys.json`, owned by root and not writable by anyone else. When that file exists the executor uses only it, and refuses to run if it is invalid; there is no fallback to the user file, so it cannot be downgraded by deleting or corrupting it. Settings > "Harden your install" shows a single command that checks the file's SHA-256 and installs it with `sudo`. Run it yourself, in Terminal, after reading it. An agent must never run it.
 
 Hardened mode also keeps the "Allow live sending" switch in the root file, so no process running as your user can turn live sending on.
 
 Hardened mode freezes the keys and live settings as they were when you ran the command. Running it again installs whatever the dashboard holds at that moment, and a program running as you can change that (the database is yours too), so only re-run it right after you yourself added a key or changed a live setting, and check the key list it prints. A "run the command again" notice you did not cause is a warning sign: do not run it.
 
-Hardened mode relies on every directory above the root file (`/usr/local`, `/usr/local/etc`) being owned by root and closed to other writers. The executor checks this and holds if it is not true. If some installer later makes one of those directories yours (older Homebrew setups on Intel Macs own parts of `/usr/local`), a program running as you could move the root file away and drop the executor back to simple mode; the dashboard would then show "Simple mode" again.
+Hardened mode relies on every directory above the root file (`/Library` and `/Library/Application Support`) being owned by root and closed to other writers. The executor checks this and holds if it is not true. That location was chosen on purpose: those two folders are root-owned on every Mac, whereas folders under `/usr/local` can belong to your user on an older Intel Homebrew install, which would let a program running as you move the root file away. (The folder's group, `admin`, does not matter as long as it is not group-writable.)
 
 ### What neither mode defends
 

@@ -63,7 +63,7 @@ describe("state dir and fixed paths", () => {
     expect(resolveStateDir({})).toBe(defaultStateDir());
     expect(resolveStateDir({ OUTBOX_HOME: "/tmp/ao" })).toBe("/tmp/ao");
   });
-  test("the root pin path is a constant", () => { expect(ROOT_PIN_FILE).toBe("/usr/local/etc/agent-outbox/passkeys.json"); });
+  test("the root pin path is a constant", () => { expect(ROOT_PIN_FILE).toBe("/Library/Application Support/agent-outbox/passkeys.json"); });
 });
 
 describe("finding claude (compose availability)", () => {

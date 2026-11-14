@@ -80,6 +80,8 @@ export function createOwnerApp(over: Partial<OwnerConfig> = {}): Hono {
     registered: passkeyCount(db(), "login") > 0,
     /** Setup progress: the sign-in key comes first, then the approval key. */
     setup: { login: passkeyCount(db(), "login") > 0, approve: passkeyCount(db(), "approve") > 0 },
+    /** True while open (no-session) registration is possible: it then needs the one-time setup token. The token itself is never returned. */
+    setup_token_required: passkeyCount(db(), "login") === 0,
     authenticated: sessionValid(db(), getCookie(c, SESSION_COOKIE)),
     rp_id: cfg.rpId, origin: cfg.origin,
   }));
@@ -88,13 +90,20 @@ export function createOwnerApp(over: Partial<OwnerConfig> = {}): Hono {
   // key, no sign-in key yet). The first approval key is enrolled right after the sign-in key, with that key's session, via
   // POST /api/passkeys/options. Adding more later needs a session plus a fresh assertion.
   app.post("/api/auth/register/options", async (c) => {
-    const body = await readJsonOptional(c, z.object({ label: z.string().max(60).optional(), purpose: z.enum(["login", "approve"]).default("login") }));
-    limiterFor(c, "register").check();
-    return c.json(await registerOptions(cfg, db(), { label: body.label ?? "", purpose: body.purpose, kind: "open" }));
+    const body = await readJsonOptional(c, z.object({
+      label: z.string().max(60).optional(), purpose: z.enum(["login", "approve"]).default("login"), setup_token: z.string().max(200).optional(),
+    }));
+    const limiter = limiterFor(c, "register");
+    limiter.check();
+    return c.json(await registerOptions(cfg, db(), { label: body.label ?? "", purpose: body.purpose, kind: "open" }, { limiter, setupToken: body.setup_token }));
   });
   app.post("/api/auth/register/verify", async (c) => {
-    const body = await readJson(c, z.object({ challenge_id: z.string().max(100), response: attestationSchema, label: z.string().max(60).optional() }));
-    const r = await registerVerify(cfg, db(), limiterFor(c, "register"), { challenge_id: body.challenge_id, response: body.response as any, sessionOk: false, label: body.label });
+    const body = await readJson(c, z.object({
+      challenge_id: z.string().max(100), response: attestationSchema, label: z.string().max(60).optional(), setup_token: z.string().max(200).optional(),
+    }));
+    const r = await registerVerify(cfg, db(), limiterFor(c, "register"), {
+      challenge_id: body.challenge_id, response: body.response as any, sessionOk: false, label: body.label, setupToken: body.setup_token,
+    });
     startSession(c);
     return c.json({ ok: true, ...r });
   });

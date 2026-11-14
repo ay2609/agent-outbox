@@ -8,6 +8,7 @@
 // Registration rules:
 //  - no session ("open"): purpose login needs zero login keys; purpose approve needs zero approve keys AND no login key.
 //    The count check and the insert happen in ONE immediate transaction (two first registrations can't both win).
+//    It also needs the one-time setup token (setup-token.ts) in both requests; a missing or wrong one counts as a failure.
 //  - session + fresh reauth ("additional"): any purpose.
 //  - session only ("setup"): the first approve key, right after the login key was enrolled (session < 30 minutes old).
 // P-256 (ES256, COSE alg -7) only, because the Swift executor verifies with P-256. We store both the COSE key (for
@@ -202,8 +203,23 @@ export function registerGate(db: Database, kind: RegisterKind, purpose: PasskeyP
   }
 }
 
-export async function registerOptions(cfg: OwnerConfig, db: Database, o: { label: string; purpose: PasskeyPurpose; kind: RegisterKind }) {
+/** Open registration only: the one-time setup token must be present and right (constant-time compare). Either failure counts
+ *  against the register limiter. A locked registration is reported by registerGate first, so call this after it. */
+export function requireSetupToken(cfg: OwnerConfig, limiter: FailureLimiter, supplied: string | undefined): void {
+  if (!supplied) {
+    limiter.fail();
+    throw new ApiError(403, "setup_token_required", "Open the setup link printed by the installer, or run ./install.sh --setup-link in the agent-outbox folder.");
+  }
+  if (!cfg.setupToken.matches(supplied)) {
+    limiter.fail();
+    throw new ApiError(403, "setup_token_invalid", "That setup link isn't valid. Run ./install.sh --setup-link in the agent-outbox folder for the current one.");
+  }
+}
+
+export async function registerOptions(cfg: OwnerConfig, db: Database, o: { label: string; purpose: PasskeyPurpose; kind: RegisterKind },
+  open?: { limiter: FailureLimiter; setupToken?: string }) {
   registerGate(db, o.kind, o.purpose);
+  if (o.kind === "open") requireSetupToken(cfg, open!.limiter, open!.setupToken);
   const same = listPasskeys(db, o.purpose);
   // One user.id per purpose: authenticators replace a resident credential with the same rp + user.id, so the two
   // purposes must differ. Extra keys of one purpose (another phone) share their purpose's id.
@@ -223,7 +239,7 @@ export async function registerOptions(cfg: OwnerConfig, db: Database, o: { label
 }
 
 export async function registerVerify(cfg: OwnerConfig, db: Database, limiter: FailureLimiter, args: {
-  challenge_id: string; response: RegistrationResponseJSON; sessionOk: boolean; label?: string;
+  challenge_id: string; response: RegistrationResponseJSON; sessionOk: boolean; label?: string; setupToken?: string;
 }): Promise<{ passkey: Omit<PasskeyRow, "public_key_cose_b64">; first: boolean; purpose: PasskeyPurpose; pin: PinFile }> {
   limiter.check();
   const ch = takeChallenge(db, args.challenge_id, "register");
@@ -232,6 +248,7 @@ export async function registerVerify(cfg: OwnerConfig, db: Database, limiter: Fa
   const kind: RegisterKind = meta.kind === "additional" || meta.kind === "setup" ? meta.kind : "open";
   if (kind !== "open" && !args.sessionOk) throw new ApiError(403, "registration_locked", "Sign in to add another passkey.");
   registerGate(db, kind, purpose); // early, so a stale challenge fails before any crypto
+  if (kind === "open") requireSetupToken(cfg, limiter, args.setupToken);
   let v;
   try {
     v = await verifyRegistrationResponse({
@@ -265,6 +282,7 @@ export async function registerVerify(cfg: OwnerConfig, db: Database, limiter: Fa
     audit(db, "owner", "passkey.register", row.credential_id, { label, purpose, first: n === 0 });
     return { row, first: n === 0 };
   }).immediate();
+  if (purpose === "login") cfg.setupToken.clear(); // a sign-in key exists now: the one-time token has done its job
   const pin = writePinFiles(cfg, db);
   const { public_key_cose_b64: _omit, ...pub } = row;
   return { passkey: pub, first, purpose, pin };

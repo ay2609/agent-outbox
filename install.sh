@@ -2,7 +2,7 @@
 # Agent Outbox installer. Builds the dashboard and the executor, writes two per-user LaunchAgents and starts them.
 # Safe to re-run (a re-run is an upgrade). Never uses sudo.
 #
-#   ./install.sh [--port N] [--no-mcp] [--dry-run] [--help]
+#   ./install.sh [--port N] [--no-mcp] [--dry-run] [--setup-link] [--help]
 set -euo pipefail
 
 LABEL="io.github.ay2609.agent-outbox"
@@ -19,6 +19,7 @@ UID_N="$(id -u)"
 
 DRY_RUN=0
 NO_MCP=0
+SETUP_LINK=0
 PORT_ARG=""
 
 usage() {
@@ -32,6 +33,8 @@ Options:
   --port N     Dashboard port (default 7477). Saved to config.json in the state directory.
   --no-mcp     Do not register the MCP server with Claude Code.
   --dry-run    Print every step and change nothing (the checks still run).
+  --setup-link Print the one-time first-run setup link (the dashboard address with a secret token) and exit.
+               Changes nothing. If setup is already done it says so.
   --help       Show this help.
 
 State directory: ~/Library/Application Support/agent-outbox (override with OUTBOX_HOME).
@@ -46,6 +49,7 @@ while [ $# -gt 0 ]; do
     --port=*) PORT_ARG="${1#--port=}"; shift ;;
     --no-mcp) NO_MCP=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --setup-link) SETUP_LINK=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -129,6 +133,16 @@ write_config_port() {
   ' "$CONFIG" "$1"
 }
 
+# The one-time setup link: the dashboard writes <state>/setup-token until the first sign-in key exists (then deletes it).
+# Prints the URL and succeeds only if that file is a plain file holding a well-formed token (43 base64url characters).
+setup_url() {
+  local f="$STATE/setup-token" t
+  [ -f "$f" ] && [ ! -L "$f" ] || return 1
+  t="$(tr -d '[:space:]' < "$f" 2>/dev/null)" || return 1
+  [[ "$t" =~ ^[A-Za-z0-9_-]{43}$ ]] || return 1
+  printf 'http://localhost:%s/#/setup?token=%s\n' "$PORT" "$t"
+}
+
 bootstrap_agent() { # <label>: bootout (errors ignored), then bootstrap, retrying while launchd tears down
   local label="$1" plist="$AGENTS_DIR/$1.plist" i
   if [ "$DRY_RUN" = 1 ]; then
@@ -146,6 +160,23 @@ bootstrap_agent() { # <label>: bootout (errors ignored), then bootstrap, retryin
   done
   launchctl bootstrap "gui/$UID_N" "$plist"   # last try, shows the real error
 }
+
+# ---------- --setup-link: print the link and stop (reads only; needs no bun, Xcode or network) ----------
+if [ "$SETUP_LINK" = 1 ]; then
+  if [ -n "$PORT_ARG" ]; then
+    PORT="$PORT_ARG"
+  elif [ -n "${OUTBOX_PORT:-}" ] && [[ "$OUTBOX_PORT" =~ ^[0-9]+$ ]] && [ "$OUTBOX_PORT" -ge 1 ] && [ "$OUTBOX_PORT" -le 65535 ]; then
+    PORT="$OUTBOX_PORT"
+  else
+    PORT=""
+    if [ -f "$CONFIG" ]; then
+      if command -v bun >/dev/null 2>&1; then PORT="$(read_config_port)"; else PORT="$(plutil -extract port raw -o - "$CONFIG" 2>/dev/null || true)"; fi
+    fi
+    [[ "$PORT" =~ ^[0-9]+$ ]] || PORT="$DEFAULT_PORT"
+  fi
+  if ! setup_url; then echo "Setup is already done: open http://localhost:$PORT"; fi
+  exit 0
+fi
 
 # ---------- 1. checks ----------
 step "Checking this Mac"
@@ -244,6 +275,7 @@ bootstrap_agent "$EXEC_LABEL"
 step "Waiting for the dashboard on http://127.0.0.1:$PORT"
 if [ "$DRY_RUN" = 1 ]; then
   info "[dry-run] poll http://127.0.0.1:$PORT/api/auth/state for up to 30 s"
+  info "[dry-run] then show the one-time setup link: http://localhost:$PORT/#/setup?token=<token from $STATE/setup-token>"
 else
   UP=0
   for _ in $(seq 1 30); do
@@ -292,9 +324,18 @@ error -1743, clear the old entries and let the prompts reappear:
 
 EOF
 fi
+SETUP_URL=""
+[ "$DRY_RUN" = 1 ] || SETUP_URL="$(setup_url || true)"
+if [ -n "$SETUP_URL" ]; then
+  STEP1="Open this setup link (use it in your own browser; it holds a one-time secret that lets you create the first
+     passkey, and it stops working once you have). To show it again: $REPO/install.sh --setup-link
+       $SETUP_URL"
+else
+  STEP1="Open http://localhost:$PORT (use \"localhost\", not 127.0.0.1: passkeys are tied to that name)."
+fi
 cat <<EOF
 Next steps
-  1. Open http://localhost:$PORT (use "localhost", not 127.0.0.1: passkeys are tied to that name).
+  1. $STEP1
   2. Create your two passkeys with Touch ID: one to sign in, one to approve sending. Macs without Touch ID
      use the Mac password or a phone passkey.
   3. You are in DRY mode in SIMPLE mode: approved messages are only written to a log

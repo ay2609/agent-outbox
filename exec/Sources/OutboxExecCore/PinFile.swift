@@ -26,7 +26,7 @@ public struct PinPolicy: Equatable, Sendable {
     public static let `default` = PinPolicy(liveAllowed: false)
 }
 
-/// Which pin file the executor is using. `hardened`: the root-owned file in /usr/local/etc (the user ran the harden command).
+/// Which pin file the executor is using. `hardened`: the root-owned file in /Library/Application Support (the user ran the harden command).
 /// `simple`: the user's own file in the state directory (the default; no root needed).
 public enum PinMode: String, Sendable {
     case hardened

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ApiErr, get, post, errText } from "./api";
 import { useLoad } from "./hooks";
-import { login, passkeyError, registerApprove, registerLogin } from "./passkeys";
+import { getSetupToken, login, passkeyError, registerApprove, registerLogin } from "./passkeys";
 import { href, useRoute } from "./router";
 import { ErrorNote, Sheet, Spinner, ToastHost, useToast } from "./ui";
 import { Controls } from "./controls";
@@ -14,7 +14,7 @@ import { ContactChangeDetail, ContactChangesList } from "./pages/ContactChanges"
 import { Activity } from "./pages/Activity";
 import { Settings } from "./pages/Settings";
 
-interface AuthState { registered: boolean; authenticated: boolean; setup: { login: boolean; approve: boolean }; rp_id: string; origin: string }
+interface AuthState { registered: boolean; authenticated: boolean; setup_token_required: boolean; setup: { login: boolean; approve: boolean }; rp_id: string; origin: string }
 
 export function App() {
   const [auth, setAuth] = useState<AuthState | null>(null);
@@ -41,6 +41,8 @@ function Gate({ auth, step, onDone, onSkip }: { auth: AuthState; step: 1 | 2 | "
   const [err, setErr] = useState<string | null>(null);
   const device = "This Mac";
   const [label, setLabel] = useState(step === 2 ? `${device} approval` : `${device} sign-in`);
+  // Step 1 needs the one-time setup link; without its token the button can't work, so say how to get the link.
+  const needLink = step === 1 && auth.setup_token_required && !getSetupToken();
   const run = async (f: () => Promise<unknown>) => {
     setBusy(true); setErr(null);
     try { await f(); onDone(); } catch (e) { setErr(e instanceof ApiErr ? errText(e) : passkeyError(e)); } finally { setBusy(false); }
@@ -70,7 +72,8 @@ function Gate({ auth, step, onDone, onSkip }: { auth: AuthState; step: 1 | 2 | "
           )}
           <p className="note note-info small">{WHY_TWO}</p>
           <label className="field"><span>Name this key</span><input value={label} onChange={(e) => setLabel(e.target.value)} maxLength={60} /></label>
-          <button className="btn btn-primary btn-wide" disabled={busy}
+          {needLink && <p className="note note-info small" data-testid="setup-link-note">Open the setup link printed by the installer, or run <code>./install.sh --setup-link</code> in the agent-outbox folder.</p>}
+          <button className="btn btn-primary btn-wide" disabled={busy || needLink}
             onClick={() => run(() => (step === 1 ? registerLogin(label) : registerApprove(label)))}>
             {busy ? "Waiting for Touch ID…" : step === 1 ? "Create sign-in key" : "Create approval key"}
           </button>

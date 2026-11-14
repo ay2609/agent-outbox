@@ -8,6 +8,7 @@ import { PORT, ensureStateDirs, paths } from "./core/paths";
 import { ownerApp } from "./owner-api/index";
 import { passkeyCount, pinText, writePinFiles } from "./owner-api/auth";
 import { resolveConfig } from "./owner-api/config";
+import { defaultSetupToken } from "./owner-api/setup-token";
 import { relintOpenBatches } from "./personalize/lint";
 
 const log = (m: string) => console.log(`${new Date().toISOString()} ${m}`);
@@ -45,8 +46,12 @@ const agentServer = Bun.serve({ unix: paths.agentSocket, fetch: agentApp.fetch, 
 chmodSync(paths.agentSocket, 0o600);
 log(`agent API on ${paths.agentSocket}`);
 
+// First run: no sign-in key yet, so registering one needs the one-time setup token (kept in <state>/setup-token until then).
+const setupToken = defaultSetupToken.start(db);
+
 const ownerServer = Bun.serve({ hostname: "127.0.0.1", port: PORT, fetch: ownerApp.fetch, idleTimeout: 60 });
 log(`dashboard on 127.0.0.1:${ownerServer.port} (open http://localhost:${ownerServer.port})`);
+if (setupToken) log(`first-run setup: open http://localhost:${ownerServer.port}/#/setup?token=${setupToken}`);
 
 const watcher = startContactsWatcher({ db, log: (m) => log(m) });
 log(`watching ${paths.contactsExport} (polling every 10 s)`);

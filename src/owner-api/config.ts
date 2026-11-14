@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { getDb } from "../db";
 import { composeAvailability, type ComposeAvailability } from "../core/config";
 import { ORIGIN, PORT, RP_ID, config, paths } from "../core/paths";
+import { SetupToken, defaultSetupToken } from "./setup-token";
 
 export interface OwnerConfig {
   db: () => Database;
@@ -19,6 +20,8 @@ export interface OwnerConfig {
   /** Hardened mode's pin: root-owned. If this file exists it is the only pin that counts. */
   rootPinFile: string;
   webDist: string;
+  /** Guards open (no-session) registration while no sign-in key exists. Not started here: server.ts (or a test) calls start(). */
+  setupToken: SetupToken;
   /** Failed passkey verifications allowed per window before login is locked (global: every request is from 127.0.0.1). */
   loginMaxFailures: number;
   loginWindowMs: number;
@@ -53,6 +56,7 @@ export function resolveConfig(over: Partial<OwnerConfig> = {}): OwnerConfig {
     userPinFile: paths.userPinFile,
     rootPinFile: paths.rootPinFile,
     webDist: join(here, "..", "..", "web", "dist"),
+    setupToken: defaultSetupToken,
     loginMaxFailures: 8,
     loginWindowMs: 10 * 60_000,
     challengeTtlMs: 5 * 60_000,

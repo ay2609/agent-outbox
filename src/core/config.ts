@@ -11,8 +11,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export const DEFAULT_PORT = 7477;
-/** Hardened mode's pin file. A compiled-in constant on purpose: not configurable, so a config edit can't move it. */
-export const ROOT_PIN_FILE = "/usr/local/etc/agent-outbox/passkeys.json";
+/** Hardened mode's pin file. A compiled-in constant on purpose: not configurable, so a config edit can't move it.
+ *  Under /Library because /Library and /Library/Application Support are root-owned on every Mac (a Homebrew-owned /usr/local
+ *  on an older Intel Mac is not, and a same-user process could rename the pin away). The path has a space: quote it in shells. */
+export const ROOT_PIN_FILE = "/Library/Application Support/agent-outbox/passkeys.json";
 
 export type ComposeMode = "auto" | "off";
 export interface Config {

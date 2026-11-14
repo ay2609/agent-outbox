@@ -198,12 +198,12 @@ describe("harden command", () => {
     mkdirSync(state, { recursive: true });
     const user = join(state, "passkeys.json");
     writeFileSync(user, '{"v":2}\n');
-    const cfg = { userPinFile: user, rootPinFile: "/usr/local/etc/agent-outbox/passkeys.json" } as any;
+    const cfg = { userPinFile: user, rootPinFile: "/Library/Application Support/agent-outbox/passkeys.json" } as any;
     const cmd = installCommand(cfg)!;
     const sha = new Bun.CryptoHasher("sha256").update(readFileSync(user)).digest("hex");
     expect(cmd).toBe(
-      `echo '${sha}  ${user}' | shasum -a 256 -c - && sudo install -d -o root -g wheel -m 755 /usr/local/etc/agent-outbox && ` +
-      `sudo install -o root -g wheel -m 444 '${user}' /usr/local/etc/agent-outbox/passkeys.json && plutil -p /usr/local/etc/agent-outbox/passkeys.json`);
+      `echo '${sha}  ${user}' | shasum -a 256 -c - && sudo install -d -o root -g wheel -m 755 '/Library/Application Support/agent-outbox' && ` +
+      `sudo install -o root -g wheel -m 444 '${user}' '/Library/Application Support/agent-outbox/passkeys.json' && plutil -p '/Library/Application Support/agent-outbox/passkeys.json'`);
     const check = cmd.split(" && ")[0]!;
     expect(Bun.spawnSync(["bash", "-c", check]).exitCode).toBe(0);
     writeFileSync(user, '{"v":2,"tampered":true}\n');

@@ -16,6 +16,8 @@ export const paths = {
   logs: join(STATE_DIR, "logs"),
   drySendLog: join(STATE_DIR, "logs", "dry-sends.jsonl"),
   contactsExport: join(STATE_DIR, "contacts-export.json"),
+  // First-run only: the one-time token that guards registering the first sign-in key (0600; deleted once that key exists).
+  setupToken: join(STATE_DIR, "setup-token"),
   // Simple mode: the pin the dashboard writes (0600, owned by the user). The sender trusts it only while no root pin exists.
   userPinFile: join(STATE_DIR, "passkeys.json"),
   // Hardened mode: root-owned (0444), installed with one sudo command. Once it exists it is the only pin the sender trusts.

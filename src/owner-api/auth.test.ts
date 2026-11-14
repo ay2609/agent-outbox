@@ -1,20 +1,23 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeHarness, seedBatch, SoftAuthenticator } from "./testkit";
 import { DEFAULT_PIN_POLICY } from "../core/types";
 import { coseToX963 } from "./auth";
 import { fromB64u } from "./b64";
+import { SetupToken } from "./setup-token";
+import { openDb } from "../db";
 
 const RP = "localhost", ORIGIN = "http://localhost:7477";
 
 describe("passkey registration (two purposes)", () => {
   test("setup enrols a sign-in key, then an approve key, with distinct user ids and names; pin files hold the approve key only", async () => {
     const h = makeHarness();
-    const o1 = await h.call("POST", "/api/auth/register/options", { purpose: "login", label: "Phone sign-in" }, { cookie: null });
+    const o1 = await h.call("POST", "/api/auth/register/options", { purpose: "login", label: "Phone sign-in", setup_token: h.setupToken }, { cookie: null });
     expect(o1.json.options.user.name).toBe("Sign in to Outbox");
     expect(h.cookie).toBe("");
-    const v1 = await h.call("POST", "/api/auth/register/verify", { challenge_id: o1.json.challenge_id, response: h.login.register(o1.json.options), label: "Phone sign-in" }, { cookie: null });
+    const v1 = await h.call("POST", "/api/auth/register/verify", { challenge_id: o1.json.challenge_id, response: h.login.register(o1.json.options), label: "Phone sign-in", setup_token: h.setupToken }, { cookie: null });
     expect(v1.status).toBe(200);
     expect(v1.json.purpose).toBe("login");
     h.cookie = (v1.res.headers.get("set-cookie") ?? "").split(";")[0]!;
@@ -60,8 +63,8 @@ describe("passkey registration (two purposes)", () => {
   test("session cookie: HttpOnly + SameSite=Strict always; Secure only for a non-loopback (https) origin", async () => {
     const remote = makeHarness({ origin: "https://outbox.example" });
     remote.login.origin = "https://outbox.example";
-    const o = await remote.call("POST", "/api/auth/register/options", { purpose: "login" }, { cookie: null });
-    const v = await remote.call("POST", "/api/auth/register/verify", { challenge_id: o.json.challenge_id, response: remote.login.register(o.json.options) }, { cookie: null });
+    const o = await remote.call("POST", "/api/auth/register/options", { purpose: "login", setup_token: remote.setupToken }, { cookie: null });
+    const v = await remote.call("POST", "/api/auth/register/verify", { challenge_id: o.json.challenge_id, response: remote.login.register(o.json.options), setup_token: remote.setupToken }, { cookie: null });
     const sc = v.res.headers.get("set-cookie")!;
     expect(sc).toContain("HttpOnly"); expect(sc).toContain("Secure"); expect(sc).toContain("SameSite=Strict");
     // http://localhost: a Secure cookie would be dropped by Safari, so it is not set
@@ -75,7 +78,7 @@ describe("passkey registration (two purposes)", () => {
 
   test("registration options request P-256 only, resident key and UV required", async () => {
     const h = makeHarness();
-    const o = await h.call("POST", "/api/auth/register/options", {}, { cookie: null });
+    const o = await h.call("POST", "/api/auth/register/options", { setup_token: h.setupToken }, { cookie: null });
     expect(o.json.options.pubKeyCredParams).toEqual([{ alg: -7, type: "public-key" }]);
     expect(o.json.options.authenticatorSelection).toMatchObject({ residentKey: "required", userVerification: "required" });
     expect(o.json.options.rp.id).toBe("localhost");
@@ -85,11 +88,11 @@ describe("passkey registration (two purposes)", () => {
   test("unauthenticated registration is open only while zero keys of that purpose exist (and, for approve, no login key)", async () => {
     const h = makeHarness();
     // approve first, with nothing else registered: allowed by the rule...
-    const ap = await h.call("POST", "/api/auth/register/options", { purpose: "approve" }, { cookie: null });
+    const ap = await h.call("POST", "/api/auth/register/options", { purpose: "approve", setup_token: h.setupToken }, { cookie: null });
     expect(ap.status).toBe(200);
     // two challenges issued while empty
-    const o1 = await h.call("POST", "/api/auth/register/options", { purpose: "login" }, { cookie: null });
-    const o2 = await h.call("POST", "/api/auth/register/options", { purpose: "login" }, { cookie: null });
+    const o1 = await h.call("POST", "/api/auth/register/options", { purpose: "login", setup_token: h.setupToken }, { cookie: null });
+    const o2 = await h.call("POST", "/api/auth/register/options", { purpose: "login", setup_token: h.setupToken }, { cookie: null });
     await h.signUp();
     // ...and locked once the login key exists, for both purposes
     for (const purpose of ["login", "approve"]) {
@@ -109,12 +112,12 @@ describe("passkey registration (two purposes)", () => {
     const h = makeHarness();
     const a = new SoftAuthenticator(RP, ORIGIN), b = new SoftAuthenticator(RP, ORIGIN);
     const [oa, ob] = await Promise.all([
-      h.call("POST", "/api/auth/register/options", { purpose: "login" }, { cookie: null }),
-      h.call("POST", "/api/auth/register/options", { purpose: "login" }, { cookie: null }),
+      h.call("POST", "/api/auth/register/options", { purpose: "login", setup_token: h.setupToken }, { cookie: null }),
+      h.call("POST", "/api/auth/register/options", { purpose: "login", setup_token: h.setupToken }, { cookie: null }),
     ]);
     const [va, vb] = await Promise.all([
-      h.call("POST", "/api/auth/register/verify", { challenge_id: oa.json.challenge_id, response: a.register(oa.json.options) }, { cookie: null }),
-      h.call("POST", "/api/auth/register/verify", { challenge_id: ob.json.challenge_id, response: b.register(ob.json.options) }, { cookie: null }),
+      h.call("POST", "/api/auth/register/verify", { challenge_id: oa.json.challenge_id, response: a.register(oa.json.options), setup_token: h.setupToken }, { cookie: null }),
+      h.call("POST", "/api/auth/register/verify", { challenge_id: ob.json.challenge_id, response: b.register(ob.json.options), setup_token: h.setupToken }, { cookie: null }),
     ]);
     expect([va.status, vb.status].sort()).toEqual([200, 403]);
     expect(h.db.query<any, []>("SELECT COUNT(*) n FROM passkeys WHERE purpose = 'login'").get()!.n).toBe(1);
@@ -122,13 +125,13 @@ describe("passkey registration (two purposes)", () => {
 
   test("a key registered after the options were issued blocks that challenge", async () => {
     const h = makeHarness();
-    const o = await h.call("POST", "/api/auth/register/options", { purpose: "login" }, { cookie: null });
+    const o = await h.call("POST", "/api/auth/register/options", { purpose: "login", setup_token: h.setupToken }, { cookie: null });
     const resp = h.login.register(o.json.options);
     // another registration sneaks in (as a second connection would) before our insert
     const other = new SoftAuthenticator(RP, ORIGIN);
     h.db.query("INSERT INTO passkeys(credential_id, public_key_cose_b64, public_key_x963_b64, counter, label, purpose, user_handle, created_at) VALUES (?,?,?,?,?,?,?,?)")
       .run(other.id, "x", other.x963.toString("base64url"), 0, "sneaky", "login", "u", new Date().toISOString());
-    const v = await h.call("POST", "/api/auth/register/verify", { challenge_id: o.json.challenge_id, response: resp }, { cookie: null });
+    const v = await h.call("POST", "/api/auth/register/verify", { challenge_id: o.json.challenge_id, response: resp, setup_token: h.setupToken }, { cookie: null });
     expect(v.status).toBe(403);
     expect(h.db.query<any, []>("SELECT COUNT(*) n FROM passkeys").get()!.n).toBe(1);
   });
@@ -181,11 +184,11 @@ describe("passkey registration (two purposes)", () => {
 
   test("a non-UV or wrong-origin registration is refused", async () => {
     const h = makeHarness();
-    const o = await h.call("POST", "/api/auth/register/options", { purpose: "login" }, { cookie: null });
-    const bad = await h.call("POST", "/api/auth/register/verify", { challenge_id: o.json.challenge_id, response: h.login.register(o.json.options, { uv: false }) }, { cookie: null });
+    const o = await h.call("POST", "/api/auth/register/options", { purpose: "login", setup_token: h.setupToken }, { cookie: null });
+    const bad = await h.call("POST", "/api/auth/register/verify", { challenge_id: o.json.challenge_id, response: h.login.register(o.json.options, { uv: false }), setup_token: h.setupToken }, { cookie: null });
     expect(bad.status).toBe(400);
-    const o2 = await h.call("POST", "/api/auth/register/options", { purpose: "login" }, { cookie: null });
-    const bad2 = await h.call("POST", "/api/auth/register/verify", { challenge_id: o2.json.challenge_id, response: h.login.register(o2.json.options, { origin: "https://evil.example" }) }, { cookie: null });
+    const o2 = await h.call("POST", "/api/auth/register/options", { purpose: "login", setup_token: h.setupToken }, { cookie: null });
+    const bad2 = await h.call("POST", "/api/auth/register/verify", { challenge_id: o2.json.challenge_id, response: h.login.register(o2.json.options, { origin: "https://evil.example" }), setup_token: h.setupToken }, { cookie: null });
     expect(bad2.status).toBe(400);
     expect(h.db.query<any, []>("SELECT COUNT(*) n FROM passkeys").get()!.n).toBe(0);
   });
@@ -397,5 +400,160 @@ describe("audit and security headers", () => {
     const r = await h.call("GET", "/api/auth/state");
     expect(r.res.headers.get("content-security-policy")).toContain("default-src 'self'");
     expect(r.res.headers.get("cache-control")).toBe("no-store");
+  });
+});
+
+describe("first-run setup token", () => {
+  const open = (h: { call: Function }, body: object) => h.call("POST", "/api/auth/register/options", body, { cookie: null });
+  const keys = (h: { db: any }) => h.db.query("SELECT COUNT(*) n FROM passkeys").get().n as number;
+
+  test("open registration without a token is refused (options and verify, either purpose), and creates nothing", async () => {
+    const h = makeHarness();
+    expect((await h.call("GET", "/api/auth/state", undefined, { cookie: null })).json.setup_token_required).toBe(true);
+    for (const purpose of ["login", "approve"]) {
+      const o = await open(h, { purpose });
+      expect([purpose, o.status, o.json.error]).toEqual([purpose, 403, "setup_token_required"]);
+    }
+    // an empty string counts as missing
+    expect((await open(h, { purpose: "login", setup_token: "" })).json.error).toBe("setup_token_required");
+    // a challenge obtained with the token, then verified without it
+    const o = await open(h, { purpose: "login", setup_token: h.setupToken });
+    const v = await h.call("POST", "/api/auth/register/verify", { challenge_id: o.json.challenge_id, response: h.login.register(o.json.options) }, { cookie: null });
+    expect([v.status, v.json.error]).toEqual([403, "setup_token_required"]);
+    expect(keys(h)).toBe(0);
+  });
+
+  test("a wrong token is refused on options and on verify, and nothing is enrolled", async () => {
+    const h = makeHarness();
+    const wrong = h.setupToken.slice(0, -1) + (h.setupToken.endsWith("A") ? "B" : "A");
+    for (const purpose of ["login", "approve"]) {
+      const o = await open(h, { purpose, setup_token: wrong });
+      expect([purpose, o.status, o.json.error]).toEqual([purpose, 403, "setup_token_invalid"]);
+    }
+    expect((await open(h, { purpose: "login", setup_token: "short" })).json.error).toBe("setup_token_invalid");
+    expect((await open(h, { purpose: "login", setup_token: h.setupToken + "x" })).json.error).toBe("setup_token_invalid");
+    const o = await open(h, { purpose: "login", setup_token: h.setupToken });
+    const v = await h.call("POST", "/api/auth/register/verify", { challenge_id: o.json.challenge_id, response: h.login.register(o.json.options), setup_token: wrong }, { cookie: null });
+    expect([v.status, v.json.error]).toEqual([403, "setup_token_invalid"]);
+    expect(keys(h)).toBe(0);
+    expect(existsSync(h.setup.path)).toBe(true);
+  });
+
+  test("missing and wrong tokens count toward the register limiter; once it trips, even the right token is refused for a while", async () => {
+    const h = makeHarness();
+    for (let i = 0; i < 4; i++) expect((await open(h, { purpose: "login" })).json.error).toBe("setup_token_required");
+    for (let i = 0; i < 4; i++) expect((await open(h, { purpose: "login", setup_token: "nope" })).json.error).toBe("setup_token_invalid");
+    const locked = await open(h, { purpose: "login", setup_token: h.setupToken });
+    expect([locked.status, locked.json.error]).toEqual([429, "rate_limited"]);
+    expect(locked.res.headers.get("retry-after")).toBeTruthy();
+    expect(keys(h)).toBe(0);
+  });
+
+  test("the right token enrols the first sign-in key; then the file is deleted, the state flag is false and the token is dead", async () => {
+    const h = makeHarness();
+    expect(existsSync(h.setup.path)).toBe(true);
+    expect((await h.call("GET", "/api/auth/state", undefined, { cookie: null })).json.setup_token_required).toBe(true);
+    await h.signUpLoginOnly();
+    expect(keys(h)).toBe(1);
+    expect(existsSync(h.setup.path)).toBe(false);
+    expect(h.setup.active).toBe(false);
+    expect(h.setup.matches(h.setupToken)).toBe(false);
+    const st = (await h.call("GET", "/api/auth/state", undefined, { cookie: null })).json;
+    expect(st.setup_token_required).toBe(false);
+    expect(JSON.stringify(st)).not.toContain(h.setupToken);
+    // the approval key afterwards is session-based and needs no token
+    const o = await h.call("POST", "/api/passkeys/options", { purpose: "approve" });
+    expect(o.status).toBe(200);
+    expect(JSON.stringify(o.json)).not.toContain(h.setupToken);
+  });
+
+  test("an approve-purpose open registration with the token also works (and is the only way in without a session)", async () => {
+    const h = makeHarness();
+    const o = await open(h, { purpose: "approve", setup_token: h.setupToken });
+    expect(o.status).toBe(200);
+    const v = await h.call("POST", "/api/auth/register/verify", { challenge_id: o.json.challenge_id, response: h.auth.register(o.json.options), setup_token: h.setupToken }, { cookie: null });
+    expect(v.status).toBe(200);
+    // an approve key is not a sign-in key: the token stays until a sign-in key exists
+    expect(existsSync(h.setup.path)).toBe(true);
+    expect(h.setup.active).toBe(true);
+  });
+
+  test("session-based enrolment is unchanged: no token needed for the approval key or later keys", async () => {
+    const h = makeHarness();
+    await h.signUp();
+    const more = await h.call("POST", "/api/passkeys/options", { purpose: "approve", reauth: await h.reauth() });
+    expect(more.status).toBe(200);
+  });
+
+  test("the token is persisted while unused: generate, reload, same token; the file is 0600 and 43 base64url characters", () => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "outbox-st-"));
+    const path = join(dir, "state", "setup-token");
+    const db = openDb(":memory:");
+    const t1 = new SetupToken(path);
+    const tok = t1.start(db)!;
+    expect(tok).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(readFileSync(path, "utf8").trim()).toBe(tok);
+    expect(readdirSync(join(dir, "state")).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+    const t2 = new SetupToken(path);
+    expect(t2.start(db)).toBe(tok);
+    expect(t2.matches(tok)).toBe(true);
+    expect(t2.matches(tok.slice(1))).toBe(false);
+    expect(t2.matches(undefined)).toBe(false);
+    // a second token store over the same path never matches before start()
+    expect(new SetupToken(path).matches(tok)).toBe(false);
+  });
+
+  test("a malformed, world-readable or symlinked token file is replaced, never trusted or followed", () => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "outbox-st-"));
+    const db = openDb(":memory:");
+    const path = join(dir, "setup-token");
+    writeFileSync(path, "not-a-token\n", { mode: 0o600 });
+    const a = new SetupToken(path).start(db)!;
+    expect(a).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(readFileSync(path, "utf8").trim()).toBe(a);
+    // readable by others: regenerated
+    const loose = "A".repeat(43);
+    writeFileSync(path, loose + "\n");
+    chmodSync(path, 0o644);
+    const b = new SetupToken(path).start(db)!;
+    expect(b).not.toBe(loose);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    // a symlink at the path: its target is not read, and not written through
+    const target = join(dir, "elsewhere");
+    writeFileSync(target, "B".repeat(43) + "\n", { mode: 0o600 });
+    mkdirSync(join(dir, "x"));
+    const link = join(dir, "x", "setup-token");
+    symlinkSync(target, link);
+    const c = new SetupToken(link).start(db)!;
+    expect(c).not.toBe("B".repeat(43));
+    expect(readFileSync(target, "utf8").trim()).toBe("B".repeat(43));
+    expect(statSync(link).isFile()).toBe(true);
+  });
+
+  test("at server start with a sign-in key already registered: no token, and a leftover file is deleted", async () => {
+    const h = makeHarness();
+    await h.signUpLoginOnly();
+    writeFileSync(h.setup.path, "A".repeat(43) + "\n", { mode: 0o600 });
+    const again = new SetupToken(h.setup.path);
+    expect(again.start(h.db)).toBeNull();
+    expect(again.active).toBe(false);
+    expect(existsSync(h.setup.path)).toBe(false);
+  });
+
+  test("if every sign-in key is gone, the next start issues a fresh token", async () => {
+    const h = makeHarness();
+    await h.signUpLoginOnly();
+    const old = h.setupToken;
+    h.db.query("DELETE FROM passkeys").run();
+    const next = new SetupToken(h.setup.path).start(h.db)!;
+    expect(next).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(next).not.toBe(old);
+  });
+
+  test("a server that never started its token store refuses open registration (fails closed)", async () => {
+    const h = makeHarness({ setupToken: new SetupToken(join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "outbox-st-")), "setup-token")) });
+    const o = await open(h, { purpose: "login", setup_token: h.setupToken });
+    expect([o.status, o.json.error]).toEqual([403, "setup_token_invalid"]);
   });
 });

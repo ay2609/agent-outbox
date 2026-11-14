@@ -51,7 +51,7 @@ cd agent-outbox
 
 The installer checks your Mac, installs dependencies, builds the dashboard and the executor, creates the state directory, writes two per-user LaunchAgents, starts them, waits for the dashboard to answer, and registers the MCP server with Claude Code if `claude` is installed. It never uses sudo, and re-running it upgrades an existing install.
 
-Options: `--port N` (default 7477), `--no-mcp`, `--dry-run` (print every step, change nothing), `--help`.
+Options: `--port N` (default 7477), `--no-mcp`, `--dry-run` (print every step, change nothing), `--setup-link` (print the first-run setup link again, change nothing), `--help`.
 
 Where things live:
 
@@ -64,7 +64,7 @@ Where things live:
 
 ## First run
 
-1. Open `http://localhost:7477`. Use `localhost`, not `127.0.0.1`: passkeys are tied to that name.
+1. Open the **setup link** the installer printed: `http://localhost:7477/#/setup?token=...`. The token is a one-time secret that lets you create the first passkey; the page removes it from the address bar and it stops working once your sign-in key exists. Lost the link? Run `./install.sh --setup-link` in the agent-outbox folder (it only prints, it changes nothing). Use `localhost`, not `127.0.0.1`: passkeys are tied to that name.
 2. Create the two passkeys it asks for with Touch ID: one to sign in, one to approve sending.
 3. You start in dry mode and simple mode (explained below). Ask your agent to draft a text, then approve it in the dashboard. The message is written to `<state>/logs/dry-sends.jsonl` and nothing is sent.
 
@@ -74,7 +74,7 @@ The executor only sends what is signed by a key it trusts, so the question is wh
 
 **Simple mode (the default).** The keys live in a file in your state directory. This protects you from an agent that uses the tools it is given, including one that has been tricked by something it read in an imported file or on a web page: it has no way to send. It does not protect you from a program running as your user, outside a sandbox, that deliberately plants its own key in that file and forges approvals. Plain shell access as you is enough for that.
 
-**Hardened mode.** The keys live in a root-owned file, `/usr/local/etc/agent-outbox/passkeys.json`, that nothing running as your user can change. The executor then ignores the user file entirely. Switching takes one command: Settings > "Harden your install" shows it. It checks the file's SHA-256 first and then runs two `sudo install` commands. You run it yourself in Terminal; the agent should never be allowed to. After that, changing your approval keys or the live-sending switch means running the command again; only do that right after you changed something yourself. Hardened mode still does not stop a program running as you from rewriting the dashboard to trick you into approving its messages; SECURITY.md lists what remains.
+**Hardened mode.** The keys live in a root-owned file, `/Library/Application Support/agent-outbox/passkeys.json`, that nothing running as your user can change. (It lives under `/Library` because that folder is root-owned on every Mac.) The executor then ignores the user file entirely. Switching takes one command: Settings > "Harden your install" shows it. It checks the file's SHA-256 first and then runs two `sudo install` commands. You run it yourself in Terminal; the agent should never be allowed to. After that, changing your approval keys or the live-sending switch means running the command again; only do that right after you changed something yourself. Hardened mode still does not stop a program running as you from rewriting the dashboard to trick you into approving its messages; SECURITY.md lists what remains.
 
 Use simple mode to try it out. Use hardened mode before you let it send anything you care about, particularly if an agent on this Mac can run shell commands without a sandbox. Details: [SECURITY.md](SECURITY.md).
 

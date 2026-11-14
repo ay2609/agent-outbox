@@ -41,7 +41,7 @@ The executor must decide whose keys to trust. There are exactly two sources, and
 
 | | Hardened | Simple (default) |
 |---|---|---|
-| Pin file | `/usr/local/etc/agent-outbox/passkeys.json` (root:wheel, 0444, fixed path) | `<state>/passkeys.json` (your user, 0600) |
+| Pin file | `/Library/Application Support/agent-outbox/passkeys.json` (root:wheel, 0444, fixed path; `/Library` is root-owned on every Mac) | `<state>/passkeys.json` (your user, 0600) |
 | Checks | uid 0, no group/other write, every ancestor directory root-owned, `O_NOFOLLOW` | regular file, `O_NOFOLLOW`, owned by your uid, not group/world-writable; the state directory likewise |
 | Chosen when | the root file exists | the root file does not exist |
 | If invalid | the executor holds; it never falls back to the user file | the executor holds |
@@ -179,4 +179,4 @@ Lint warnings concern draft content: an unresolved `{{field}}`, an empty merge v
 
 ## 11. Setup
 
-See the README. In short: `./install.sh`, open the dashboard, create the sign-in and approval passkeys, try dry mode, optionally harden, then allow live sending and answer the macOS prompts for "Agent Outbox".
+See the README. In short: `./install.sh`, open the one-time setup link it prints (`/#/setup?token=...`; `./install.sh --setup-link` prints it again), create the sign-in and approval passkeys, try dry mode, optionally harden, then allow live sending and answer the macOS prompts for "Agent Outbox".

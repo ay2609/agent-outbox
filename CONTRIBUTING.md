@@ -30,7 +30,7 @@ Use a throwaway state directory and a port that is not your real install's:
 OUTBOX_HOME=$TMPDIR/ao OUTBOX_PORT=7478 bun run src/server.ts
 ```
 
-Open `http://localhost:7478`. For the dashboard with hot reload, `bun run web:dev`.
+On a fresh state directory the server logs a line `first-run setup: open http://localhost:7478/#/setup?token=...`; open that link to create the first passkey (the token is also in `$TMPDIR/ao/setup-token`). For the dashboard with hot reload, `bun run web:dev`.
 
 ## End-to-end tests
 

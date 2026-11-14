@@ -11,6 +11,7 @@ import { openDb } from "../db";
 import { addDraft, createBatch, setBatchStatus } from "../core/store";
 import { createOwnerApp } from "./index";
 import { b64u } from "./b64";
+import { SetupToken } from "./setup-token";
 
 const sha = (b: Uint8Array | string): Buffer => createHash("sha256").update(b).digest();
 const u32 = (n: number): Buffer => { const b = Buffer.alloc(4); b.writeUInt32BE(n); return b; };
@@ -59,6 +60,8 @@ export class SoftAuthenticator {
 
 export interface Harness {
   app: Hono; db: Database; dir: string; rpId: string; origin: string;
+  /** The first-run setup token store (file <dir>/setup-token) and its value; open registration must send the value as `setup_token`. */
+  setup: SetupToken; setupToken: string;
   /** The APPROVE key (signs approvals, goes in the pin file). */
   auth: SoftAuthenticator;
   /** The sign-in key (login and reauth only). */
@@ -82,13 +85,15 @@ export function makeHarness(over: Parameters<typeof createOwnerApp>[0] = {}, o2:
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "outbox-test-"));
   const db = openDb(o2.dbPath ? join(dir, o2.dbPath) : ":memory:");
   let wrap: (d: Database) => Database = (d) => d;
+  const setup = new SetupToken(join(dir, "setup-token"));
+  const setupToken = setup.start(db)!;
   const app = createOwnerApp({
-    db: () => wrap(db), rpId, origin, port, stateDir: dir, userPinFile: join(dir, "passkeys.json"),
+    db: () => wrap(db), rpId, origin, port, stateDir: dir, userPinFile: join(dir, "passkeys.json"), setupToken: setup,
     rootPinFile: join(dir, "root", "passkeys.json"), webDist: join(dir, "dist"),
     compose: () => ({ enabled: true, reason: null, path: "/usr/local/bin/claude" }), ...over,
   });
   const h: Harness = {
-    app, db, dir, rpId, origin, auth: new SoftAuthenticator(rpId, origin), login: new SoftAuthenticator(rpId, origin), cookie: "",
+    app, db, dir, rpId, origin, setup, setupToken, auth: new SoftAuthenticator(rpId, origin), login: new SoftAuthenticator(rpId, origin), cookie: "",
     async call(method, path, body, o = {}) {
       const headers: Record<string, string> = {};
       if (body !== undefined) headers["content-type"] = "application/json";
@@ -110,9 +115,9 @@ export function makeHarness(over: Parameters<typeof createOwnerApp>[0] = {}, o2:
     },
     wrapDb(w) { wrap = w; },
     async signUpLoginOnly() {
-      const o = await h.call("POST", "/api/auth/register/options", { purpose: "login" }, { cookie: null });
+      const o = await h.call("POST", "/api/auth/register/options", { purpose: "login", setup_token: h.setupToken }, { cookie: null });
       if (o.status !== 200) throw new Error(`register options ${o.status} ${JSON.stringify(o.json)}`);
-      const v = await h.call("POST", "/api/auth/register/verify", { challenge_id: o.json.challenge_id, response: h.login.register(o.json.options), label: "Test sign-in" }, { cookie: null });
+      const v = await h.call("POST", "/api/auth/register/verify", { challenge_id: o.json.challenge_id, response: h.login.register(o.json.options), label: "Test sign-in", setup_token: h.setupToken }, { cookie: null });
       if (v.status !== 200) throw new Error(`register verify ${v.status} ${JSON.stringify(v.json)}`);
       const sc = v.res.headers.get("set-cookie") ?? "";
       h.cookie = sc.split(";")[0] ?? "";

@@ -37,7 +37,7 @@ public enum SelfTest {
         try? FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         print("outbox-exec \(Version.current) selftest")
         print("schema: \(source)")
-        print("temp OUTBOX_HOME root: \(parent) (the real ~/Library/Application Support/agent-outbox and /usr/local/etc are never read)\n")
+        print("temp OUTBOX_HOME root: \(parent) (the real ~/Library/Application Support/agent-outbox and /Library/Application Support/agent-outbox are never read)\n")
 
         var passed = 0, failed = 0
         var n = 0
@@ -648,7 +648,7 @@ public enum SelfTest {
             threw = false
             do { try PinFileLoader.checkAncestors(of: p, expectedUid: 0) } catch { threw = true }
             try expect(threw, "ancestor walk accepted user-owned directories")
-            try expect(throwsNothing { try PinFileLoader.checkAncestors(of: "/usr/passkeys.json", expectedUid: 0) }, "/ and /usr should be root-owned and not group/world-writable")
+            try expect(throwsNothing { try PinFileLoader.checkAncestors(of: "/Library/Application Support/passkeys.json", expectedUid: 0) }, "/, /Library and /Library/Application Support should be root-owned and not group/world-writable (the group, admin, may differ)")
         }
         test("pin file: malformed contents are rejected") { h in
             let p = h.dir + "/bad.json"

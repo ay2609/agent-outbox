@@ -78,7 +78,7 @@ public enum JSON {
 
 public enum Paths {
     /// Hardened mode's pin file. A compiled-in constant: not configurable, so nothing can point the executor at another one.
-    public static let rootPinFile = "/usr/local/etc/agent-outbox/passkeys.json"
+    public static let rootPinFile = "/Library/Application Support/agent-outbox/passkeys.json"
     /// The state directory. The path has a space ("Application Support"): everything here builds paths as strings, never through a shell.
     public static func defaultHome() -> String {
         if let h = ProcessInfo.processInfo.environment["OUTBOX_HOME"], !h.isEmpty { return h }

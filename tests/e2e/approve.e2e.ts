@@ -24,16 +24,19 @@ mkdirSync(shots, { recursive: true });
   if (b.exitCode !== 0) throw new Error("vite build failed");
 }
 
-// Never read the real root pin (/usr/local/etc/agent-outbox): point it at a temp path the test controls (no file = simple mode).
+// Never read the real root pin (/Library/Application Support/agent-outbox): point it at a temp path the test controls (no file = simple mode).
 const { paths } = await import("../../src/core/paths");
 paths.rootPinFile = join(home, "root-pin.json");
 const { getDb } = await import("../../src/db");
 const { addDraft, createBatch, getDrafts, getSettings, setBatchStatus } = await import("../../src/core/store");
 const { ownerApp } = await import("../../src/owner-api");
+const { defaultSetupToken } = await import("../../src/owner-api/setup-token");
 const { chromium } = await import("playwright");
 const XLSX = await import("xlsx");
 
 const db = getDb();
+defaultSetupToken.start(db); // what server.ts does at start: no sign-in key yet, so <home>/setup-token holds the one-time token
+const setupFile = join(home, "setup-token");
 const batchId = createBatch(db, { title: "Dinner on Saturday", created_by: "agent:e2e", source: "mcp", status: "review", instructions: "Invite friends to dinner." });
 const ids = [
   addDraft(db, batchId, { handle: "+12025550101", recipient_name: "Sam Lee", body: "Hi Sam, are you free for dinner on Saturday at 7? We'd love to see you.", actor: "agent" }),
@@ -78,13 +81,40 @@ try {
   });
   const shot = async (name: string, o: { fullPage?: boolean } = {}) => { await page.waitForTimeout(450); await page.screenshot({ path: join(shots, name), ...o }); };
 
-  // 1. two-key setup: the sign-in key, then the approval key
+  // 1. two-key setup: the sign-in key, then the approval key. The first key needs the one-time setup link.
+  const setupToken = readFileSync(setupFile, "utf8").trim();
+  ok(/^[A-Za-z0-9_-]{43}$/.test(setupToken) && (statSync(setupFile).mode & 0o777) === 0o600, "the server wrote a 0600 setup-token file before any key exists");
+  const stateJson = await (await fetch(`${B}/api/auth/state`)).json() as any;
+  ok(stateJson.setup_token_required === true && !JSON.stringify(stateJson).includes(setupToken), "/api/auth/state says a setup token is required and never returns it");
+  const rawOpts = (body: object) => fetch(`${B}/api/auth/register/options`, { method: "POST", headers: { "content-type": "application/json", "x-outbox": "1" }, body: JSON.stringify(body) });
+  ok((await rawOpts({ purpose: "login" })).status === 403 && (await rawOpts({ purpose: "login", setup_token: "wrong" })).status === 403, "registering without the token, or with a wrong one, is refused (403)");
+  // No link: the page says how to get one and the button is disabled.
   await page.goto(`${B}/`);
+  await page.getByTestId("setup-link-note").waitFor();
+  ok((await page.getByTestId("setup-link-note").innerText()).includes("Open the setup link printed by the installer, or run ./install.sh --setup-link in the agent-outbox folder."), "without a setup link the setup page shows the note");
+  ok(await page.getByRole("button", { name: "Create sign-in key" }).isDisabled(), "...and the Create sign-in key button is disabled");
+  await shot("setup-no-link.png");
+  // A wrong token: stripped from the address bar, sent, and refused with a plain message.
+  await page.goto(`${B}/#/setup?token=${"x".repeat(43)}`);
+  await page.reload();
   await page.getByRole("button", { name: "Create sign-in key" }).waitFor();
-  await shot("setup-signin-key.png");
+  ok(!page.url().includes("token") && page.url().endsWith("#/setup"), "the token is stripped from the address bar (history.replaceState)");
+  ok((await page.getByTestId("setup-link-note").count()) === 0, "with a token in hand the note is gone");
+  await page.getByRole("button", { name: "Create sign-in key" }).click();
+  await page.getByText(/setup link isn't valid/).waitFor({ timeout: 8000 });
+  ok(db.query<any, []>("SELECT COUNT(*) n FROM passkeys").get()!.n === 0, "a wrong token enrols nothing");
+  // The real link.
+  await page.goto(`${B}/#/setup?token=${setupToken}`);
+  await page.reload();
+  await page.getByRole("button", { name: "Create sign-in key" }).waitFor();
+  ok(!page.url().includes(setupToken), "the real token is stripped from the URL too");
+  await shot("setup-signin-key.png"); // taken after the strip: the token is not on screen
   await page.getByRole("button", { name: "Create sign-in key" }).click();
   await page.getByRole("button", { name: "Create approval key" }).waitFor({ timeout: 15000 });
   ok(true, "step 1 (sign-in key) done; the dashboard now asks for the approval key");
+  ok(!existsSync(setupFile) && !defaultSetupToken.active, "the setup-token file is deleted and forgotten once the sign-in key exists");
+  ok(await page.evaluate(() => sessionStorage.getItem("outbox:setup-token")) === null, "the browser dropped the token too");
+  ok(((await (await fetch(`${B}/api/auth/state`)).json()) as any).setup_token_required === false, "/api/auth/state no longer asks for a setup token");
   ok((await page.getByText(/Two keys, so the Touch ID sheet says/).count()) === 1, "setup explains in one line why there are two keys");
   const afterOne = db.query<any, []>("SELECT purpose FROM passkeys").all();
   ok(afterOne.length === 1 && afterOne[0].purpose === "login", "only a login passkey exists after step 1");
@@ -233,7 +263,7 @@ try {
   await page.getByRole("heading", { name: "Harden your install" }).waitFor();
   ok(page.url().endsWith("#/settings/harden"), "the badge links to the Settings harden card");
   await page.getByTestId("install-cmd").waitFor();
-  const REAL_PIN = "/usr/local/etc/agent-outbox/passkeys.json"; // the test's root pin path is a temp file; show the real path in the docs
+  const REAL_PIN = "/Library/Application Support/agent-outbox/passkeys.json"; // the test's root pin path is a temp file; show the real path in the docs
   // Screenshots for the docs show a real install's paths, not the test's temp dir (the command quotes the user pin: it has a space).
   const REAL_USER_PIN = "/Users/you/Library/Application Support/agent-outbox/passkeys.json";
   const tempUserPin = join(home, "passkeys.json");
@@ -242,10 +272,15 @@ try {
     for (let n = w.nextNode(); n; n = w.nextNode()) {
       let t = n.nodeValue ?? "";
       if (!t.includes(homeTmp!)) continue;
-      t = t.split(rootTmp!).join(rootReal!);
-      if (n.parentElement?.closest('[data-testid="install-cmd"]')) t = t.split(userTmp + "'").join(userReal + "'").split(" " + userTmp).join(` '${userReal}'`);
-      else t = t.split(userTmp!).join(userReal!);
-      n.nodeValue = t.split(homeTmp!).join(rootReal!.replace(/\/[^/]+$/, ""));
+      const dirReal = rootReal!.replace(/\/[^/]+$/, "");
+      if (n.parentElement?.closest('[data-testid="install-cmd"]')) {
+        // the real root pin path has a space, so the command quotes it (the temp one doesn't)
+        t = t.split(` ${rootTmp}`).join(` '${rootReal}'`).split(` ${homeTmp} &&`).join(` '${dirReal}' &&`);
+        t = t.split(userTmp + "'").join(userReal + "'").split(" " + userTmp).join(` '${userReal}'`);
+      } else {
+        t = t.split(rootTmp!).join(rootReal!).split(userTmp!).join(userReal!);
+      }
+      n.nodeValue = t.split(homeTmp!).join(dirReal);
     }
   }, [paths.rootPinFile, REAL_PIN, tempUserPin, REAL_USER_PIN, home]);
   const shotMasked = async (name: string) => { await maskPaths(); await shot(name); await page.reload(); await page.getByTestId("pin-card").waitFor(); };

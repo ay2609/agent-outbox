@@ -12,11 +12,34 @@ export function passkeyError(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** Setup step 1: the sign-in key. No session needed; the server opens this only while no sign-in key exists. */
+// The one-time setup token (from the link the installer prints: #/setup?token=...). Kept in memory and sessionStorage,
+// and removed from the address bar at once so it isn't left in the URL, history or screenshots.
+const TOKEN_KEY = "outbox:setup-token";
+let setupToken: string | null = null;
+export function captureSetupToken(): void {
+  const m = /^#\/setup\?(.*)$/.exec(location.hash);
+  if (!m) return;
+  const t = new URLSearchParams(m[1]).get("token");
+  if (t) { setupToken = t; try { sessionStorage.setItem(TOKEN_KEY, t); } catch { /* private mode: memory only */ } }
+  history.replaceState(null, "", location.pathname + location.search + "#/setup");
+}
+export function getSetupToken(): string | null {
+  if (setupToken) return setupToken;
+  try { return sessionStorage.getItem(TOKEN_KEY); } catch { return null; }
+}
+function forgetSetupToken(): void {
+  setupToken = null;
+  try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* nothing stored */ }
+}
+
+/** Setup step 1: the sign-in key. No session needed; the server opens this only while no sign-in key exists, and only with the setup token. */
 export async function registerLogin(label: string) {
-  const { challenge_id, options } = await post("/api/auth/register/options", { label, purpose: "login" });
+  const setup_token = getSetupToken() ?? undefined;
+  const { challenge_id, options } = await post("/api/auth/register/options", { label, purpose: "login", setup_token });
   const response = await startRegistration({ optionsJSON: options });
-  return post("/api/auth/register/verify", { challenge_id, response, label });
+  const r = await post("/api/auth/register/verify", { challenge_id, response, label, setup_token });
+  forgetSetupToken();
+  return r;
 }
 export async function login() {
   const { challenge_id, options } = await post("/api/auth/login/options");

@@ -151,7 +151,7 @@ final class Harness {
         try db.runSchemaScript(schema)
         clock = TestClock(Harness.baseTime)
         config = ExecConfig(home: dir)
-        config.rootPinPath = dir + "/no-root-pin/passkeys.json"      // absent: the real /usr/local path is never read (so: simple mode)
+        config.rootPinPath = dir + "/no-root-pin/passkeys.json"      // absent: the real /Library path is never read (so: simple mode)
         try writePin(to: config.userPinPath, mode: 0o600)
         try rebuild()
     }

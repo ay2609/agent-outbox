@@ -9,7 +9,7 @@ LABEL="io.github.ay2609.agent-outbox"
 EXEC_LABEL="$LABEL.exec"
 EXEC_BUNDLE_ID="$EXEC_LABEL"
 MCP_NAME="agent-outbox"
-ROOT_PIN_DIR="/usr/local/etc/agent-outbox"
+ROOT_PIN_DIR="/Library/Application Support/agent-outbox"
 
 STATE="${OUTBOX_HOME:-$HOME/Library/Application Support/agent-outbox}"
 AGENTS_DIR="$HOME/Library/LaunchAgents"
@@ -113,7 +113,7 @@ fi
 if [ -e "$ROOT_PIN_DIR" ]; then
   step "Hardened-mode pin file"
   info "$ROOT_PIN_DIR exists (it needs root, so this script leaves it). To remove it, run:"
-  info "  sudo rm -rf $ROOT_PIN_DIR"
+  info "  sudo rm -rf '$ROOT_PIN_DIR'"
 fi
 
 echo

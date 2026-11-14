@@ -108,7 +108,7 @@ export interface Manifest {
   items: ManifestItem[];
 }
 
-/** Pin file format: the root pin (/usr/local/etc/agent-outbox/passkeys.json, hardened mode) and the user pin (<state>/passkeys.json, simple mode).
+/** Pin file format: the root pin (/Library/Application Support/agent-outbox/passkeys.json, hardened mode) and the user pin (<state>/passkeys.json, simple mode).
  *  `keys` holds ONLY approval-purpose passkeys (never the sign-in passkey), so a harvested login assertion can't
  *  satisfy the executor. `policy` holds floors the executor enforces over whatever the DB settings say. */
 export interface PinFile {
