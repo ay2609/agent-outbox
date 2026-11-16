@@ -45,7 +45,10 @@ export interface Warning { code: WarningCode; message: string }
 export type WarningCode =
   | "unresolved_var" | "empty_var" | "duplicate_recipient" | "pending_elsewhere" | "recently_messaged"
   | "invalid_handle" | "non_mobile" | "too_long" | "identical_to_template" | "empty_body"
-  | "new_contact" | "ambiguous_contact" | "link_in_first_message";
+  | "new_contact" | "ambiguous_contact" | "link_in_first_message" | "group_contact_changed";
+/** Draft var a group batch sets when the member's contact no longer owns the number (its value is the warning text).
+ *  It rides in the draft's vars so every re-lint keeps the warning; lint turns it into `group_contact_changed`. */
+export const GROUP_CONTACT_CHANGED_VAR = "_group_contact_changed";
 
 export interface Batch {
   id: string;

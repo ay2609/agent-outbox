@@ -65,6 +65,32 @@ describe.skipIf(!have)("agent API with real modules", () => {
     expect((await call(app, "GET", "/v1/imports/does-not-exist")).status).toBe(404);
   });
 
+  test("a group member whose contact lost the number is not labelled with the old name without a warning, even after a re-lint", async () => {
+    const { app, db } = await setup();
+    const alice = seedContact(db, { name: "Alice Ng", phones: [{ e164: "+14155550101", label: "mobile" }] });
+    const sam = seedContact(db, { name: "Sam Fox", phones: [{ e164: "+14155550102", label: "mobile" }] });
+    const bob = seedContact(db, { name: "Bob Roe", phones: [{ e164: "+14155550199", label: "mobile" }] });
+    const H = { "X-Outbox-Client": "g-test" };
+    await call(app, "POST", "/v1/groups", { name: "Crew", contact_ids: [alice, sam] }, H);
+    // a contacts sync moves Alice's old number to Bob and gives her a new one
+    db.query("DELETE FROM contact_handles WHERE contact_id = ?").run(alice);
+    db.query("INSERT INTO contact_handles(handle, contact_id) VALUES ('+14155550101', ?), ('+14155550177', ?)").run(bob, alice);
+    const r = await call(app, "POST", "/v1/groups/Crew/batch", { title: "t", template: "Hi {{first_name|there}}" }, H);
+    expect(r.status).toBe(201);
+    const a = r.json.drafts.find((d: any) => d.handle === "+14155550101");
+    const s = r.json.drafts.find((d: any) => d.handle === "+14155550102");
+    expect(a.recipient_name).toBe("Alice Ng");
+    expect(a.warnings.map((w: any) => w.code)).toContain("group_contact_changed");
+    expect(a.warnings.find((w: any) => w.code === "group_contact_changed").message).toContain("now listed under Bob Roe");
+    expect(s.warnings.map((w: any) => w.code)).not.toContain("group_contact_changed");
+    expect(r.json.warnings.filter((w: any) => w.code === "group_contact_changed")).toHaveLength(1);
+    // the warning survives the next lint (server start, edits)
+    const lint = await import("../src/personalize/lint");
+    lint.lintBatch(db, r.json.batch.id);
+    const again = await call(app, "GET", `/v1/batches/${r.json.batch.id}`, undefined, H);
+    expect(again.json.warnings.filter((w: any) => w.code === "group_contact_changed")).toHaveLength(1);
+  });
+
   test("batch items with a template use the real renderTemplate", async () => {
     const { app } = await setup();
     const r = await call(app, "POST", "/v1/batches", { title: "T", template: "Hi {{first_name|there}} from {{org|nowhere}}", items: [{ to: "4155550134" }, { to: "4155550135", recipient_name: "Cy Dee" }] });

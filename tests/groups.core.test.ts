@@ -216,6 +216,31 @@ describe("groups: imports and batch items", () => {
     const c = seedContact(db, { name: "Ann Lee", phones: [{ e164: "+14155550101", label: "mobile" }] });
     addMembers(db, deps, g.id, [{ contact_id: c }], { actor: A });
     db.query("DELETE FROM contact_handles WHERE contact_id = ?").run(c);
-    expect(itemsForBatch(db, deps, g.id).items[0]).toEqual({ to: "+14155550101", recipient_name: "Ann Lee", vars: {} });
+    const it = itemsForBatch(db, deps, g.id).items[0]!;
+    expect(it).toMatchObject({ to: "+14155550101", recipient_name: "Ann Lee", vars: {} });
+    expect(it.contact_id).toBeUndefined();
+    expect(it.contact_changed).toBe("Ann Lee no longer has this number in your contacts; check it still reaches the right person");
+  });
+
+  test("a number a sync gave to someone else is named in the warning, and the old contact's name is not used", () => {
+    const g = mk();
+    const alice = seedContact(db, { name: "Alice Ng", phones: [{ e164: "+14155550101", label: "mobile" }] });
+    addMembers(db, deps, g.id, [{ contact_id: alice }], { actor: A });
+    const bob = seedContact(db, { name: "Bob Roe", phones: [{ e164: "+14155550199", label: "mobile" }] });
+    db.query("UPDATE contacts SET display_name = 'Alice N.' WHERE id = ?").run(alice); // her name moved on too
+    db.query("DELETE FROM contact_handles WHERE contact_id = ?").run(alice);
+    db.query("INSERT INTO contact_handles(handle, contact_id) VALUES ('+14155550101', ?)").run(bob);
+    const it = itemsForBatch(db, deps, g.id).items[0]!;
+    expect(it.recipient_name).toBe("Alice Ng"); // the name stored when she was added, not her current contact name
+    expect(it.contact_id).toBeUndefined();
+    expect(it.contact_changed).toContain("Alice Ng no longer has this number in your contacts");
+    expect(it.contact_changed).toContain("now listed under Bob Roe");
+  });
+
+  test("while the contact still owns the number there is no warning", () => {
+    const g = mk();
+    const c = seedContact(db, { name: "Ann Lee", phones: [{ e164: "+14155550101", label: "mobile" }] });
+    addMembers(db, deps, g.id, [{ contact_id: c }, { to: "4151230001", name: "Bo" }], { actor: A });
+    for (const i of itemsForBatch(db, deps, g.id).items) expect(i.contact_changed).toBeUndefined();
   });
 });

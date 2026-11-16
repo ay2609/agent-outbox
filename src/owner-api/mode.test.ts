@@ -1,6 +1,6 @@
 // POST /api/mode: the one Live / Dry run switch. One Touch ID to go live in simple mode; hardened mode never changes the root pin.
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getSettings } from "../core/store";
 import { getPinPolicy } from "./auth";
@@ -107,6 +107,47 @@ describe("POST /api/mode: live, simple mode", () => {
     expect((await h.call("POST", "/api/mode", {})).status).toBe(400);
     expect((await h.call("POST", "/api/mode", { mode: "dry" }, { cookie: null })).status).toBe(401);
     expect((await h.call("POST", "/api/mode", { mode: "dry" }, { csrf: false })).status).toBe(403);
+  });
+});
+
+describe("POST /api/mode: live, simple mode, the pin file", () => {
+  test("no approval key yet: live is set but the response says there's no key, and no pin file is written", async () => {
+    const h = makeHarness(); await h.signUpLoginOnly();
+    const r = await h.call("POST", "/api/mode", { mode: "live", reauth: await h.reauth() });
+    expect(r.status).toBe(200);
+    expect(r.json.approval_key).toBe(false);
+    expect(r.json.pin_repaired).toBe(false);
+    expect(existsSync(join(h.dir, "passkeys.json"))).toBe(false);
+    // with a key, the same response says so
+    const k = await ready();
+    expect((await k.call("POST", "/api/mode", { mode: "live", reauth: await k.reauth() })).json.approval_key).toBe(true);
+  });
+
+  test("a stale user pin is rebuilt from the database on a Live tap with no Touch ID; the policy is not loosened", async () => {
+    const h = await ready();
+    expect((await h.call("POST", "/api/mode", { mode: "live", reauth: await h.reauth() })).status).toBe(200);
+    const good = readFileSync(join(h.dir, "passkeys.json"), "utf8");
+    // another origin (port change) or a hand edit left the file out of step; nothing else needs changing
+    writeFileSync(join(h.dir, "passkeys.json"), good.replace('"origin": "', '"origin": "http://old.'));
+    const r = await h.call("POST", "/api/mode", { mode: "live" });
+    expect([r.status, r.json.policy_changed, r.json.pin_repaired]).toEqual([200, false, true]);
+    expect(readFileSync(join(h.dir, "passkeys.json"), "utf8")).toBe(good);
+    expect(audits(h, "pin.repaired").length).toBe(1);
+    // a missing file is repaired the same way
+    unlinkSync(join(h.dir, "passkeys.json"));
+    expect((await h.call("POST", "/api/mode", { mode: "live" })).json.pin_repaired).toBe(true);
+    expect(readFileSync(join(h.dir, "passkeys.json"), "utf8")).toBe(good);
+    // and an up-to-date file is left alone
+    expect((await h.call("POST", "/api/mode", { mode: "live" })).json.pin_repaired).toBe(false);
+  });
+
+  test("the repair never turns a policy on: with the policy off and the transport live, Live still needs Touch ID", async () => {
+    const h = await ready();
+    h.db.query("UPDATE settings SET value = 'live' WHERE key IN ('transport','contacts_transport')").run();
+    unlinkSync(join(h.dir, "passkeys.json"));
+    const r = await h.call("POST", "/api/mode", { mode: "live" });
+    expect([r.status, r.json.error]).toEqual([403, "reauth_required"]);
+    expect(getPinPolicy(h.db).live_allowed).toBe(false);
   });
 });
 

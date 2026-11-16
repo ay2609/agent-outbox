@@ -49,7 +49,10 @@ export function Settings({ status, reloadStatus, focus }: { status: any; reloadS
       r = await post("/api/mode", { mode: m, reauth: await reauth() });
     }
     s.set(() => ({ settings: r.settings })); await reloadStatus();
-    toast(m === "live" ? "Live. Messages you approve will send." : "Dry run. Nothing will be sent.");
+    // No approval key means no pin file, so nothing can send yet: say that instead of promising it will.
+    toast(m === "dry" ? "Dry run. Nothing will be sent."
+      : r.approval_key === false ? "Live is on, but nothing can send until you create your approval key."
+      : "Live. Messages you approve will send.");
   });
   const add = (purpose: Purpose) => run(`passkey-${purpose}`, async () => {
     const lbl = label.trim() || (purpose === "login" ? "Sign-in key" : "Approval key");
@@ -119,9 +122,11 @@ export function Settings({ status, reloadStatus, focus }: { status: any; reloadS
             <button role="radio" aria-checked={!live} className={!live ? "on" : ""} disabled={busy === "mode"} onClick={() => setMode("dry")}>Dry run</button>
           </div>
           <p className="fine" data-testid="mode-help">{live
-            ? "Approved messages really send. Each one still needs your Touch ID."
+            ? "Approved messages really send. Each one still needs your Touch ID. New contacts your agent proposes are added without Touch ID; edits need it."
             : "Approved messages are only logged. Nothing is sent."}</p>
-          {live && !installedLive && !liveBlocked && <div className="note note-warn small" data-testid="live-state">Live is on, but the pin file doesn't allow it yet, so nothing really sends. Tap Live again to fix that (Touch ID).</div>}
+          {live && !installedLive && !liveBlocked && (hasApprove
+            ? <div className="note note-warn small" data-testid="live-state">Live is on, but the pin file doesn't allow it yet, so nothing really sends. Tap Live again to fix that (Touch ID).</div>
+            : <div className="note note-warn small" data-testid="live-state">Live is on, but nothing can send yet. Create your approval key first (Passkeys, below).</div>)}
           {liveBlocked && <div className="note note-warn small" data-testid="live-state">{live ? "Live is on, but your hardened pin doesn't allow live sending, so nothing really sends." : "Live isn't available: your hardened pin doesn't allow live sending."} Open Advanced, tick "Allow live sending", then run the harden command again.</div>}
           {contactsStayDry && hardened && <p className="fine" data-testid="contacts-dry-line">Contact changes stay a dry run, because your hardened pin doesn't allow them. Advanced has the switch.</p>}
           {hardened && pin?.candidate?.installed === false && <div className="note note-warn small">Your keys or settings changed since you hardened this install. Open Advanced to run the harden command again.</div>}

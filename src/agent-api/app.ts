@@ -25,7 +25,7 @@ import {
   addDraft, audit, createBatch, getBatch, getContact, getDrafts, getSettings, findContactsByHandle,
   rowToContact, setBatchStatus, updateDraftBody, type NewDraft,
 } from "../core/store";
-import type { BatchSource, BatchStatus, Contact, ContactSetSource, Draft, ProposedContact, Warning } from "../core/types";
+import { GROUP_CONTACT_CHANGED_VAR, type BatchSource, type BatchStatus, type Contact, type ContactSetSource, type Draft, type ProposedContact, type Warning } from "../core/types";
 
 export interface AgentAppOptions {
   db?: () => Database;
@@ -945,7 +945,10 @@ export function createAgentApp(opts: AgentAppOptions = {}): Hono {
       const missing = made.items.filter((i) => !bodies.has(i.to)).map((i) => i.recipient_name || i.to);
       throw new ApiError(400, "missing_body", `give a template, or a body for every person; missing: ${missing.slice(0, 5).join(", ")}${missing.length > 5 ? ", ..." : ""}`);
     }
-    const items: Item[] = made.items.map((i) => ({ ...i, ...(bodies.has(i.to) ? { body: bodies.get(i.to) } : {}) }));
+    const items: Item[] = made.items.map(({ contact_changed, ...i }) => ({
+      ...i, ...(contact_changed ? { vars: { ...i.vars, [GROUP_CONTACT_CHANGED_VAR]: contact_changed } } : {}),
+      ...(bodies.has(i.to) ? { body: bodies.get(i.to) } : {}),
+    }));
     const r = await makeBatch(w, db, deps, { title: input.title, template: input.template, instructions: input.instructions, items, submit: input.submit ?? true });
     return c.json({ ...r, group: { id: made.group.id, name } }, 201);
   });

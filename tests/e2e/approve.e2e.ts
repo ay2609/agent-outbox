@@ -144,6 +144,7 @@ try {
   await page.getByRole("button", { name: "Sign out" }).click();
   await page.getByRole("button", { name: "Sign in with passkey" }).click();
   await page.getByRole("heading", { name: "Settings" }).waitFor({ timeout: 15000 }); // the hash route survives the reload
+  await shot("settings-top.png", { fullPage: true });
   ok(true, "signed out and logged back in");
   const loginAudit = db.query<any, []>("SELECT target FROM audit_log WHERE action = 'login' ORDER BY id DESC").get()!;
   ok(loginAudit.target === loginKey.credential_id, "the login was signed by the sign-in key, not the approval key");
@@ -266,6 +267,7 @@ try {
   await page.getByRole("heading", { name: "AI draft" }).waitFor();
   ok(page.url().endsWith("#/ai"), "the AI draft tab opens #/ai");
   ok((await page.getByTestId("prompt-card").count()) >= 10, "the AI draft page lists the copy-paste prompts");
+  await shot("ai-draft.png", { fullPage: true });
   const promptTexts = await page.getByTestId("prompt-text").allInnerTexts();
   ok(promptTexts.filter((t) => t.includes("[")).length >= 8 && promptTexts.some((t) => t.includes("my group")), "prompts have [fill-in] parts and the group prompts are there");
   ok((await page.locator("main").innerText()).includes("nothing sends until you approve with Touch ID"), "the page says nothing sends until you approve with Touch ID");
@@ -349,6 +351,7 @@ try {
   const modeAudit = JSON.parse(db.query<any, []>("SELECT details_json FROM audit_log WHERE action = 'mode.set' ORDER BY id DESC").get()!.details_json);
   ok(transports() === "live/live" && candPolicy().live_allowed === true && candPolicy().contacts_live_allowed === true, "Live (one Touch ID) set both transports live and wrote both permissions into the user pin");
   ok(modeAudit.mode === "live" && modeAudit.policy_changed === true && (await page.getByTestId("mode-help").innerText()).includes("Each one still needs your Touch ID"), "the line under the switch says each message still needs Touch ID");
+  ok((await page.getByTestId("mode-help").innerText()).includes("New contacts your agent proposes are added without Touch ID; edits need it."), "...and that new contacts are added without it while edits need it");
   ok(await livePolicy.isChecked() && await contactsPolicy.isChecked(), "...and the two Live permissions in Advanced are ticked");
   await modeSwitch.getByRole("radio", { name: "Dry run" }).click();
   await page.getByText(/Dry run\. Nothing will be sent/).waitFor({ timeout: 8000 });
@@ -665,6 +668,20 @@ try {
       await page.waitForTimeout(300);
       ok((await cards.count()) === 1, "a narrower search replaces the list; nothing stale is appended");
       db.query("DELETE FROM contacts WHERE id LIKE 'c-page-%'").run();
+      // A page that is all repeats adds no card; the next page must still load by itself (the observer re-arms per page, not per new card).
+      const people = (ids: string[]) => ids.map((id) => ({ id, source: "manual", display_name: `Dup ${id}`, phones: [], emails: [], org: "" }));
+      const dupRoute = /\/api\/contacts\?/;
+      await page.route(dupRoute, async (route) => {
+        const off = Number(new URL(route.request().url()).searchParams.get("offset") ?? 0);
+        const body = off === 0 ? { contacts: people(["x1", "x2", "x3"]), offset: 0, has_more: true }
+          : off === 3 ? { contacts: people(["x1", "x2", "x3"]), offset: 3, has_more: true }
+          : { contacts: people(["x4"]), offset: off, has_more: false };
+        await route.fulfill({ json: { total: 4, matched: 4, limit: 100, ...body } });
+      });
+      await page.goto(`${B}/#/contacts`);
+      await page.reload();
+      ok(await cardsReach(4, 6000) && (await cards.count()) === 4 && (await more.count()) === 0, "a page that is all repeats doesn't stall the scroll: the next page loads on its own (4 contacts, no Show more)");
+      await page.unroute(dupRoute);
     }
     // Contacts tab -> Changes
     await page.goto(`${B}/#/contacts`);

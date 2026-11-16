@@ -20,7 +20,7 @@ import {
 } from "./approval";
 import {
   type FailureLimiter, listPasskeys, normalizePolicy, passkeyCount, registerVerify, registerOptions, sessionAgeMs, setPinPolicy, verifyLoginAssertion,
-  writePinFiles, getPinPolicy,
+  writePinFiles, getPinPolicy, pinText,
 } from "./auth";
 import { loadB, tryLint } from "./integrations";
 import { assertionSchema, attestationSchema, readJson, readJsonOptional, reauthSchema } from "./schemas";
@@ -388,7 +388,8 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
   // Sending itself is unchanged: every message still needs a Touch ID approval of its exact text.
   app.post("/api/mode", async (c) => {
     const { mode, reauth } = await readJson(c, z.object({ mode: z.enum(["live", "dry"]), reauth: reauthSchema.optional() }).strict());
-    const finish = (extra: object) => c.json({ settings: getSettings(db()), status: buildStatus(cfg, db()).pin, ...extra });
+    // `approval_key` false: no approval key exists, so no pin file can exist and nothing can really send yet.
+    const finish = (extra: object) => c.json({ settings: getSettings(db()), status: buildStatus(cfg, db()).pin, approval_key: passkeyCount(db(), "approve") > 0, ...extra });
     if (mode === "dry") {
       tx(() => {
         const cur = getSettings(db());
@@ -425,7 +426,15 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
       });
       if (!hardened) writePinFiles(cfg, db());
     }
-    return finish({ contacts: contactsOk ? "live" : "dry_pin", policy_changed: policyChange });
+    // Simple mode: a missing or stale user pin (hand-edited, or left from before a port change) is rebuilt from the database on
+    // any Live tap. That only restores what the dashboard already holds, so it loosens nothing and needs no Touch ID.
+    let pinRepaired = false;
+    if (!hardened && passkeyCount(db(), "approve") > 0) {
+      let onDisk: string | null = null;
+      try { onDisk = readFileSync(cfg.userPinFile, "utf8"); } catch { /* not written yet */ }
+      if (onDisk !== pinText(cfg, db())) { writePinFiles(cfg, db()); pinRepaired = true; audit(db(), OWNER, "pin.repaired", null, { via: "mode" }); }
+    }
+    return finish({ contacts: contactsOk ? "live" : "dry_pin", policy_changed: policyChange, pin_repaired: pinRepaired });
   });
 
   // ---------- imports  ----------

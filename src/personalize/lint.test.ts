@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { newId, nowIso } from "../db";
 import { addDraft, createBatch, getDrafts, setBatchStatus } from "../core/store";
-import type { Draft, Warning, WarningCode } from "../core/types";
+import { GROUP_CONTACT_CHANGED_VAR, type Draft, type Warning, type WarningCode } from "../core/types";
 import { memDb } from "../ingest/testutil";
 import { dupKey, lintBatch, lintDraft, relintOpenBatches, type LintContext } from "./lint";
 
@@ -118,6 +118,15 @@ describe("lintDraft: pure rules", () => {
     expect(w.find((x) => x.code === "ambiguous_contact")!.message).toContain("Bob Jones");
     expect(codes(lintDraft({ ...d, proposed_contact: { given_name: "", family_name: "", phones: [], emails: [] } }, { importRows }))).not.toContain("new_contact");
     expect(has(draft({ import_id: "i1", import_row: 4 }), "ambiguous_contact", { importRows })).toBe(false);
+  });
+
+  describe("group_contact_changed", () => {
+    test("the group batch's note becomes the warning, word for word; no note, no warning", () => {
+      const msg = "Alice no longer has this number in your contacts (it is now listed under Bob); check it still reaches the right person";
+      const ws = lintDraft(draft({ vars: { [GROUP_CONTACT_CHANGED_VAR]: msg } }), {});
+      expect(ws.filter((x) => x.code === "group_contact_changed")).toEqual([{ code: "group_contact_changed", message: msg }]);
+      expect(has(draft({ vars: {} }), "group_contact_changed")).toBe(false);
+    });
   });
 
   describe("link_in_first_message", () => {
@@ -376,7 +385,7 @@ describe("lintBatch", () => {
   });
 
   test("every WarningCode is produced by some rule (guards against a code silently going unused)", () => {
-    const all: WarningCode[] = ["unresolved_var", "empty_var", "duplicate_recipient", "pending_elsewhere", "recently_messaged", "invalid_handle", "non_mobile", "too_long", "identical_to_template", "empty_body", "new_contact", "ambiguous_contact", "link_in_first_message"];
+    const all: WarningCode[] = ["unresolved_var", "empty_var", "duplicate_recipient", "pending_elsewhere", "recently_messaged", "invalid_handle", "non_mobile", "too_long", "identical_to_template", "empty_body", "new_contact", "ambiguous_contact", "link_in_first_message", "group_contact_changed"];
     const importRows = new Map([["i#0", { match: "ambiguous" as const, issues: [] }]]);
     const ctx: LintContext = {
       template: "Hi {{org}}", instructions: "personalise", duplicateCounts: new Map([[dupKey("bad", "Hi {{org}} http://x.com " + "x".repeat(1100)), 2]]), pendingElsewhere: new Set(["bad"]),
@@ -389,6 +398,7 @@ describe("lintBatch", () => {
     feed(draft({ body: "", contact_id: null, import_id: "i", import_row: 0 }));
     feed(draft({ body: "Hi ", vars: { org: "" } }));
     feed(draft({ body: ctx.template! }));
+    feed(draft({ body: "Hi", vars: { [GROUP_CONTACT_CHANGED_VAR]: "Ann no longer has this number in your contacts" } }));
     expect([...seen].sort()).toEqual([...all].sort());
   });
 });

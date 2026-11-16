@@ -16,13 +16,13 @@ const HELD = ["unresolved_var", "duplicate_recipient"];
 const WARNING_PHRASE: Record<string, string> = {
   unresolved_var: "with an unfilled field", empty_var: "with an empty field", duplicate_recipient: "exact duplicates", pending_elsewhere: "pending in another batch",
   recently_messaged: "messaged recently", invalid_handle: "with an invalid number", non_mobile: "not a mobile", too_long: "very long",
-  identical_to_template: "same as the template", empty_body: "empty", ambiguous_contact: "with an ambiguous contact", link_in_first_message: "have a link",
+  identical_to_template: "same as the template", empty_body: "empty", ambiguous_contact: "with an ambiguous contact", link_in_first_message: "have a link", group_contact_changed: "whose contact changed",
 };
 const WARNING_LABEL: Record<string, string> = {
   unresolved_var: "Unfilled field", empty_var: "Empty field", duplicate_recipient: "Duplicate", pending_elsewhere: "Pending elsewhere",
   recently_messaged: "Messaged recently", invalid_handle: "Invalid number", non_mobile: "Not a mobile", too_long: "Very long",
   identical_to_template: "Same as template", empty_body: "Empty", new_contact: "New contact", ambiguous_contact: "Ambiguous contact",
-  link_in_first_message: "Has a link",
+  link_in_first_message: "Has a link", group_contact_changed: "Contact changed",
 };
 const warningsOf = (d: Draft): { code: string; message: string }[] => (d.warnings ?? []).filter((w: any) => w.code !== "new_contact");
 const isHeld = (d: Draft): boolean => (d.warnings ?? []).some((w: any) => HELD.includes(w.code));

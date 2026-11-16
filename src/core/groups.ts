@@ -278,8 +278,9 @@ export function removeMembers(db: Database, deps: GroupDeps, ref: string, o: { h
 
 /** Items for the agent API's batch resolver (POST /v1/batches' items), one per member, optionally only some of them.
  *  The linked contact is passed along only while it still owns the handle (a sync may have changed its numbers).
- *  The name is the contact's current name when linked, else the one stored when the member was added. */
-export function itemsForBatch(db: Database, deps: GroupDeps, ref: string, o: { only?: string[] } = {}): { group: Group; items: { to: string; contact_id?: string; recipient_name: string; vars: Record<string, string> }[] } {
+ *  The name is the contact's current name while it still owns the handle, else the one stored when the member was added;
+ *  `contact_changed` then carries the warning for the review (the old number may now belong to someone else). */
+export function itemsForBatch(db: Database, deps: GroupDeps, ref: string, o: { only?: string[] } = {}): { group: Group; items: { to: string; contact_id?: string; recipient_name: string; vars: Record<string, string>; contact_changed?: string }[] } {
   const g = requireGroup(db, ref);
   let members = listMembers(db, g.id);
   if (o.only) {
@@ -294,12 +295,20 @@ export function itemsForBatch(db: Database, deps: GroupDeps, ref: string, o: { o
     members = members.filter((m) => want.has(m.handle));
   }
   const owns = db.query("SELECT 1 FROM contact_handles WHERE contact_id = ? AND handle = ?");
+  const ownersNow = db.query("SELECT DISTINCT c.display_name AS name FROM contact_handles h JOIN contacts c ON c.id = h.contact_id WHERE h.handle = ? AND c.display_name != ''");
   return {
     group: g,
-    items: members.map((m) => ({
-      to: m.handle,
-      ...(m.contact && owns.get(m.contact.id, m.handle) ? { contact_id: m.contact.id } : {}),
-      recipient_name: m.contact?.display_name || m.name, vars: m.vars,
-    })),
+    items: members.map((m) => {
+      const still = !!m.contact && !!owns.get(m.contact.id, m.handle);
+      if (!m.contact || still) {
+        return { to: m.handle, ...(still ? { contact_id: m.contact!.id } : {}), recipient_name: m.contact?.display_name || m.name, vars: m.vars };
+      }
+      const who = m.name || m.contact.display_name || "This person";
+      const now = (ownersNow.all(m.handle) as { name: string }[]).map((r) => r.name);
+      return {
+        to: m.handle, recipient_name: m.name, vars: m.vars,
+        contact_changed: `${who} no longer has this number in your contacts${now.length ? ` (it is now listed under ${now.join(" and ")})` : ""}; check it still reaches the right person`,
+      };
+    }),
   };
 }

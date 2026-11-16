@@ -14,6 +14,7 @@ function useContactPages(q: string) {
   const [items, setItems] = useState<any[]>([]);
   const [counts, setCounts] = useState<{ total: number; matched: number; more: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [pages, setPages] = useState(0);   // pages that arrived (not errors): the "load more" observer re-arms on each, even when dedupe added nothing
   const [error, setError] = useState<string | null>(null);
   const gen = useRef(0);          // bumped on every new query; responses from older ones are ignored
   const busy = useRef(false);
@@ -27,7 +28,7 @@ function useContactPages(q: string) {
       next.current = r.offset + r.contacts.length;
       // Contacts can change between pages and shift the offsets; never show one twice.
       setItems((prev) => { const have = new Set(prev.map((c) => c.id)); return [...prev, ...r.contacts.filter((c) => !have.has(c.id))]; });
-      setCounts({ total: r.total, matched: r.matched, more: r.has_more }); setError(null);
+      setCounts({ total: r.total, matched: r.matched, more: r.has_more }); setError(null); setPages((n) => n + 1);
     } catch (e) { if (g === gen.current) setError(errText(e)); }
     finally { if (g === gen.current) { busy.current = false; setLoading(false); } }
   }, [q]);
@@ -40,7 +41,7 @@ function useContactPages(q: string) {
   }, [fetchPage]);
 
   const more = useCallback(() => { if (!busy.current && counts?.more) void fetchPage(gen.current, next.current); }, [fetchPage, counts?.more]);
-  return { items, counts, loading, error, more };
+  return { items, counts, loading, error, more, pages };
 }
 
 export function Contacts() {
@@ -49,14 +50,15 @@ export function Contacts() {
   const book = useContactPages(dq);
   const pending = useLoad<{ pending: any[] }>("/api/contacts/pending");
   const sentinel = useRef<HTMLDivElement>(null);
-  // Re-observed after every page, so a sentinel that is still on screen (a short list, a tall window) keeps loading.
+  // Re-observed after every page that arrives (not after every new item: a page that is all repeats adds none, and the
+  // sentinel, still on screen, would then never fire again), so a short list or a tall window keeps loading.
   useEffect(() => {
     const el = sentinel.current;
     if (!el || !book.counts?.more || typeof IntersectionObserver === "undefined") return;
     const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) book.more(); }, { rootMargin: "400px" });
     io.observe(el);
     return () => io.disconnect();
-  }, [book.counts?.more, book.items.length, book.more]);
+  }, [book.counts?.more, book.pages, book.more]);
   const [sync, setSync] = useState("");
   const requestSync = async () => {
     try {

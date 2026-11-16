@@ -1,7 +1,7 @@
 // Lint warnings for drafts. lintDraft is pure; lintBatch gathers the context from the DB and writes warnings_json.
 import type { Database } from "bun:sqlite";
 import { getBatch, getDrafts } from "../core/store";
-import type { Draft, DraftStatus, MatchStatus, Warning } from "../core/types";
+import { GROUP_CONTACT_CHANGED_VAR, type Draft, type DraftStatus, type MatchStatus, type Warning } from "../core/types";
 import { normalizeHandle } from "../ingest/normalize";
 import type { ImportIssue } from "../ingest/types";
 import { renderTemplate, varsWithFallback, listVars, lookupVar } from "./template";
@@ -80,6 +80,10 @@ export function lintDraft(draft: Draft, ctx: LintContext = {}): Warning[] {
     out.push(w("ambiguous_contact", `May match an existing contact${names.length ? `: ${[...new Set(names)].join(", ")}` : ""}; pick one or create a new contact`));
   }
   if (!draft.contact_id && draft.proposed_contact && row?.match !== "ambiguous") out.push(w("new_contact", "Not in your contacts yet"));
+
+  // A saved group's member whose contact no longer has this number: the name on the draft may not be who owns it now.
+  const changed = draft.vars?.[GROUP_CONTACT_CHANGED_VAR];
+  if (changed) out.push(w("group_contact_changed", changed));
 
   if (!ctx.priorSends?.has(draft.handle) && URL_RE.test(body)) {
     out.push(w("link_in_first_message", "A link in a first message to someone new is likely to be filtered as spam"));
