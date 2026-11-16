@@ -17,7 +17,7 @@ import { makeHarness, seedBatch, type Harness } from "./testkit";
 const sha256 = (s: string | Uint8Array) => createHash("sha256").update(s).digest();
 const hex = (s: string) => sha256(s).toString("hex");
 
-/** A signed-up owner plus a set with one automatic create and two edits (Ann, Ben) in review. */
+/** A signed-up owner plus a set with one new contact and two edits (Ann, Ben), all three waiting in review. */
 async function ready() {
   const h = makeHarness();
   await h.signUp();
@@ -70,12 +70,13 @@ describe("list, detail, reject, cancel", () => {
     const l = await h.call("GET", "/api/contact-changes");
     expect(l.status).toBe(200);
     expect(l.json.sets).toHaveLength(1);
-    expect(l.json.sets[0]).toMatchObject({ id: setId, title: "Book club members", status: "review", source: "mcp", counts: { auto_queued: 1, review: 2 } });
+    expect(l.json.sets[0]).toMatchObject({ id: setId, title: "Book club members", status: "review", source: "mcp", counts: { review: 3 } });
     expect((await h.call("GET", "/api/contact-changes?status=review")).json.sets).toHaveLength(1);
     expect((await h.call("GET", "/api/contact-changes?status=done")).json.sets).toHaveLength(0);
     expect((await h.call("GET", "/api/contact-changes?status=bogus")).status).toBe(400);
     const d = await h.call("GET", `/api/contact-changes/${setId}`);
-    expect(d.json.changes.map((c: any) => [c.kind, c.status])).toEqual([["create", "auto_queued"], ["update", "review"], ["update", "review"]]);
+    expect(d.json.changes.map((c: any) => [c.kind, c.status])).toEqual([["create", "review"], ["update", "review"], ["update", "review"]]);
+    expect(d.json.changes[0]).toMatchObject({ kind: "create", requires_approval: true, note: "new contact", before: null });
     const edit = d.json.changes.find((c: any) => c.id === annEdit);
     expect(edit).toMatchObject({ payload: { set: { given_name: "Ann 📚" }, add_groups: ["Book club"] }, covered_by: null, undo_blocked: "not applied" });
     expect(edit.payload_json).toBeUndefined(); // the signed bytes only come with the approval options
@@ -88,25 +89,29 @@ describe("list, detail, reject, cancel", () => {
     expect((await h.call("POST", `/api/contact-changes/${setId}/cancel`, {}, { csrf: false })).status).toBe(403);
   });
 
-  test("reject sets review -> rejected (audited); the set follows; an auto-queued or applied change can't be rejected; cancel stops everything unapplied", async () => {
+  test("reject sets review -> rejected (audited); the set follows; an applied change can't be rejected; cancel stops everything unapplied", async () => {
     const { h, setId, create, annEdit, benEdit } = await ready();
     const r = await h.call("POST", `/api/contact-changes/${setId}/reject`, { change_ids: [annEdit] });
     expect(r.json).toMatchObject({ ok: true, rejected: 1 });
     expect(status(h, annEdit)).toBe("rejected");
     expect(setStatus(h, setId)).toBe("review"); // Ben's edit is still waiting
     expect((await h.call("POST", `/api/contact-changes/${setId}/reject`, { change_ids: [annEdit] })).json.error).toBe("change_not_rejectable");
-    expect((await h.call("POST", `/api/contact-changes/${setId}/reject`, { change_ids: [create] })).json.error).toBe("change_not_rejectable");
     expect((await h.call("POST", `/api/contact-changes/${setId}/reject`, { change_ids: ["nope"] })).status).toBe(400);
     expect((await h.call("POST", `/api/contact-changes/${setId}/reject`, { change_ids: [] })).status).toBe(400);
     await h.call("POST", `/api/contact-changes/${setId}/reject`, { change_ids: [benEdit] });
-    expect(setStatus(h, setId)).toBe("drafting"); // only the automatic create is left
-    expect(h.db.query("SELECT actor, target FROM audit_log WHERE action = 'contact_changes.reject'").all()).toEqual([{ actor: "owner", target: setId }, { actor: "owner", target: setId }]);
+    expect(setStatus(h, setId)).toBe("review"); // the new contact is still waiting for the owner
+    expect((await h.call("POST", `/api/contact-changes/${setId}/reject`, { change_ids: [create] })).json).toMatchObject({ ok: true, rejected: 1 }); // a new contact is rejected like an edit
+    expect(status(h, create)).toBe("rejected");
+    expect(setStatus(h, setId)).toBe("cancelled"); // everything was rejected
+    expect(h.db.query("SELECT actor, target FROM audit_log WHERE action = 'contact_changes.reject'").all()).toEqual([{ actor: "owner", target: setId }, { actor: "owner", target: setId }, { actor: "owner", target: setId }]);
 
     const x = await ready();
+    markApplied(x.h, x.create); // already written to Contacts: it can't be rejected or cancelled any more
+    expect((await x.h.call("POST", `/api/contact-changes/${x.setId}/reject`, { change_ids: [x.create] })).json.error).toBe("change_not_rejectable");
     const c = await x.h.call("POST", `/api/contact-changes/${x.setId}/cancel`);
-    expect(c.json).toMatchObject({ ok: true, rejected: 3, revoked_approvals: 0 });
+    expect(c.json).toMatchObject({ ok: true, rejected: 2, revoked_approvals: 0 });
     expect(setStatus(x.h, x.setId)).toBe("cancelled");
-    expect(x.h.db.query("SELECT status FROM contact_changes WHERE set_id = ?").all(x.setId)).toEqual([{ status: "rejected" }, { status: "rejected" }, { status: "rejected" }]);
+    expect(x.h.db.query("SELECT status FROM contact_changes WHERE set_id = ?").all(x.setId)).toEqual([{ status: "applied" }, { status: "rejected" }, { status: "rejected" }]);
     expect((await x.h.call("POST", `/api/contact-changes/${x.setId}/cancel`)).json.error).toBe("set_closed");
     expect((await approveOptions(x.h, x.setId, [x.annEdit])).json.error).toBe("set_cancelled");
   });
@@ -115,7 +120,7 @@ describe("list, detail, reject, cancel", () => {
     const { h, setId, annEdit } = await ready();
     expect((await approve(h, setId, [annEdit])).verify.status).toBe(200);
     const c = await h.call("POST", `/api/contact-changes/${setId}/cancel`);
-    expect(c.json).toMatchObject({ rejected: 3, revoked_approvals: 1 });
+    expect(c.json).toMatchObject({ rejected: 3, revoked_approvals: 1 }); // the new contact, Ann's edit and Ben's edit
     expect(status(h, annEdit)).toBe("rejected");
     expect((h.db.query("SELECT revoked_at FROM contact_approvals").get() as any).revoked_at).toBeTruthy();
   });
@@ -158,13 +163,14 @@ describe("contacts manifest and approval", () => {
     expect((await approveOptions(h, setId, [annEdit])).json.manifest.transport).toBe("live");
   });
 
-  test("options refuse: nothing picked, a change from another set, an auto-queued create, an unknown set, no approval passkey", async () => {
+  test("options refuse: nothing picked, a change from another set, a leftover auto_queued row, an unknown set, no approval passkey", async () => {
     const { h, setId, create, annEdit } = await ready();
     expect((await approveOptions(h, setId, [])).status).toBe(400);
     expect((await approveOptions(h, setId, ["nope"])).status).toBe(400);
+    h.db.query("UPDATE contact_changes SET status = 'auto_queued', requires_approval = 0 WHERE id = ?").run(create); // an old row that slipped past the open-time migration
     const auto = await approveOptions(h, setId, [create]);
     expect(auto.status).toBe(409); expect(auto.json.error).toBe("change_not_approvable");
-    expect(auto.json.message).toMatch(/added automatically/);
+    expect(auto.json.message).toMatch(/auto_queued can't be approved/);
     expect((await approveOptions(h, "nope", [annEdit])).status).toBe(404);
     const other = await ready();
     expect((await approveOptions(h, other.setId, [annEdit])).status).toBe(404); // different harness DB: set unknown there
@@ -177,7 +183,7 @@ describe("contacts manifest and approval", () => {
     const { h, setId, create, annEdit, benEdit } = await ready();
     const { opt, verify } = await approve(h, setId, [annEdit, benEdit]);
     expect(verify.status).toBe(200);
-    expect(verify.json).toMatchObject({ ok: true, count: 2, transport: "dry", credential_id: h.auth.id, set: { id: setId, status: "approved" } });
+    expect(verify.json).toMatchObject({ ok: true, count: 2, transport: "dry", credential_id: h.auth.id, set: { id: setId, status: "review" } });
     const row = h.db.query("SELECT * FROM contact_approvals").get() as any;
     expect(row).toMatchObject({ id: opt.json.manifest.approval_id, set_id: setId, credential_id: h.auth.id, not_after: opt.json.manifest.not_after, revoked_at: null });
     expect(row.manifest).toBe(JSON.stringify(opt.json.manifest));
@@ -186,8 +192,8 @@ describe("contacts manifest and approval", () => {
     for (const f of ["authenticator_data_b64", "client_data_json_b64", "signature_b64"]) expect(row[f]).toMatch(/^[A-Za-z0-9_-]+$/);
     // the client data's challenge is exactly sha256 of the stored manifest
     expect(JSON.parse(Buffer.from(row.client_data_json_b64, "base64url").toString()).challenge).toBe(sha256(row.manifest).toString("base64url"));
-    expect([status(h, annEdit), status(h, benEdit), status(h, create)]).toEqual(["approved", "approved", "auto_queued"]);
-    expect(setStatus(h, setId)).toBe("approved");
+    expect([status(h, annEdit), status(h, benEdit), status(h, create)]).toEqual(["approved", "approved", "review"]);
+    expect(setStatus(h, setId)).toBe("review"); // the new contact still waits
     expect((h.db.query("SELECT counter FROM passkeys WHERE credential_id = ?").get(h.auth.id) as any).counter).toBe(h.auth.counter);
     expect(h.db.query("SELECT actor, target FROM audit_log WHERE action = 'contact_approval.create'").all()).toEqual([{ actor: "owner", target: opt.json.manifest.approval_id }]);
     // approving the same changes again while the approval is live and unused is refused
@@ -313,13 +319,14 @@ describe("contacts manifest and approval", () => {
 
 describe("Stop revokes contact approvals", () => {
   test("Stop revokes the live contacts approval, returns its changes to review, and Undo-stop restores them", async () => {
-    const { h, setId, annEdit, benEdit } = await ready();
-    await approve(h, setId, [annEdit, benEdit]);
+    const { h, setId, create, annEdit, benEdit } = await ready();
+    await approve(h, setId, [create, annEdit, benEdit]);
     expect(setStatus(h, setId)).toBe("approved");
     const s = await h.call("POST", "/api/stop");
-    expect(s.json).toMatchObject({ ok: true, revoked_contact_approvals: 1, reverted_contact_changes: 2 });
+    expect(s.json).toMatchObject({ ok: true, revoked_contact_approvals: 1, reverted_contact_changes: 3 });
     expect((h.db.query("SELECT revoked_at FROM contact_approvals").get() as any).revoked_at).toBeTruthy();
     expect([status(h, annEdit), status(h, benEdit), setStatus(h, setId)]).toEqual(["review", "review", "review"]);
+    expect(status(h, create)).toBe("review");
     expect(h.db.query("SELECT action FROM audit_log WHERE action = 'contact_approval.revoke'").all()).toHaveLength(1);
     // the revoked approval no longer covers anything: the changes can be approved again
     expect((await approve(h, setId, [annEdit])).verify.status).toBe(200);
@@ -327,44 +334,33 @@ describe("Stop revokes contact approvals", () => {
   });
 
   test("Stop undo within the window restores the contacts approval and its changes", async () => {
-    const { h, setId, annEdit, benEdit } = await ready();
-    await approve(h, setId, [annEdit, benEdit]);
+    const { h, setId, create, annEdit, benEdit } = await ready();
+    await approve(h, setId, [create, annEdit, benEdit]);
     const s = await h.call("POST", "/api/stop");
     const u = await h.call("POST", "/api/stop/undo", { stop_id: s.json.stop_id });
-    expect(u.json).toMatchObject({ ok: true, restored_contact_approvals: 1, restored_contact_changes: 2 });
+    expect(u.json).toMatchObject({ ok: true, restored_contact_approvals: 1, restored_contact_changes: 3 });
     expect((h.db.query("SELECT revoked_at FROM contact_approvals").get() as any).revoked_at).toBeNull();
-    // the queued auto create was held by Stop and Undo-stop does not bring it back, so the set still has one change in review
-    expect([status(h, annEdit), status(h, benEdit), setStatus(h, setId)]).toEqual(["approved", "approved", "review"]);
+    expect([status(h, create), status(h, annEdit), status(h, benEdit), setStatus(h, setId)]).toEqual(["approved", "approved", "approved", "approved"]);
   });
 
-  test("Stop also holds every queued auto create: review, requires approval, note 'held by Stop', audited; an applied or started create is untouched; Resume does not put it back", async () => {
+  test("Stop has nothing to hold for new contacts any more: they stay in review, the response has no held_contact_creates, and a create is approved after Resume like an edit", async () => {
     const { h, setId, create, annEdit } = await ready();
-    const other = proposeContactChanges(h.db, { title: "Other", created_by: "agent:t", source: "mcp",
-      creates: [validateCreate({ given_name: "Zed", family_name: "Zimmer", phones: ["+14155550188"] }), validateCreate({ given_name: "Yan", family_name: "Young", phones: ["+14155550187"] })], updates: [] });
-    expect(other.status).toBe("drafting");
-    const [started, queued] = other.changes.map((c) => c.id) as [string, string];
-    markApplied(h, started); // the executor already has a record for this one
-    h.db.query("UPDATE contact_changes SET status = 'auto_queued' WHERE id = ?").run(started); // (still queued by status, but consumed)
     const s = await h.call("POST", "/api/stop");
-    expect(s.json).toMatchObject({ ok: true, held_contact_creates: 2 });
-    for (const id of [create, queued]) {
-      expect(h.db.query("SELECT status, requires_approval, note, kind FROM contact_changes WHERE id = ?").get(id)).toEqual({ status: "review", requires_approval: 1, note: "held by Stop", kind: "create" });
-    }
-    expect(status(h, started)).toBe("auto_queued"); // consumed rows are the executor's
-    expect(setStatus(h, setId)).toBe("review");
-    expect(setStatus(h, other.set_id)).toBe("review"); // was 'drafting'
-    const a = h.db.query("SELECT details_json FROM audit_log WHERE action = 'contact_changes.hold'").all() as any[];
-    expect(a).toHaveLength(1);
-    expect(JSON.parse(a[0].details_json)).toMatchObject({ count: 2 });
-    // Resume leaves them in review; the owner approves them from Changes if wanted
-    await h.call("POST", "/api/resume");
+    expect(s.json).toMatchObject({ ok: true, revoked_contact_approvals: 0 });
+    expect(s.json).not.toHaveProperty("held_contact_creates");
     expect(status(h, create)).toBe("review");
-    expect(status(h, queued)).toBe("review");
+    expect(h.db.query("SELECT action FROM audit_log WHERE action = 'contact_changes.hold'").all()).toHaveLength(0);
+    expect(JSON.parse((h.db.query("SELECT details_json FROM audit_log WHERE action = 'stop'").get() as any).details_json)).not.toHaveProperty("held_contact_creates");
+    await h.call("POST", "/api/resume");
     const ok = await approve(h, setId, [create, annEdit]);
     expect(ok.verify.status).toBe(200);
     expect(status(h, create)).toBe("approved");
-    // Stop with nothing queued reports 0
-    expect((await h.call("POST", "/api/stop")).json.held_contact_creates).toBe(0);
+    // the signed manifest lists the create like any other item: kind, no target, hash of the exact payload
+    const m = JSON.parse((h.db.query("SELECT manifest FROM contact_approvals").get() as any).manifest) as ContactManifest;
+    const item = m.contact_items.find((i) => i.change_id === create)!;
+    expect(item).toEqual({ change_id: create, kind: "create", target_macos_id: null, payload_sha256: hex((h.db.query("SELECT payload_json FROM contact_changes WHERE id = ?").get(create) as any).payload_json) });
+    expect((await h.call("POST", "/api/stop")).json).toMatchObject({ revoked_contact_approvals: 1, reverted_contact_changes: 2 });
+    expect(status(h, create)).toBe("review");
   });
 
   test("a change the executor already consumed is not dragged back to review by Stop", async () => {
@@ -540,7 +536,7 @@ describe("contacts transport and the pin's contacts_live_allowed", () => {
     const { h } = await ready();
     let s = (await h.call("GET", "/api/status")).json;
     expect(s).toMatchObject({ contacts_transport: "dry", pin_contacts_live_allowed: false });
-    expect(s.counts).toMatchObject({ contact_sets_review: 1, contact_changes_review: 2 });
+    expect(s.counts).toMatchObject({ contact_sets_review: 1, contact_changes_review: 3 });
     installPin(h, { live_allowed: true }); // a pin from before v4
     s = (await h.call("GET", "/api/status")).json;
     expect(s.pin.root).toMatchObject({ live_allowed: true, contacts_live_allowed: false });

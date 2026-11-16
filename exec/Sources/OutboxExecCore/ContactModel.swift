@@ -115,11 +115,6 @@ public enum ContactMath {
         return c
     }
 
-    /// An auto create needs BOTH names, and each must have a letter or digit left once emoji and symbols are removed.
-    public static func hasTwoNames(_ p: CreatePayload) -> Bool {
-        !NameSkeleton.of(p.given).isEmpty && !NameSkeleton.of(p.family).isEmpty
-    }
-
     // Minimal JSON encoding for the fingerprint, done by hand so the exact bytes are never up to a serializer's whim.
     static func jsonString(_ s: String) -> String {
         var out = "\""
@@ -137,88 +132,6 @@ public enum ContactMath {
         return out + "\""
     }
     static func jsonArray(_ a: [String]) -> String { "[" + a.map(jsonString).joined(separator: ",") + "]" }
-}
-
-/// Name "skeleton" (same idea as src/core/name-skeleton.ts): what a name looks like once the tricks that make two
-/// different strings read the same are removed. NFKC, drop ZWJ / VS16 / invisible characters and every emoji and symbol scalar,
-/// map common Cyrillic and Greek look-alikes to Latin, then fold case and diacritics and collapse whitespace.
-public enum NameSkeleton {
-    static let confusables: [Unicode.Scalar: String] = {
-        let pairs: [(String, String)] = [
-            // Cyrillic, small then capital
-            ("а", "a"), ("в", "b"), ("е", "e"), ("к", "k"), ("м", "m"), ("н", "h"), ("о", "o"), ("р", "p"), ("с", "c"), ("т", "t"),
-            ("у", "y"), ("х", "x"), ("і", "i"), ("ј", "j"), ("ѕ", "s"), ("ԁ", "d"), ("ԛ", "q"), ("ԝ", "w"),
-            ("А", "a"), ("В", "b"), ("Е", "e"), ("К", "k"), ("М", "m"), ("Н", "h"), ("О", "o"), ("Р", "p"), ("С", "c"), ("Т", "t"),
-            ("У", "y"), ("Х", "x"), ("І", "i"), ("Ј", "j"), ("Ѕ", "s"), ("Ԁ", "d"), ("Ԛ", "q"), ("Ԝ", "w"),
-            // Greek
-            ("α", "a"), ("β", "b"), ("ε", "e"), ("η", "n"), ("ι", "i"), ("κ", "k"), ("μ", "u"), ("ν", "v"), ("ο", "o"), ("ρ", "p"),
-            ("τ", "t"), ("υ", "u"), ("χ", "x"),
-            ("Α", "a"), ("Β", "b"), ("Ε", "e"), ("Ζ", "z"), ("Η", "h"), ("Ι", "i"), ("Κ", "k"), ("Μ", "m"), ("Ν", "n"), ("Ο", "o"),
-            ("Ρ", "p"), ("Τ", "t"), ("Υ", "y"), ("Χ", "x"),
-        ]
-        var m: [Unicode.Scalar: String] = [:]
-        for (k, v) in pairs { if let u = k.unicodeScalars.first { m[u] = v } }
-        return m
-    }()
-
-    public static func of(_ s: String) -> String {
-        var kept = String.UnicodeScalarView()
-        // canonical decomposition first, so an accented look-alike (Greek alpha with tonos) still reaches its table entry
-        for u in s.precomposedStringWithCompatibilityMapping.decomposedStringWithCanonicalMapping.unicodeScalars {
-            if u.value == 0x200D || u.value == 0xFE0F || ContactPayloadParser.invisible(u) { continue }
-            let p = u.properties
-            if p.isEmoji && p.isEmojiPresentation { continue }
-            switch p.generalCategory {
-            case .otherSymbol, .modifierSymbol, .mathSymbol: continue
-            default: break
-            }
-            if let m = confusables[u] { kept.append(contentsOf: m.unicodeScalars) } else { kept.append(u) }
-        }
-        let folded = String(kept).folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
-        return folded.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
-    }
-}
-
-/// Skeletons of every existing card's names, built once per pass from one live read of the address book.
-public struct NameIndex {
-    var full = Set<String>(), given = Set<String>(), nick = Set<String>()
-    public init(_ cards: [ContactCard] = []) { for c in cards { add(given: c.given, family: c.family, nickname: c.nickname) } }
-
-    public mutating func add(given g: String, family f: String, nickname n: String) {
-        let full = NameSkeleton.of(g + " " + f), gs = NameSkeleton.of(g), ns = NameSkeleton.of(n)
-        if !full.isEmpty { self.full.insert(full) }
-        if !gs.isEmpty { given.insert(gs) }
-        if !ns.isEmpty { nick.insert(ns) }
-    }
-
-    /// The new contact reads as someone already there: its "given family" matches a card's, or its nickname matches a card's
-    /// full name, given name alone, or nickname.
-    public func collides(_ p: CreatePayload) -> Bool {
-        let full = NameSkeleton.of(p.given + " " + p.family)
-        if !full.isEmpty && self.full.contains(full) { return true }
-        let n = NameSkeleton.of(p.nickname)
-        return !n.isEmpty && (self.full.contains(n) || given.contains(n) || nick.contains(n))
-    }
-}
-
-/// Every Contacts group name that exists, for "joins an existing group".
-public struct GroupIndex {
-    var exact = Set<String>(), skeletons = Set<String>()
-    public init(_ names: [String] = []) {
-        for n in names { add(n) }
-        skeletons.insert(NameSkeleton.of(ContactMath.importsGroup))
-    }
-    public mutating func add(_ n: String) { exact.insert(n); let s = NameSkeleton.of(n); if !s.isEmpty { skeletons.insert(s) } }
-
-    /// A payload group that already exists, or that merely looks like an existing group (or the imports group) without being it.
-    public func joinsExisting(_ groups: [String]) -> Bool {
-        for g in groups where g != ContactMath.importsGroup {
-            if exact.contains(g) { return true }
-            let s = NameSkeleton.of(g)
-            if !s.isEmpty && skeletons.contains(s) { return true }
-        }
-        return false
-    }
 }
 
 /// before_vcard (the column name is historical) = a canonical JSON snapshot of the card, written by the executor before an update
@@ -460,22 +373,4 @@ public enum ContactPayloadParser {
     }
 
     static func isSha(_ s: String) -> Bool { s.count == 64 && s.allSatisfy { $0.isHexDigit && !$0.isUppercase } }
-
-    /// The "convert" rule: the update that brings an existing card up to what a create asked for, or nil when the card already
-    /// has all of it (and the create has no groups to add).
-    public static func convert(_ c: CreatePayload, existing: ContactCard) -> UpdatePayload? {
-        var u = UpdatePayload()
-        if !c.given.isEmpty && c.given != existing.given { u.set["given_name"] = c.given }
-        if !c.family.isEmpty && c.family != existing.family { u.set["family_name"] = c.family }
-        if !c.nickname.isEmpty && c.nickname != existing.nickname { u.set["nickname"] = c.nickname }
-        if !c.org.isEmpty && c.org != existing.org { u.set["org"] = c.org }
-        let havePhones = Set(existing.phones.map { ContactMath.normalizedPhone($0.value) })
-        let haveEmails = Set(existing.emails.map { $0.value.lowercased() })
-        u.addPhones = c.phones.filter { !havePhones.contains($0.value) }
-        u.addEmails = c.emails.filter { !haveEmails.contains($0.value) }
-        u.addGroups = c.groups
-        u.fromCreate = true
-        if u.set.isEmpty && u.addPhones.isEmpty && u.addEmails.isEmpty && u.addGroups.isEmpty { return nil }
-        return u
-    }
 }

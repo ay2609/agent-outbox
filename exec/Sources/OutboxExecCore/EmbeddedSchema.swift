@@ -237,8 +237,8 @@ CREATE TABLE IF NOT EXISTS contact_attrs (
 );
 
 -- ===== v4: native contact management =====
--- A change set groups proposed contact changes. Creates apply automatically (outbox-exec, after a live handle lookup);
--- updates and undos need a passkey-signed contacts manifest stored in contact_approvals.
+-- A change set groups proposed contact changes. EVERY change (create, update, undo) needs a passkey-signed contacts manifest
+-- stored in contact_approvals before outbox-exec applies it: contacts are never added automatically.
 CREATE TABLE IF NOT EXISTS contact_change_sets (
   id          TEXT PRIMARY KEY,
   title       TEXT NOT NULL,
@@ -257,7 +257,7 @@ CREATE TABLE IF NOT EXISTS contact_changes (
   target_contact_id  TEXT REFERENCES contacts(id) ON DELETE SET NULL,  -- cache row, for display only
   target_macos_id    TEXT,                   -- CNContact.identifier; required for update; for undo, the contact being restored/deleted
   payload_json       TEXT NOT NULL,          -- exact bytes hashed into contact manifests (see types.ts ContactChangePayload)
-  requires_approval  INTEGER NOT NULL DEFAULT 1,  -- 0 only for kind='create' proposed for auto-apply
+  requires_approval  INTEGER NOT NULL DEFAULT 1,  -- always 1 now; a 0 (old auto-apply rows) is migrated below and the executor never applies it
   status             TEXT NOT NULL CHECK (status IN ('pending','auto_queued','review','approved','applied','failed','rejected','undone')),
   note               TEXT NOT NULL DEFAULT '',    -- why it is in review ("already in Contacts", "same name as an existing contact", ...)
   transport          TEXT CHECK (transport IN ('dry','live')),  -- set by outbox-exec when applied
@@ -289,7 +289,7 @@ CREATE TABLE IF NOT EXISTS contact_approvals (
 );
 
 -- Written by outbox-exec only: the consumption record. A change is applied at most once, ever (UNIQUE change_id); no retries.
--- approval_id is NULL for auto-applied creates.
+-- approval_id is the contacts approval that covered the change (always set for new rows; NULL only in old auto-applied records).
 CREATE TABLE IF NOT EXISTS contact_applies (
   id           TEXT PRIMARY KEY,
   change_id    TEXT NOT NULL UNIQUE REFERENCES contact_changes(id),
@@ -303,6 +303,14 @@ CREATE TABLE IF NOT EXISTS contact_applies (
 );
 
 INSERT OR IGNORE INTO settings(key, value) VALUES ('contacts_transport','dry');
+
+-- Owner rule 2026-11-16: contacts are NEVER added automatically. 'auto_queued' stays in the CHECK for old data only; any such
+-- row that the executor has not touched moves to review and must be approved with Touch ID. Idempotent (runs at every open).
+UPDATE contact_changes SET status = 'review', requires_approval = 1, note = CASE WHEN note = '' THEN 'new contact' ELSE note END
+  WHERE (status = 'auto_queued' OR (requires_approval = 0 AND status IN ('pending','review')))
+    AND NOT EXISTS (SELECT 1 FROM contact_applies a WHERE a.change_id = contact_changes.id);
+UPDATE contact_change_sets SET status = 'review'
+  WHERE status = 'drafting' AND EXISTS (SELECT 1 FROM contact_changes c WHERE c.set_id = contact_change_sets.id AND c.status = 'review');
 
 -- v5: saved groups. Agent Outbox's own named lists of people (NOT macOS Contacts groups, which show up as contact tags).
 -- Agents may write these tables: a group only decides who a draft is addressed to, and every draft still needs the owner's approval.

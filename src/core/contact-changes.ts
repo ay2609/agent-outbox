@@ -1,7 +1,7 @@
 // Native contact management, TypeScript side. Validation, the create -> update "convert" rule,
 // the import -> change-set transform, and the read views shared by the agent API and the user API.
 //
-// Nothing in here approves, applies or undoes anything: it only PROPOSES (inserts sets and changes as auto_queued or review).
+// Nothing in here approves, applies or undoes anything: it only PROPOSES (inserts sets and changes as review or rejected; a new contact is never queued to apply by itself).
 // Approval, rejection and undo belong to the user's side of the server, never to anything that imports this file for proposing.
 import type { Database } from "bun:sqlite";
 import { newId, nowIso } from "../db";
@@ -219,7 +219,7 @@ export interface ProposedChangeResult { id: string; kind: ContactChangeKind; sta
 export interface ProposeResult {
   set_id: string;
   status: ContactSetStatus;
-  counts: { auto_queued: number; review: number; rejected: number };
+  counts: { review: number; rejected: number };
   changes: ProposedChangeResult[];
 }
 
@@ -264,7 +264,8 @@ export function buildCreateGuard(db: Database): CreateGuard {
   return g;
 }
 
-/** Why an otherwise-automatic create must wait for the user (empty when it can go ahead). */
+/** Extra reasons a create deserves a closer look (single name, look-alike name, existing group). Every create waits for the
+ *  user's Touch ID anyway; these only explain what to check. Empty for a clean create. */
 export function createReviewReasons(c: ContactCreatePayload, guard: CreateGuard): string[] {
   const why: string[] = [];
   if (!c.given_name || !c.family_name) why.push("only one name; please check");
@@ -275,18 +276,18 @@ export function createReviewReasons(c: ContactCreatePayload, guard: CreateGuard)
   return why;
 }
 
-/** A create either queues for automatic apply, waits for the user as a create (single name, look-alike name, existing group),
- *  converts to an edit that waits for the user, or is rejected. */
+/** A create ALWAYS waits for the user's Touch ID approval (owner rule 2026-11-16: contacts are never added automatically). It
+ *  stays a create in review (the note says why it deserves a look, or "new contact"), converts to an edit that waits for the
+ *  user, or is rejected. No status that applies by itself exists on this side. */
 function resolveCreate(db: Database, c: ContactCreatePayload, guard: () => CreateGuard): Resolved {
   const handles = [...c.phones.map((p) => p.e164), ...c.emails.map((e) => lc(e.email))];
   const owners = cachedOwners(db, handles);
   if (owners.length === 0) {
     const why = createReviewReasons(c, guard());
-    if (why.length) return { kind: "create", target: null, payload: c, status: "review", requires_approval: true, note: why.join("; ") };
-    return { kind: "create", target: null, payload: c, status: "auto_queued", requires_approval: false, note: "" };
+    return { kind: "create", target: null, payload: c, status: "review", requires_approval: true, note: why.length ? why.join("; ") : "new contact" };
   }
   if (owners.length > 1) {
-    return { kind: "create", target: null, payload: c, status: "rejected", requires_approval: true, note: `its numbers or emails match ${owners.length} different contacts, so it can't be added automatically` };
+    return { kind: "create", target: null, payload: c, status: "rejected", requires_approval: true, note: `its numbers or emails match ${owners.length} different contacts, so it can't be added` };
   }
   const card = owners[0]!;
   const u = convertCreateToUpdate(card, c);
@@ -301,9 +302,9 @@ function resolveUpdate(u: ProposedUpdate): Resolved {
   return { kind: "update", target: u.contact, payload: u.payload, status: "review", requires_approval: true, note: "" };
 }
 
-/** Inserts one set with its changes. Creates are queued for the executor (auto_queued) unless the cache already knows one of
- *  their handles (then they convert to an edit) or they look risky (one name only, a name that looks like an existing
- *  contact's, joining an existing group: they wait in review as creates); edits wait in review. One IMMEDIATE transaction, one audit row. Every payload is serialised exactly once. */
+/** Inserts one set with its changes. Every change waits in review for the user's Touch ID: creates stay creates (a note says what
+ *  to check: one name only, a look-alike name, an existing group) unless the cache already knows one of their handles (then they
+ *  convert to an edit); edits wait in review too. One IMMEDIATE transaction, one audit row. Every payload is serialised exactly once. */
 export function proposeContactChanges(db: Database, o: {
   title: string; created_by: string; source: ContactSetSource; creates: ContactCreatePayload[]; updates: ProposedUpdate[];
 }): ProposeResult {
@@ -313,8 +314,8 @@ export function proposeContactChanges(db: Database, o: {
     const getGuard = () => (guard ??= buildCreateGuard(db));
     const resolved: Resolved[] = [...o.creates.map((c) => resolveCreate(db, c, getGuard)), ...o.updates.map(resolveUpdate)];
     const count = (s: ContactChangeStatus) => resolved.filter((r) => r.status === s).length;
-    // Agents can only create a set as drafting (nothing awaiting the user) or review, never as approved/applying/done.
-    const status: ContactSetStatus = count("review") > 0 ? "review" : count("auto_queued") > 0 ? "drafting" : "cancelled";
+    // Agents can only create a set as review (something awaits the user) or cancelled (everything was rejected), never as approved/applying/done.
+    const status: ContactSetStatus = count("review") > 0 ? "review" : "cancelled";
     const setId = newId();
     db.query("INSERT INTO contact_change_sets(id, title, created_by, source, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?)")
       .run(setId, o.title, o.created_by, o.source, status, t, t);
@@ -327,7 +328,7 @@ export function proposeContactChanges(db: Database, o: {
           r.requires_approval ? 1 : 0, r.status, r.note, t);
       changes.push({ id, kind: r.kind, status: r.status, note: r.note, target_contact_id: r.target?.id ?? null });
     });
-    const counts = { auto_queued: count("auto_queued"), review: count("review"), rejected: count("rejected") };
+    const counts = { review: count("review"), rejected: count("rejected") };
     audit(db, o.created_by, "contact_changes.propose", setId, { title: o.title, source: o.source, ...counts, creates: o.creates.length, updates: o.updates.length });
     return { set_id: setId, status, counts, changes };
   }).immediate();

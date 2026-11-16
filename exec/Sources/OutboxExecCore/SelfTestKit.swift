@@ -62,8 +62,6 @@ final class FakeContacts: ContactsProvider {
             c.phones.contains { p.contains(ContactMath.normalizedPhone($0.value)) } || c.emails.contains { e.contains($0.value.lowercased()) }
         }.map { var k = $0; k.groups = []; return k }
     }
-    func allNames() throws -> [ContactCard] { lookups += 1; return cards.map { var k = $0; k.groups = []; return k } }
-    func allGroupNames() throws -> [String] { lookups += 1; return Array(Set(cards.flatMap { $0.groups } + extraGroups)).sorted() }
     func hasExtraDetails(identifier: String) throws -> Bool {
         guard current(identifier) != nil else { throw ExecError("no such contact") }
         return extraDetails.contains(identifier)

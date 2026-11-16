@@ -122,7 +122,7 @@ export function Settings({ status, reloadStatus, focus }: { status: any; reloadS
             <button role="radio" aria-checked={!live} className={!live ? "on" : ""} disabled={busy === "mode"} onClick={() => setMode("dry")}>Dry run</button>
           </div>
           <p className="fine" data-testid="mode-help">{live
-            ? "Approved messages really send. Each one still needs your Touch ID. New contacts your agent proposes are added without Touch ID; edits need it."
+            ? "Approved messages really send. Each one still needs your Touch ID. New contacts and edits your agent proposes each need your Touch ID too."
             : "Approved messages are only logged. Nothing is sent."}</p>
           {live && !installedLive && !liveBlocked && (hasApprove
             ? <div className="note note-warn small" data-testid="live-state">Live is on, but the pin file doesn't allow it yet, so nothing really sends. Tap Live again to fix that (Touch ID).</div>
@@ -223,7 +223,7 @@ export function Settings({ status, reloadStatus, focus }: { status: any; reloadS
 
         <section className="section">
           <h2 className="section-title">Contacts</h2>
-          <p className="small muted">New contacts that an agent proposes are added to your Mac's Contacts automatically (after a live duplicate check). Edits wait for your Touch ID. You can undo any change.</p>
+          <p className="small muted">Nothing is added to your Mac's Contacts automatically. New contacts and edits that an agent proposes wait for your Touch ID approval on the Changes tab of Contacts. You can undo any change after it is applied.</p>
           <div className="seg" role="radiogroup" aria-label="Contacts transport" data-testid="contacts-transport">
             <button role="radio" aria-checked={contactsTransport === "dry"} className={contactsTransport === "dry" ? "on" : ""} disabled={busy === "contacts-transport"} onClick={() => setContactsTransport("dry")}>Dry run</button>
             <button role="radio" aria-checked={contactsTransport === "live"} className={contactsTransport === "live" ? "on warn" : ""} disabled={busy === "contacts-transport" || (contactsTransport !== "live" && !installedContactsLive)} onClick={() => setContactsTransport("live")}>Live</button>

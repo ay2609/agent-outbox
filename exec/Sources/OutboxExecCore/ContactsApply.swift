@@ -2,11 +2,17 @@ import Foundation
 
 // Native contact management in the executor.
 //
-// Two ways a change reaches the address book:
-//  - auto creates (`kind = create`, `requires_approval = 0`, status `auto_queued`): applied without approval, but only after a LIVE
-//    handle lookup finds nobody, and never past the one-name, name-collision (skeleton), existing-group and daily-cap checks;
-//  - everything else (updates, undos, creates parked in review) only under a verified, unconsumed, unrevoked `contact_approvals` row
-//    whose signed manifest lists the exact change (kind, target and payload bytes).
+// Owner rule (2026-11-16): contacts are NEVER added automatically. Every change (create, update, undo) reaches the address book only
+// under a verified, unconsumed, unrevoked `contact_approvals` row (a Touch ID signature) whose signed manifest lists the exact change
+// (kind, target and payload bytes). There is no auto-apply lane any more. In simple mode a process running as the same user can write
+// the database, so a row that claims otherwise (`auto_queued`, or `requires_approval = 0`) is moved to review by
+// `holdUnapprovedContacts` and is never written to Contacts.
+//
+// Approved creates still run a LIVE handle lookup right before the save. A hit means the person is already in Contacts (added since the
+// user looked, or the cache was stale): the create FAILS with "already in Contacts" and nothing is written. That matches how an approved
+// edit treats a surprise (the card is gone, a fingerprint differs: `failed` with the reason, never a guess), and it is the safest
+// outcome: no duplicate card, no silent turning into an edit the user did not sign. The user can propose the edit instead.
+//
 // Every apply claims a `contact_applies` row first (UNIQUE change_id, like `sends`), so a change is applied at most once and a crash
 // in the middle becomes `unknown`, never a retry.
 
@@ -39,9 +45,6 @@ enum ContactClaim {
 }
 
 extension Executor {
-    /// More than this many auto creates in 24 h send the next one to review. A constant, not a setting.
-    static let autoCreateDailyCap = 100
-
     func contactsWriter(_ lane: String) -> ContactsWriter {
         if let w = contactsWriters[lane] { return w }
         let w: ContactsWriter = lane == "live" ? LiveContactsWriter(provider: contacts) : DryContactsWriter(logPath: config.dryContactsLogPath, clock: clock)
@@ -197,122 +200,51 @@ extension Executor {
         if !notes.isEmpty { lastError = notes.joined(separator: " | ") }
     }
 
+    /// Moves anything that claims to apply without approval back to review. Defence in depth: the server never makes such a row, but in
+    /// simple mode a same-user process can write the database. Matches an unconsumed change that is `auto_queued` or has
+    /// `requires_approval = 0` (also when `approved`: a signature cannot vouch for a row that says no approval is needed). Writes only
+    /// to the database, never to Contacts, so it runs even with the kill switch on. Returns how many it moved.
+    @discardableResult
+    func holdUnapprovedContacts(now: Date) throws -> Int {
+        let rows = try db.query("""
+            SELECT c.id AS id, c.set_id AS sid FROM contact_changes c
+            WHERE (c.status = 'auto_queued' OR c.requires_approval = 0) AND c.status IN ('pending','auto_queued','review','approved')
+              AND NOT EXISTS (SELECT 1 FROM contact_applies a WHERE a.change_id = c.id)
+            ORDER BY c.created_at, c.position, c.id
+            """)
+        if rows.isEmpty { return 0 }
+        let ts = Time.iso(now)
+        try db.transaction {
+            var sets = Set<String>()
+            for r in rows {
+                try db.exec("""
+                    UPDATE contact_changes SET status = 'review', requires_approval = 1, error = NULL,
+                      note = CASE WHEN note = '' THEN 'new contact' ELSE note END WHERE id = ?
+                    """, [.text(r.str("id"))])
+                try audit("contact_sent_to_review", target: r.str("id"), ["note": "queued without approval; contacts are never added automatically"])
+                sets.insert(r.str("sid"))
+            }
+            for s in sets { try refreshContactSet(s, now: ts) }
+        }
+        contactsNote = "\(rows.count) contact change(s) were queued without approval and were moved to review; contacts are only added after Touch ID approval"
+        return rows.count
+    }
+
     // MARK: the contacts pass of one tick
 
-    /// Auto creates, then approved changes. Returns true when a LIVE change was written (the caller then re-exports contacts).
+    /// Approved changes only. Returns true when a LIVE change was written (the caller then re-exports contacts).
     /// Contacts work waiting without Contacts access holds with a note in exec_status.last_error; nothing here ever prompts.
-    func applyContacts(now: Date, pin: PinFile, settings: ExecSettings) throws -> Bool {
-        let autoN = try db.one("""
-            SELECT COUNT(*) AS n FROM contact_changes c JOIN contact_change_sets s ON s.id = c.set_id
-            WHERE c.kind = 'create' AND c.requires_approval = 0 AND c.status = 'auto_queued' AND s.status != 'cancelled'
-              AND NOT EXISTS (SELECT 1 FROM contact_applies a WHERE a.change_id = c.id)
-            """)?.i("n") ?? 0
+    func applyContacts(now: Date, pin: PinFile) throws -> Bool {
         let approvedN = try db.one("""
             SELECT COUNT(*) AS n FROM contact_changes c JOIN contact_change_sets s ON s.id = c.set_id
             WHERE c.status = 'approved' AND s.status != 'cancelled' AND NOT EXISTS (SELECT 1 FROM contact_applies a WHERE a.change_id = c.id)
             """)?.i("n") ?? 0
-        if autoN + approvedN == 0 { return false }
+        if approvedN == 0 { return false }
         guard contacts.accessGranted else {
-            contactsNote = "Contacts access has not been granted to outbox-exec: \(autoN + approvedN) contact change(s) are waiting. Run `outbox-exec contacts-export` on the Mac and answer the macOS prompt."
+            contactsNote = "Contacts access has not been granted to outbox-exec: \(approvedN) contact change(s) are waiting. Run `outbox-exec contacts-export` on the Mac and answer the macOS prompt."
             return false
         }
-        var live = false
-        if try processAutoCreates(now: now, pin: pin, settings: settings) { live = true }
-        if try processApprovedContacts(now: now, pin: pin) { live = true }
-        return live
-    }
-
-    func autoLane(settings: ExecSettings, pin: PinFile) -> String {
-        settings.contactsTransport == "live" && pin.trustedForLive && pin.version >= 2 && pin.policy.contactsLiveAllowed ? "live" : "dry"
-    }
-
-    // MARK: auto creates
-
-    func processAutoCreates(now: Date, pin: PinFile, settings: ExecSettings) throws -> Bool {
-        let ids = try db.query("""
-            SELECT c.id AS id FROM contact_changes c JOIN contact_change_sets s ON s.id = c.set_id
-            WHERE c.kind = 'create' AND c.requires_approval = 0 AND c.status = 'auto_queued' AND s.status != 'cancelled'
-              AND NOT EXISTS (SELECT 1 FROM contact_applies a WHERE a.change_id = c.id)
-            ORDER BY c.created_at, c.position, c.id
-            """)
-        var live = false
-        let lane = autoLane(settings: settings, pin: pin)
-        nameIndex = nil; groupIndex = nil          // one live read of names and groups per pass
-        for r in ids {
-            if try killSwitchOn() { break }
-            guard let row = try loadChange(r.str("id")), row.status == "auto_queued", row.kind == "create", !row.requiresApproval else { continue }
-            let p: CreatePayload
-            do {
-                guard case .create(let parsed) = try ContactPayloadParser.parse(kind: "create", json: row.payloadJson, targetMacosId: row.targetMacosId) else { throw Rejection("not a create payload") }
-                p = parsed
-            } catch {
-                try failUnclaimed(row, "invalid payload: \((error as? Rejection)?.reason ?? "\(error)")")
-                continue
-            }
-            // live lookup, right before the save (reads only, so it runs in dry mode too)
-            let hits: [ContactCard]
-            do { hits = try contacts.findByHandles(phones: p.phones.map { $0.value }, emails: p.emails.map { $0.value }) } catch {
-                contactsNote = "contact lookup failed, will retry: \(error)"
-                continue
-            }
-            if hits.count > 1 { try failUnclaimed(row, "matches \(hits.count) contacts"); continue }
-            if let hit = hits.first { try convertCreate(row, p, existing: hit); continue }
-            // checks that send an auto create to the user instead of saving it
-            let note: String?
-            do { note = try autoCreateReviewNote(p) } catch {
-                contactsNote = "contact lookup failed, will retry: \(error)"
-                continue
-            }
-            if let note { try sendToReview(row, note: note); continue }
-            switch try claimAutoCreate(row.id, lane: lane, now: now) {
-            case .killed: return live
-            case .skipped: continue
-            case .claimed(let applyId, let claimedRow, let lane, _):
-                if try writeCreate(claimedRow, p, lane: lane, applyId: applyId, approvalId: nil) {
-                    // later creates in this pass see this one (live or dry alike, so a dry run predicts the live outcome)
-                    nameIndex?.add(given: p.given, family: p.family, nickname: p.nickname)
-                    for g in p.groups { groupIndex?.add(g) }
-                    if lane == "live" { live = true }
-                }
-            }
-        }
-        return live
-    }
-
-    /// Why this auto create must wait for the user, or nil. First match wins: only one real name, same name as an existing contact
-    /// (by skeleton), or it joins a group that already exists. Reads the address book once per pass.
-    func autoCreateReviewNote(_ p: CreatePayload) throws -> String? {
-        if !ContactMath.hasTwoNames(p) { return "only one name; please check" }
-        if nameIndex == nil { nameIndex = NameIndex(try contacts.allNames()) }
-        if nameIndex!.collides(p) { return "same name as an existing contact" }
-        if p.groups.contains(where: { $0 != ContactMath.importsGroup }) {
-            if groupIndex == nil { groupIndex = GroupIndex(try contacts.allGroupNames()) }
-            if groupIndex!.joinsExisting(p.groups) { return "joins an existing group" }
-        }
-        return nil
-    }
-
-    /// One write transaction: kill switch, eligibility, the daily cap (live auto creates only), then the contact_applies row.
-    func claimAutoCreate(_ id: String, lane: String, now: Date) throws -> ContactClaim {
-        try db.transaction {
-            if try killSwitchOn() { return .killed }
-            guard let row = try loadChange(id), row.status == "auto_queued", row.kind == "create", !row.requiresApproval else { return .skipped("no longer queued") }
-            if try isContactConsumed(id) { return .skipped("already consumed") }
-            // the cap protects the real address book: dry creates never count, and a dry auto create is never held by it
-            let since = Time.iso(now.addingTimeInterval(-86_400))
-            var done = 0
-            if lane == "live" {
-                done = try db.one("SELECT COUNT(*) AS n FROM contact_applies WHERE approval_id IS NULL AND transport = 'live' AND started_at >= ? AND (result IS NULL OR result = 'applied')", [.text(since)])?.i("n") ?? 0
-            }
-            if done >= Self.autoCreateDailyCap {
-                try db.exec("UPDATE contact_changes SET status = 'review', requires_approval = 1, note = ? WHERE id = ? AND status = 'auto_queued'", [.text("daily auto-create limit"), .text(id)])
-                try audit("contact_sent_to_review", target: id, ["note": "daily auto-create limit"])
-                try refreshContactSet(row.setId, now: Time.iso(now))
-                return .skipped("daily cap")
-            }
-            let applyId = try insertApply(changeId: id, approvalId: nil, lane: lane)
-            return .claimed(applyId: applyId, row: row, lane: lane, approvalId: nil)
-        }
+        return try processApprovedContacts(now: now, pin: pin)
     }
 
     func insertApply(changeId: String, approvalId: String?, lane: String) throws -> String {
@@ -321,45 +253,6 @@ extension Executor {
                     [.text(applyId), .text(changeId), .opt(approvalId), .text(lane), .text(Time.iso(clock()))])
         try audit("contact_apply_start", target: changeId, ["apply_id": applyId, "approval_id": approvalId ?? "", "transport": lane])
         return applyId
-    }
-
-    /// A create whose handle is already in Contacts becomes an update of that card, waiting for approval ("already in Contacts"),
-    /// or is rejected when the card already has everything.
-    func convertCreate(_ row: ContactChangeRow, _ p: CreatePayload, existing: ContactCard) throws {
-        let ts = Time.iso(clock())
-        try db.transaction {
-            if let u = ContactPayloadParser.convert(p, existing: existing) {
-                let cacheId = try db.one("SELECT id FROM contacts WHERE macos_id = ?", [.text(existing.identifier)])?.text("id")
-                try db.exec("""
-                    UPDATE contact_changes SET kind = 'update', target_macos_id = ?, target_contact_id = ?, payload_json = ?, requires_approval = 1,
-                      status = 'review', note = 'already in Contacts', error = NULL WHERE id = ? AND status = 'auto_queued'
-                    """, [.text(existing.identifier), .opt(cacheId), .text(u.json()), .text(row.id)])
-                try audit("contact_converted", target: row.id, ["to": "update", "target_macos_id": existing.identifier])
-            } else {
-                try db.exec("UPDATE contact_changes SET status = 'rejected', note = 'already in Contacts, nothing to change' WHERE id = ? AND status = 'auto_queued'", [.text(row.id)])
-                try audit("contact_rejected", target: row.id, ["note": "already in Contacts, nothing to change"])
-            }
-            try refreshContactSet(row.setId, now: ts)
-        }
-    }
-
-    func sendToReview(_ row: ContactChangeRow, note: String) throws {
-        let ts = Time.iso(clock())
-        try db.transaction {
-            try db.exec("UPDATE contact_changes SET status = 'review', requires_approval = 1, note = ? WHERE id = ? AND status = 'auto_queued'", [.text(note), .text(row.id)])
-            try audit("contact_sent_to_review", target: row.id, ["note": note])
-            try refreshContactSet(row.setId, now: ts)
-        }
-    }
-
-    /// A change refused before any write was attempted (bad payload, ambiguous handles): `failed`, no apply row.
-    func failUnclaimed(_ row: ContactChangeRow, _ error: String) throws {
-        let ts = Time.iso(clock())
-        try db.transaction {
-            try db.exec("UPDATE contact_changes SET status = 'failed', error = ? WHERE id = ? AND status IN ('auto_queued','approved')", [.text(error), .text(row.id)])
-            try audit("contact_failed", target: row.id, ["error": error])
-            try refreshContactSet(row.setId, now: ts)
-        }
     }
 
     // MARK: approved changes
@@ -381,7 +274,8 @@ extension Executor {
                 do {
                     switch try ContactPayloadParser.parse(kind: row.kind, json: row.payloadJson, targetMacosId: row.targetMacosId) {
                     case .create(let p):
-                        // approved creates still run the live lookup: a hit is never a duplicate
+                        // approved creates still run the live lookup: a hit means the person is already in Contacts, so the create
+                        // fails (nothing written, no duplicate card); see the header comment
                         let hits = try readContacts { try contacts.findByHandles(phones: p.phones.map { $0.value }, emails: p.emails.map { $0.value }) }
                         if !hits.isEmpty { try finishContactApply(applyId: applyId, row: row, lane: lane, ok: false, error: "already in Contacts"); ok = false }
                         else { ok = try writeCreate(row, p, lane: lane, applyId: applyId, approvalId: approvalId) }
@@ -411,6 +305,8 @@ extension Executor {
         try db.transaction {
             if try killSwitchOn() { return .killed }
             guard let row = try loadChange(id), row.status == "approved" else { return .skipped("not approved") }
+            // a row that says no approval is needed is never applied, signed or not (holdUnapprovedContacts moves it to review)
+            guard row.requiresApproval else { return .skipped("row does not require approval; not applied") }
             if try isContactConsumed(id) { return .skipped("already consumed") }
             let approvals = try db.query("SELECT * FROM contact_approvals WHERE set_id = ? AND revoked_at IS NULL ORDER BY created_at DESC, id DESC", [.text(row.setId)])
             for arow in approvals {
@@ -431,7 +327,7 @@ extension Executor {
 
     /// Why this apply must not write right now, or nil: kill switch on, the set was cancelled, the approval it came from was revoked
     /// or has expired since the claim, or live is no longer allowed. Checked again right before every write.
-    func contactStopReason(lane: String, auto: Bool, row: ContactChangeRow, approvalId: String?) throws -> String? {
+    func contactStopReason(lane: String, row: ContactChangeRow, approvalId: String?) throws -> String? {
         beforeContactWriteHook?()
         if try killSwitchOn() { return "kill switch is on" }
         if let st = try db.one("SELECT status FROM contact_change_sets WHERE id = ?", [.text(row.setId)])?.str("status"), st == "cancelled" { return "the change set was cancelled" }
@@ -445,7 +341,6 @@ extension Executor {
                 let p = try loadPin()
                 guard p.trustedForLive, p.version >= 2, p.policy.contactsLiveAllowed else { return "the pin policy no longer allows live contact changes (\(p.mode.rawValue) mode)" }
             } catch { return "the pin file is no longer usable: \(error)" }
-            if auto, try ExecSettings.load(db).contactsTransport != "live" { return "contacts_transport is no longer live" }
         }
         return nil
     }
@@ -492,9 +387,9 @@ extension Executor {
 
     // MARK: writes
 
-    /// Create (auto or approved). Returns true when it was written (the caller counts live ones for the export).
+    /// Create (always under an approval; the caller has already run the live duplicate lookup). Returns true when it was written (the caller counts live ones for the export).
     func writeCreate(_ row: ContactChangeRow, _ p: CreatePayload, lane: String, applyId: String, approvalId: String?) throws -> Bool {
-        if let why = try contactStopReason(lane: lane, auto: approvalId == nil, row: row, approvalId: approvalId) {
+        if let why = try contactStopReason(lane: lane, row: row, approvalId: approvalId) {
             try releaseContactApply(applyId: applyId, row: row, reason: why)
             contactsNote = "contact change \(row.id.prefix(8)) stopped: \(why)"
             return false
@@ -528,7 +423,7 @@ extension Executor {
                                    afterFingerprint: ContactMath.fingerprint(card), note: "already up to date, nothing written")
             return false
         }
-        if let why = try contactStopReason(lane: lane, auto: false, row: row, approvalId: approvalId) {
+        if let why = try contactStopReason(lane: lane, row: row, approvalId: approvalId) {
             try releaseContactApply(applyId: applyId, row: row, reason: why)
             contactsNote = "contact change \(row.id.prefix(8)) stopped: \(why)"
             return false
@@ -579,7 +474,7 @@ extension Executor {
 
         let ctx = WriteContext(changeId: row.id, approvalId: approvalId, kind: "undo", targetMacosId: target, payload: row.payloadObject)
         if lane == "dry" {
-            if let why = try contactStopReason(lane: "dry", auto: false, row: row, approvalId: approvalId) {
+            if let why = try contactStopReason(lane: "dry", row: row, approvalId: approvalId) {
                 try releaseContactApply(applyId: applyId, row: row, reason: why)
                 contactsNote = "contact change \(row.id.prefix(8)) stopped: \(why)"
                 return false
@@ -598,7 +493,7 @@ extension Executor {
             return try fail("the card has details added since; delete it by hand if you want")
         }
         let snapshot = ContactSnapshot.json(card)
-        if let why = try contactStopReason(lane: "live", auto: false, row: row, approvalId: approvalId) {
+        if let why = try contactStopReason(lane: "live", row: row, approvalId: approvalId) {
             try releaseContactApply(applyId: applyId, row: row, reason: why)
             contactsNote = "contact change \(row.id.prefix(8)) stopped: \(why)"
             return false

@@ -76,9 +76,6 @@ public final class Executor {
     /// v4 tables the database lacks right now (outboxd hasn't created them yet). Re-checked every tick; contacts work is off while any is missing.
     var contactTablesMissing: [String] = []
     var contactRecoveryDone = false
-    /// Per-pass reads of the address book for the auto-create checks (names, groups); reset at the start of each pass.
-    var nameIndex: NameIndex?
-    var groupIndex: GroupIndex?
     /// Test seam: runs at the start of every pre-write stop check of a contact change.
     var beforeContactWriteHook: (() -> Void)?
     /// The pin file of the current tick; refreshBatch uses it to tell a live approval from a dead one.
@@ -423,6 +420,10 @@ public final class Executor {
         if contactsReady, !contactRecoveryDone {
             do { try recoverContactApplies(); contactRecoveryDone = true } catch { contactsNote = "contacts: \(error)" }
         }
+        // anything queued without an approval (auto_queued, requires_approval = 0) goes back to review; database only, runs even when held
+        if contactsReady {
+            do { try holdUnapprovedContacts(now: now) } catch { contactsNote = "contacts: \(error)" }
+        }
         if contactsReady, mode.hold == nil, let pin = mode.pin {
             do { try reconcileContacts(now: now, pin: pin) } catch { contactsNote = "contacts: \(error)" }
         }
@@ -431,10 +432,10 @@ public final class Executor {
         if let h = mode.hold { return .held(h) }
         guard let pin = mode.pin else { return .held("no pin file") }
 
-        // contact changes: auto creates, then approved edits and undos (kill switch and tamper check already passed above)
+        // contact changes: approved creates, edits and undos only (kill switch and tamper check already passed above)
         if contactsReady {
             do {
-                if try applyContacts(now: now, pin: pin, settings: settings) { try serviceContactsExport(force: true) }
+                if try applyContacts(now: now, pin: pin) { try serviceContactsExport(force: true) }
             } catch { contactsNote = "contacts: \(error)" }
         }
 

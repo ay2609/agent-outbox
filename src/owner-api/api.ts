@@ -27,7 +27,7 @@ import { assertionSchema, attestationSchema, readJson, readJsonOptional, reauthS
 import { buildStatus, pinContactsLiveAllowed, pinLiveAllowed, pinMode } from "./status";
 import { registerContactApi } from "./contact-api";
 import { registerGroupsApi } from "./groups-api";
-import { holdAutoCreates, restoreContactApprovals, revokeContactApprovals } from "./contact-approval";
+import { restoreContactApprovals, revokeContactApprovals } from "./contact-approval";
 import { sha256Hex } from "./b64";
 
 const OWNER = "owner";
@@ -305,11 +305,8 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
       const rev = revokeApprovals(db(), { all: true }, OWNER, "stop all sending");
       // v4: Stop also revokes every unconsumed contacts approval (its changes go back to review).
       const crev = revokeContactApprovals(db(), { all: true }, OWNER, "stop all sending");
-      // v4: ...and holds every queued auto create (it becomes a create in review, "held by Stop"). Resume doesn't put them back.
-      const held = holdAutoCreates(db(), OWNER);
       db().query("DELETE FROM webauthn_challenges WHERE purpose = 'approve'").run();
       const details = {
-        held_contact_creates: held.changes, held_contact_change_ids: held.change_ids,
         revoked_approvals: rev.approvals, reverted_drafts: rev.drafts,
         approval_ids: rev.approval_ids, draft_ids: rev.draft_ids, revoked_at: rev.at,
         revoked_contact_approvals: crev.approvals, reverted_contact_changes: crev.changes,
@@ -317,10 +314,10 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
         prev: { kill_switch: prev.kill_switch, kill_reason: prev.kill_reason },
       };
       const stopId = Number(db().query("INSERT INTO audit_log(at, actor, action, target, details_json) VALUES (?,?,?,?,?)").run(nowIso(), OWNER, "stop", null, JSON.stringify(details)).lastInsertRowid);
-      return { rev, crev, held, stopId };
+      return { rev, crev, stopId };
     });
     return c.json({ ok: true, kill_switch: true, kill_reason: "owner", revoked_approvals: r.rev.approvals, reverted_drafts: r.rev.drafts,
-      revoked_contact_approvals: r.crev.approvals, reverted_contact_changes: r.crev.changes, held_contact_creates: r.held.changes, stop_id: r.stopId });
+      revoked_contact_approvals: r.crev.approvals, reverted_contact_changes: r.crev.changes, stop_id: r.stopId });
   });
   /** Undo ONE stop within 2 minutes: restores the approvals that stop revoked and resets the kill switch. */
   app.post("/api/stop/undo", async (c) => {

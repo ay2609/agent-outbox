@@ -351,7 +351,7 @@ try {
   const modeAudit = JSON.parse(db.query<any, []>("SELECT details_json FROM audit_log WHERE action = 'mode.set' ORDER BY id DESC").get()!.details_json);
   ok(transports() === "live/live" && candPolicy().live_allowed === true && candPolicy().contacts_live_allowed === true, "Live (one Touch ID) set both transports live and wrote both permissions into the user pin");
   ok(modeAudit.mode === "live" && modeAudit.policy_changed === true && (await page.getByTestId("mode-help").innerText()).includes("Each one still needs your Touch ID"), "the line under the switch says each message still needs Touch ID");
-  ok((await page.getByTestId("mode-help").innerText()).includes("New contacts your agent proposes are added without Touch ID; edits need it."), "...and that new contacts are added without it while edits need it");
+  ok((await page.getByTestId("mode-help").innerText()).includes("New contacts and edits your agent proposes each need your Touch ID too.") && !(await page.getByTestId("mode-help").innerText()).includes("without Touch ID"), "...and that new contacts need Touch ID just like edits (nothing is added without it)");
   ok(await livePolicy.isChecked() && await contactsPolicy.isChecked(), "...and the two Live permissions in Advanced are ticked");
   await modeSwitch.getByRole("radio", { name: "Dry run" }).click();
   await page.getByText(/Dry run\. Nothing will be sent/).waitFor({ timeout: 8000 });
@@ -634,7 +634,7 @@ try {
     await page.reload();
     await page.getByTestId("contact-set-card").waitFor();
     ok((await page.locator(".section .card-link").first().getAttribute("data-testid")) === "contact-set-card", "the Inbox lists the contact set above the message batches");
-    ok((await page.getByTestId("contact-set-card").innerText()).includes("2 to approve"), "the Inbox card says how many edits wait for approval");
+    ok((await page.getByTestId("contact-set-card").innerText()).includes("3 to approve"), "the Inbox card says how many changes (the new contact and both edits) wait for approval");
     // Address book pages past 100 contacts: 230 extra people -> infinite scroll / "Show more", and search pages too
     {
       const ins = db.query("INSERT INTO contacts(id, source, display_name, given_name, family_name, phones_json, updated_at) VALUES (?,?,?,?,?,'[]',?)");
@@ -695,22 +695,26 @@ try {
     const annCard = page.locator(`article.change[data-change="${annId}"]`);
     ok((await annCard.locator(".diff-row .from").first().innerText()) === "Ann" && (await annCard.locator(".diff-row .to").first().innerText()) === "Ann \u{1F4DA}", "the edit card shows before → after (Ann → Ann 📚)");
     ok((await annCard.innerText()).includes("+ Book club"), "the card lists the group it adds");
-    ok((await page.locator("article.change").count()) === 2 && (await page.locator('.change-row[data-status="auto_queued"]').count()) === 1 && (await page.locator('.change-row[data-status="auto_queued"]').innerText()).includes("Newbie Club") && (await page.locator('.change-row[data-status="auto_queued"]').innerText()).includes("Adding automatically"), "the automatic create is listed as 'Adding automatically', not as something to approve");
+    const createCard = page.locator(`article.change[data-change="${createId}"]`);
+    ok((await page.locator("article.change").count()) === 3 && (await createCard.getAttribute("data-kind")) === "create" && (await createCard.getAttribute("data-status")) === "review"
+      && (await createCard.innerText()).includes("Newbie Club") && (await createCard.innerText()).includes("New contact") && (await page.locator('.change-row[data-status="auto_queued"]').count()) === 0
+      && !(await page.locator("body").innerText()).includes("Adding automatically"), "the new contact is a card to approve with Touch ID, like the edits; nothing is 'adding automatically'");
+    ok((await page.locator(".section-title", { hasText: "Needs your approval (3)" }).count()) === 1, "the section says 3 changes need approval");
     await shot("contact-changes.png", { fullPage: true });
     // include toggles drive the footer
-    ok((await page.getByTestId("contacts-approve").innerText()) === "Approve 2 with Touch ID", "footer: Approve 2 with Touch ID");
+    ok((await page.getByTestId("contacts-approve").innerText()) === "Approve 3 with Touch ID", "footer: Approve 3 with Touch ID");
     await page.locator(`article.change[data-change="${benId}"]`).getByRole("switch").click();
-    ok((await page.getByTestId("contacts-approve").innerText()) === "Approve 1 with Touch ID", "excluding a card changes the footer to Approve 1");
+    ok((await page.getByTestId("contacts-approve").innerText()) === "Approve 2 with Touch ID", "excluding a card changes the footer to Approve 2");
     await page.locator(`article.change[data-change="${benId}"]`).getByRole("switch").click();
-    ok((await page.getByTestId("contacts-approve").innerText()) === "Approve 2 with Touch ID", "including it again brings it back");
+    ok((await page.getByTestId("contacts-approve").innerText()) === "Approve 3 with Touch ID", "including it again brings it back");
 
     // the confirm sheet: rendered from the manifest + payloads, dry banner
     await page.getByTestId("contacts-approve").click();
     await page.getByTestId("contacts-manifest-list").waitFor();
     ok((await page.getByTestId("contacts-dry-banner").count()) === 1, "dry run: the sheet says Contacts are not touched");
-    ok((await page.locator('[data-testid="contacts-manifest-list"] > li').count()) === 2, "the sheet lists exactly the two items being signed");
+    ok((await page.locator('[data-testid="contacts-manifest-list"] > li').count()) === 3, "the sheet lists exactly the three items being signed (the new contact and both edits)");
     const sheetText = await page.locator(".sheet").innerText();
-    ok(sheetText.includes("Ann \u{1F4DA}") && sheetText.includes("Ben \u{1F4DA}") && sheetText.includes("Book club") && sheetText.includes("Ann Lee"), "the sheet shows each contact's name and what changes");
+    ok(sheetText.includes("Ann \u{1F4DA}") && sheetText.includes("Ben \u{1F4DA}") && sheetText.includes("Book club") && sheetText.includes("Ann Lee") && sheetText.includes("Newbie"), "the sheet shows each contact's name and what changes, including the new contact");
     await shot("contact-approve-sheet.png");
     // TAMPER: a payload changes under the open sheet -> refused, nothing recorded
     const benPayload = db.query<any, [string]>("SELECT payload_json FROM contact_changes WHERE id = ?").get(benId)!.payload_json;
@@ -718,23 +722,24 @@ try {
     await page.getByTestId("contacts-sign").click();
     await page.locator(".sheet .note-bad").waitFor({ timeout: 15000 });
     ok((await page.locator(".sheet .note-bad").innerText()).includes("Nothing was approved"), "a payload edited under the open sheet is refused with 'Nothing was approved'");
-    ok(capprovals().length === 0 && cstat(annId) === "review" && cstat(benId) === "review", "the refused approval recorded nothing and left both changes in review");
+    ok(capprovals().length === 0 && cstat(annId) === "review" && cstat(benId) === "review" && cstat(createId) === "review", "the refused approval recorded nothing and left all three changes in review");
     db.query("UPDATE contact_changes SET payload_json = ? WHERE id = ?").run(benPayload, benId);
     await page.getByRole("button", { name: "Start again" }).click();
     await page.getByTestId("contacts-manifest-list").waitFor();
     await page.getByTestId("contacts-sign").click();
     await page.getByTestId("contacts-approve-success").waitFor({ timeout: 15000 });
-    ok((await page.getByTestId("contacts-approve-success").innerText()).includes("2 changes approved"), "Touch ID approved the two edits");
+    ok((await page.getByTestId("contacts-approve-success").innerText()).includes("3 changes approved"), "Touch ID approved the new contact and the two edits");
     const ca = capprovals();
     ok(ca.length === 1 && ca[0].set_id === setA.set_id, "exactly one contact_approvals row, for the set");
     const cm = JSON.parse(ca[0].manifest);
-    ok(cm.kind === "contacts" && cm.v === 1 && cm.transport === "dry" && cm.contact_items.length === 2 && cm.set_id === setA.set_id && ca[0].credential_id === approveKey.credential_id, "stored manifest: kind contacts, v1, dry, two items, signed by the approval key");
-    ok(cm.contact_items.every((it: any) => it.kind === "update" && it.target_macos_id.startsWith("mac-")
-      && it.payload_sha256 === sha(db.query<any, [string]>("SELECT payload_json FROM contact_changes WHERE id = ?").get(it.change_id)!.payload_json)), "each manifest item pins the target and sha256(payload_json)");
+    ok(cm.kind === "contacts" && cm.v === 1 && cm.transport === "dry" && cm.contact_items.length === 3 && cm.set_id === setA.set_id && ca[0].credential_id === approveKey.credential_id, "stored manifest: kind contacts, v1, dry, three items, signed by the approval key");
+    ok(cm.contact_items.every((it: any) => (it.kind === "update" ? String(it.target_macos_id).startsWith("mac-") : it.kind === "create" && it.target_macos_id === null)
+      && it.payload_sha256 === sha(db.query<any, [string]>("SELECT payload_json FROM contact_changes WHERE id = ?").get(it.change_id)!.payload_json)), "each manifest item pins the target (none for the new contact) and sha256(payload_json)");
+    ok(cm.contact_items.filter((it: any) => it.kind === "create").length === 1 && cm.contact_items.find((it: any) => it.kind === "create").change_id === createId, "the new contact is in the signed manifest as a create item");
     const cAuth = Buffer.from(ca[0].authenticator_data_b64, "base64url"), cCdj = Buffer.from(ca[0].client_data_json_b64, "base64url");
     ok(verify("sha256", Buffer.concat([cAuth, createHash("sha256").update(cCdj).digest()]), pub, Buffer.from(ca[0].signature_b64, "base64url"))
       && JSON.parse(cCdj.toString()).challenge === createHash("sha256").update(ca[0].manifest).digest("base64url"), "the contacts signature verifies under the pinned approval key and signs sha256(manifest bytes)");
-    ok(cstat(annId) === "approved" && cstat(benId) === "approved" && cstat(createId) === "auto_queued", "edits are approved; the automatic create is untouched");
+    ok(cstat(annId) === "approved" && cstat(benId) === "approved" && cstat(createId) === "approved", "the new contact is approved by the same Touch ID as the edits (nothing is added automatically)");
     ok(db.query<any, []>("SELECT COUNT(*) n FROM approvals WHERE batch_id = '" + setA.set_id + "'").get()!.n === 0, "no send-approval row was made");
     await page.getByTestId("contacts-done").click();
     await page.getByText(/Waiting to apply/).waitFor();
@@ -745,14 +750,11 @@ try {
     await page.getByTestId("stop-confirm").click();
     await page.getByTestId("kill-banner").waitFor();
     ok((await page.getByTestId("toast").innerText()).includes(`Stopped. ${msgLive + 1} approvals cancelled`), "Stop's toast counts the message approvals and the contacts approval");
-    ok(!!capprovals()[0].revoked_at && cstat(annId) === "review" && cstat(benId) === "review", "Stop revoked the contacts approval and sent its changes back to review");
+    ok(!!capprovals()[0].revoked_at && cstat(annId) === "review" && cstat(benId) === "review" && cstat(createId) === "review", "Stop revoked the contacts approval and sent its changes (the new contact too) back to review");
     await page.getByTestId("toast").getByRole("button", { name: "Undo" }).click();
     await page.getByText(/Stop undone/).waitFor();
-    ok(capprovals()[0].revoked_at === null && cstat(annId) === "approved" && cstat(benId) === "approved", "Undo-stop restored the contacts approval and its changes");
-    {
-      const held = db.query<any, [string]>("SELECT status, requires_approval, note FROM contact_changes WHERE id = ?").get(createId)!;
-      ok(held.status === "review" && held.requires_approval === 1 && held.note === "held by Stop", "Stop held the queued auto create for the owner's approval, and Undo-stop did not put it back");
-    }
+    ok(capprovals()[0].revoked_at === null && cstat(annId) === "approved" && cstat(benId) === "approved" && cstat(createId) === "approved", "Undo-stop restored the contacts approval and its three changes");
+    ok(db.query<any, [string]>("SELECT requires_approval FROM contact_changes WHERE id = ?").get(createId)!.requires_approval === 1, "the new contact always requires approval");
 
     // the executor applies Ann's edit (simulated): History offers Undo, which makes an undo set to approve with Touch ID
     const t = new Date().toISOString();

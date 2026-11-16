@@ -16,10 +16,6 @@ public protocol ContactsProvider: AnyObject {
     // v4 native contact management. Reads and writes need access already granted; none of these ever prompts.
     /// Distinct contacts that have any of these phone numbers (E.164) or email addresses, looked up live. Cards carry no groups.
     func findByHandles(phones: [String], emails: [String]) throws -> [ContactCard]
-    /// Every contact's identifier and names (given, family, nickname, org) from one live read, for the name-collision check.
-    func allNames() throws -> [ContactCard]
-    /// The names of every group that exists in Contacts.
-    func allGroupNames() throws -> [String]
     /// True when the card holds anything the executor never wrote (addresses, birthday, dates, URLs, relations, social profiles,
     /// instant messages, job title, department, a photo, middle name, prefix or suffix). Never reads the note (needs an entitlement).
     func hasExtraDetails(identifier: String) throws -> Bool
@@ -209,24 +205,6 @@ public final class SystemContacts: ContactsProvider {
             for c in try store.unifiedContacts(matching: p, keysToFetch: Self.cardKeys) where seen.insert(c.identifier).inserted { out.append(Self.card(c)) }
         }
         return out
-    }
-
-    public func allNames() throws -> [ContactCard] {
-        try requireAccess()
-        let keys: [CNKeyDescriptor] = [CNContactIdentifierKey, CNContactGivenNameKey, CNContactFamilyNameKey, CNContactNicknameKey,
-                                       CNContactOrganizationNameKey].map { $0 as NSString }
-        var out: [ContactCard] = []
-        try store.enumerateContacts(with: CNContactFetchRequest(keysToFetch: keys)) { c, _ in
-            var k = ContactCard(identifier: c.identifier)
-            k.given = c.givenName; k.family = c.familyName; k.nickname = c.nickname; k.org = c.organizationName
-            out.append(k)
-        }
-        return out
-    }
-
-    public func allGroupNames() throws -> [String] {
-        try requireAccess()
-        return try store.groups(matching: nil).map { $0.name }
     }
 
     public func hasExtraDetails(identifier: String) throws -> Bool {

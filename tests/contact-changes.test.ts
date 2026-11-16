@@ -148,12 +148,12 @@ describe("convert: a create whose handle the cache already has becomes an edit o
     expect(convertCreateToUpdate(c, validateCreate({ given_name: "Ann", phones: ["+14155550123"] })).set).toBeUndefined();
   });
 
-  test("propose: a create with a cached handle is stored as an edit in review, with the note and from_create; nothing auto-applies", async () => {
+  test("propose: a create with a cached handle is stored as an edit in review, with the note and from_create; nothing is queued to apply by itself", async () => {
     const { db, app } = await setup();
     const c = card(db);
     const r = await post(app, "/v1/contact-changes", { title: "T", creates: [{ given_name: "Ann 📚", family_name: "Lee", phones: ["415-555-0123"], emails: ["ann@x.co"] }] });
     expect(r.status).toBe(201);
-    expect(r.json.counts).toEqual({ auto_queued: 0, review: 1, rejected: 0 });
+    expect(r.json.counts).toEqual({ review: 1, rejected: 0 });
     expect(r.json.changes[0]).toMatchObject({ kind: "update", status: "review", note: "already in Contacts" });
     const row = db.query("SELECT * FROM contact_changes WHERE id = ?").get(r.json.changes[0].id) as any;
     expect(row).toMatchObject({ kind: "update", requires_approval: 1, status: "review", target_contact_id: c.id, target_macos_id: c.macos_id });
@@ -173,16 +173,16 @@ describe("convert: a create whose handle the cache already has becomes an edit o
     expect(two.json.changes[0]).toMatchObject({ kind: "create", status: "rejected" });
     expect(two.json.changes[0].note).toMatch(/match 2 different contacts/);
 
-    // a cached contact that isn't in macOS (imported) can't be edited, so the create stays an automatic create
+    // a cached contact that isn't in macOS (imported) can't be edited, so the create stays a create (in review, like every create)
     seedContact(db, { name: "Cy Import", source: "import", macos_id: null, phones: [{ e164: "+14155550301", label: "mobile" }] });
     const imp = await post(app, "/v1/contact-changes", { title: "T", creates: [{ given_name: "Cy", family_name: "Zed", phones: ["+14155550301"] }] });
-    expect(imp.json.changes[0]).toMatchObject({ kind: "create", status: "auto_queued" });
+    expect(imp.json.changes[0]).toMatchObject({ kind: "create", status: "review", note: "new contact" });
   });
 });
 
 // ---------------------------------------------------------------------------------------------- propose
 describe("POST /v1/contact-changes", () => {
-  test("creates are auto_queued with requires_approval 0, edits are review; payload_json is JSON.stringify(payload) written once", async () => {
+  test("creates are review with requires_approval 1 like edits (never auto_queued); payload_json is JSON.stringify(payload) written once", async () => {
     const { db, app } = await setup();
     const id = seedContact(db, { name: "Sam Lee", given: "Sam", family: "Lee", phones: [{ e164: "+12025550009", label: "mobile" }] });
     const r = await post(app, "/v1/contact-changes", {
@@ -191,15 +191,16 @@ describe("POST /v1/contact-changes", () => {
       updates: [{ contact_id: id, set: { given_name: "Sam 📚" }, add_groups: ["Book club"] }],
     });
     expect(r.status).toBe(201);
-    expect(r.json).toMatchObject({ status: "review", counts: { auto_queued: 1, review: 1, rejected: 0 } });
+    expect(r.json).toMatchObject({ status: "review", counts: { review: 2, rejected: 0 } });
     expect(r.json.dashboard_url).toBe(`${origin}/#/contacts/changes/${r.json.set_id}`);
-    expect(r.json.message).toMatch(/added automatically/);
+    expect(r.json.message).not.toMatch(/automatically/);
+    expect(r.json.message).toMatch(/nothing is added to Contacts until they approve/);
     expect(r.json.message).toMatch(/Touch ID/);
     expect(r.json.message).toMatch(/can undo/);
     const set = db.query("SELECT * FROM contact_change_sets WHERE id = ?").get(r.json.set_id) as any;
     expect(set).toMatchObject({ title: "Mixed", created_by: "agent:cc-test", source: "mcp", status: "review" });
     const rows = db.query("SELECT * FROM contact_changes WHERE set_id = ? ORDER BY position").all(r.json.set_id) as any[];
-    expect(rows.map((x) => [x.position, x.kind, x.status, x.requires_approval])).toEqual([[0, "create", "auto_queued", 0], [1, "update", "review", 1]]);
+    expect(rows.map((x) => [x.position, x.kind, x.status, x.requires_approval])).toEqual([[0, "create", "review", 1], [1, "update", "review", 1]]);
     expect(rows[0].payload_json).toBe(JSON.stringify(JSON.parse(rows[0].payload_json)));
     expect(rows[0].payload_json).toBe('{"given_name":"New","family_name":"Person","org":"Acme","phones":[{"e164":"+14155550123","label":"mobile"}],"emails":[]}');
     expect(rows[1].payload_json).toBe('{"set":{"given_name":"Sam 📚"},"add_groups":["Book club"]}');
@@ -207,10 +208,11 @@ describe("POST /v1/contact-changes", () => {
     expect(db.query("SELECT actor, action, target FROM audit_log WHERE action = 'contact_changes.propose'").all()).toEqual([{ actor: "agent:cc-test", action: "contact_changes.propose", target: r.json.set_id }]);
   });
 
-  test("a set with only automatic creates is 'drafting' (nothing waits for the owner); a CLI caller is source 'cli'", async () => {
+  test("a set with only creates is 'review' (the owner must approve them); a CLI caller is source 'cli'", async () => {
     const { db, app } = await setup();
     const r = await call(app, "POST", "/v1/contact-changes", { title: "Only new", creates: [{ given_name: "A", family_name: "Aardvark", phones: ["4155550124"] }] }, { ...H, "X-Outbox-Source": "cli" });
-    expect(r.json.status).toBe("drafting");
+    expect(r.json.status).toBe("review");
+    expect(r.json.changes[0]).toMatchObject({ kind: "create", status: "review", note: "new contact" });
     expect(db.query("SELECT source FROM contact_change_sets WHERE id = ?").get(r.json.set_id)).toEqual({ source: "cli" });
   });
 
@@ -244,7 +246,7 @@ describe("POST /v1/contact-changes", () => {
     const r = await post(app, "/v1/contact-changes", { title: "x", updates: [{ contact_id: id, set: { given_name: "Sam" }, add_phones: ["+12025550009"], add_groups: ["friends"] }] });
     expect(r.json.changes[0]).toMatchObject({ kind: "update", status: "rejected" });
     expect(r.json.changes[0].note).toMatch(/nothing to change/);
-    expect(r.json.counts).toEqual({ auto_queued: 0, review: 0, rejected: 1 });
+    expect(r.json.counts).toEqual({ review: 0, rejected: 1 });
   });
 
   test("a region argument makes local numbers valid", async () => {
@@ -265,16 +267,16 @@ describe("GET /v1/contact-changes", () => {
     const d = await get(app, `/v1/contact-changes/${r.json.set_id}`);
     expect(d.status).toBe(200);
     expect(d.json.dashboard_url).toBe(`${origin}/#/contacts/changes/${r.json.set_id}`);
-    expect(d.json.counts).toEqual({ auto_queued: 1, review: 1 });
+    expect(d.json.counts).toEqual({ review: 2 });
     const [create, edit] = d.json.changes;
-    expect(create).toMatchObject({ kind: "create", status: "auto_queued", before: null, payload: { given_name: "New", phones: [{ e164: "+14155550123" }] } });
+    expect(create).toMatchObject({ kind: "create", status: "review", before: null, payload: { given_name: "New", phones: [{ e164: "+14155550123" }] } });
     expect(edit).toMatchObject({ kind: "update", status: "review", payload: { set: { given_name: "Sam 📚" } } });
     expect(edit.before).toEqual({ contact_id: id, display_name: "Sam Lee", given_name: "Sam", family_name: "Lee", nickname: "", org: "Acme", phones: ["+12025550009"], emails: ["sam@x.co"], groups: ["Friends"] });
     expect(JSON.stringify(d.json)).not.toContain("BEGIN:VCARD");
     expect(edit.has_snapshot).toBe(true);
     const l = await get(app, "/v1/contact-changes");
     expect(l.json.sets).toHaveLength(1);
-    expect(l.json.sets[0]).toMatchObject({ id: r.json.set_id, counts: { auto_queued: 1, review: 1 }, status: "review", dashboard_url: d.json.dashboard_url });
+    expect(l.json.sets[0]).toMatchObject({ id: r.json.set_id, counts: { review: 2 }, status: "review", dashboard_url: d.json.dashboard_url });
     expect((await get(app, "/v1/contact-changes?status=review")).json.sets).toHaveLength(1);
     expect((await get(app, "/v1/contact-changes?status=done")).json.sets).toHaveLength(0);
     expect((await get(app, "/v1/contact-changes?status=bogus")).status).toBe(400);
@@ -317,7 +319,8 @@ describe("POST /v1/imports/:id/contact-changes", () => {
     expect(creates[0]).toEqual({ given_name: "Cara📚", family_name: "New", phones: [{ e164: "+14155550103", label: "mobile" }], emails: [{ email: "cara@x.co", label: "home" }], groups: ["Book club"] });
     expect(creates[1]).toMatchObject({ phones: [], emails: [{ email: "dee@x.co", label: "home" }] });
     expect(r.json.skipped.map((s: any) => s.reason)).toEqual(expect.arrayContaining([expect.stringMatching(/No usable phone number or email/), expect.stringMatching(/Duplicate|Same person/)]));
-    expect(r.json.counts).toMatchObject({ auto_queued: 2 });
+    expect(r.json.counts).toMatchObject({ review: 4 });
+    expect(rows.filter((x) => x.kind === "create").map((x) => [x.status, x.requires_approval])).toEqual([["review", 1], ["review", 1]]);
     expect(r.json.import_id).toBe(importId);
     expect(db.query("SELECT source, status, title FROM contact_change_sets WHERE id = ?").get(r.json.set_id)).toEqual({ source: "import", status: "review", title: "Contacts from people.csv" });
   });
@@ -381,17 +384,18 @@ describe("MCP tools and CLI verbs", () => {
   const textOf = (r: any): string => r.content.map((c: any) => c.text).join("\n");
   const jsonOf = (r: any) => JSON.parse(textOf(r).slice(textOf(r).indexOf("{")));
 
-  test("descriptions say plainly: new contacts are automatic after a duplicate check, edits wait for Touch ID, the user can undo, you can't approve", async () => {
+  test("descriptions say plainly: nothing is automatic, new contacts and edits wait for Touch ID, the user can undo, you can't approve", async () => {
     const { client } = await connect();
     const { tools } = await client.listTools();
     const d = Object.fromEntries(tools.map((t) => [t.name, t.description ?? ""]));
     for (const n of ["outbox_propose_contacts", "outbox_contacts_from_import"]) {
-      expect(d[n]).toContain("added to the user's Contacts automatically");
-      expect(d[n]).toContain("live duplicate check");
+      expect(d[n]).toContain("Nothing is ever added to or changed in the user's Contacts automatically");
+      expect(d[n]).toContain("every new contact AND every edit");
+      expect(d[n]).not.toContain("added automatically");
       expect(d[n]).toContain("Touch ID approval");
       expect(d[n]).toContain("can undo any change");
       expect(d[n]).toContain("You cannot approve, apply or undo");
-      // fix round: what waits for the owner even though it is a new contact
+      // fix round: what carries a note to check even though every new contact waits for the owner
       expect(d[n]).toContain("only a first or only a last name");
       expect(d[n]).toContain("looks like one already in Contacts");
       expect(d[n]).toContain("joins a Contacts group that already exists");
@@ -408,11 +412,11 @@ describe("MCP tools and CLI verbs", () => {
     const id = seedContact(db, { name: "Sam Lee", given: "Sam", family: "Lee", phones: [{ e164: "+12025550009", label: "mobile" }] });
     const p = await client.callTool({ name: "outbox_propose_contacts", arguments: { title: "Via MCP", creates: [{ given_name: "New", family_name: "Person", phones: ["4155550123"] }], updates: [{ contact_id: id, set: { given_name: "Sam 📚" } }] } }) as any;
     expect(p.isError).toBeFalsy();
-    expect(textOf(p)).toMatch(/^Contact change set .*: 1 automatic, 1 waiting for the user's approval, 0 not needed\. Review link: https:\/\/outbox\.test\/#\/contacts\/changes\//);
+    expect(textOf(p)).toMatch(/^Contact change set .*: 2 waiting for the user's Touch ID approval, 0 not needed\. Review link: https:\/\/outbox\.test\/#\/contacts\/changes\//);
     const set_id = jsonOf(p).set_id;
     expect(db.query("SELECT created_by, source FROM contact_change_sets WHERE id = ?").get(set_id)).toEqual({ created_by: "agent:mcp-cc", source: "mcp" });
     const g = await client.callTool({ name: "outbox_get_contact_changes", arguments: { set_id } }) as any;
-    expect(jsonOf(g).changes.map((c: any) => c.status)).toEqual(["auto_queued", "review"]);
+    expect(jsonOf(g).changes.map((c: any) => c.status)).toEqual(["review", "review"]);
     const l = await client.callTool({ name: "outbox_get_contact_changes", arguments: { status: "review" } }) as any;
     expect(jsonOf(l).sets[0].id).toBe(set_id);
     const bad = await client.callTool({ name: "outbox_propose_contacts", arguments: { title: "Bad", creates: [{ given_name: "A" }] } }) as any;
@@ -421,7 +425,7 @@ describe("MCP tools and CLI verbs", () => {
     const imp = await client.callTool({ name: "outbox_ingest_file", arguments: { text: "Name,Phone\nPat Q,415-555-0144\n", kind: "csv", filename: "p.csv" } }) as any;
     const fi = await client.callTool({ name: "outbox_contacts_from_import", arguments: { import_id: jsonOf(imp).import_id, first_name_suffix: "📚" } }) as any;
     expect(fi.isError).toBeFalsy();
-    expect(jsonOf(fi).counts).toMatchObject({ auto_queued: 1 });
+    expect(jsonOf(fi).counts).toMatchObject({ review: 1 });
   });
 
   async function runCli(app: any, args: string[], stdin = "") {
@@ -438,7 +442,7 @@ describe("MCP tools and CLI verbs", () => {
     await Bun.write(file, JSON.stringify({ title: "CLI", creates: [{ given_name: "New", family_name: "Person", phones: ["4155550123"] }], updates: [{ contact_id: sam, set: { given_name: "Sam 📚" } }] }));
     const p = await runCli(app, ["contacts", "propose", "--file", file]);
     expect(p.code).toBe(0);
-    expect(p.out).toContain("1 automatic, 1 waiting for the user's approval, 0 not needed");
+    expect(p.out).toContain("2 waiting for the user's Touch ID approval, 0 not needed");
     expect(p.out).toContain("dashboard: https://outbox.test/#/contacts/changes/");
     const set_id = (db.query("SELECT id FROM contact_change_sets").get() as any).id;
     expect(db.query("SELECT created_by, source FROM contact_change_sets WHERE id = ?").get(set_id)).toEqual({ created_by: "agent:cli-cc", source: "cli" });
@@ -446,7 +450,7 @@ describe("MCP tools and CLI verbs", () => {
     expect(c.out).toContain("CLI  [review]");
     expect(c.out).toContain("Sam Lee");
     expect(c.out).toContain('set given_name="Sam 📚"');
-    expect(c.out).toContain("[auto_queued]");
+    expect(c.out).toContain("[review]  (new contact)");
     expect((await runCli(app, ["contacts", "changes"])).out).toContain(set_id);
     expect((await runCli(app, ["contacts", "changes", "--status", "done"])).out).toBe("no contact change sets");
     const j = await runCli(app, ["contacts", "changes", set_id, "--json"]);
@@ -454,7 +458,7 @@ describe("MCP tools and CLI verbs", () => {
     const imp = await runCli(app, ["import", "-", "--kind", "csv", "--filename", "p.csv", "--json"], "Name,Phone\nPat Q,415-555-0144\n");
     const fi = await runCli(app, ["contacts", "from-import", JSON.parse(imp.out).import_id, "--suffix", "📚", "--group", "Book club", "--group", "Two"]);
     expect(fi.code).toBe(0);
-    expect(fi.out).toContain("1 automatic");
+    expect(fi.out).toContain("1 waiting for the user's Touch ID approval");
     const created = JSON.parse((db.query("SELECT payload_json FROM contact_changes WHERE set_id <> ? AND kind = 'create'").get(set_id) as any).payload_json);
     expect(created).toMatchObject({ given_name: "Pat📚", groups: ["Book club", "Two"] });
     // usage and errors
@@ -516,25 +520,27 @@ describe("invisible characters, email length and undo fingerprints are refused",
   });
 });
 
-describe("auto creates that could impersonate someone wait for the user", () => {
+describe("every new contact waits for the user; ones that could impersonate someone also carry a note", () => {
   const person = (extra: object = {}) => ({ given_name: "Dana", family_name: "Wells", phones: ["4155550444"], ...extra });
   const setNick = (db: any, id: string, nick: string) => db.query("UPDATE contacts SET nickname = ? WHERE id = ?").run(nick, id);
   const setGroups = (db: any, id: string, groups: string[]) => db.query("INSERT INTO contact_attrs(contact_id, groups_json) VALUES (?,?)").run(id, JSON.stringify(groups));
   const only = async (app: any, body: object) => { const r = await post(app, "/v1/contact-changes", { title: "T", ...body }); expect(r.status).toBe(201); return r.json; };
 
-  test("a clean two-name create is still automatic", async () => {
+  test("a clean two-name create is review with requires_approval 1 and the note 'new contact' (never auto_queued)", async () => {
     const { db, app } = await setup();
     seedContact(db, { name: "Alice Smith", given: "Alice", family: "Smith", phones: [{ e164: "+12025550001", label: "mobile" }] });
     const r = await only(app, { creates: [person()] });
-    expect(r.changes[0]).toMatchObject({ kind: "create", status: "auto_queued", note: "" });
-    expect(r.status).toBe("drafting");
+    expect(r.changes[0]).toMatchObject({ kind: "create", status: "review", note: "new contact" });
+    expect(r.status).toBe("review");
+    expect(r.counts).toEqual({ review: 1, rejected: 0 });
+    expect(db.query("SELECT requires_approval, status FROM contact_changes WHERE set_id = ?").all(r.set_id)).toEqual([{ requires_approval: 1, status: "review" }]);
   });
 
   test("only one name (given or family) -> review as a create, requires_approval 1, note 'only one name; please check'", async () => {
     const { db, app } = await setup();
     const r = await only(app, { creates: [{ given_name: "Dana", phones: ["4155550444"] }, { family_name: "Wells", phones: ["4155550445"] }] });
     expect(r.changes.map((c: any) => [c.kind, c.status, c.note])).toEqual([["create", "review", "only one name; please check"], ["create", "review", "only one name; please check"]]);
-    expect(r.counts).toMatchObject({ auto_queued: 0, review: 2 });
+    expect(r.counts).toEqual({ review: 2, rejected: 0 });
     expect(r.status).toBe("review");
     expect(db.query("SELECT requires_approval, status, kind FROM contact_changes WHERE set_id = ?").all(r.set_id)).toEqual([
       { requires_approval: 1, status: "review", kind: "create" }, { requires_approval: 1, status: "review", kind: "create" }]);
@@ -549,11 +555,11 @@ describe("auto creates that could impersonate someone wait for the user", () => 
       { given_name: "Jаne", family_name: "Doe", phones: ["4155550102"] },      // Cyrillic а
       { given_name: "Álice", family_name: "Smith", phones: ["4155550103"] },        // accent
       { given_name: "alice", family_name: "SMITH", phones: ["4155550104"] },        // case
-      { given_name: "Alice", family_name: "Smyth", phones: ["4155550105"] },        // different name: stays automatic
+      { given_name: "Alice", family_name: "Smyth", phones: ["4155550105"] },        // different name: just "new contact"
     ] });
     expect(r.changes.map((c: any) => [c.status, c.note])).toEqual([
       ["review", "same name as an existing contact"], ["review", "same name as an existing contact"], ["review", "same name as an existing contact"],
-      ["review", "same name as an existing contact"], ["auto_queued", ""],
+      ["review", "same name as an existing contact"], ["review", "new contact"],
     ]);
     expect(r.changes.slice(0, 4).every((c: any) => c.kind === "create")).toBe(true);
   });
@@ -571,8 +577,8 @@ describe("auto creates that could impersonate someone wait for the user", () => 
       person({ nickname: "Cy Import", phones: ["4155550204"] }),   // only in the import cache
       person({ nickname: "Dani", phones: ["4155550205"] }),
     ] });
-    expect(r.changes.map((c: any) => c.status)).toEqual(["review", "review", "review", "auto_queued", "auto_queued"]);
-    expect(r.changes[0].note).toBe("same name as an existing contact");
+    expect(r.changes.map((c: any) => c.status)).toEqual(["review", "review", "review", "review", "review"]);
+    expect(r.changes.map((c: any) => c.note)).toEqual(["same name as an existing contact", "same name as an existing contact", "same name as an existing contact", "new contact", "new contact"]);
   });
 
   test("joining a group that exists in the cache (other than 'Outbox imports') -> review 'joins an existing group'", async () => {
@@ -586,7 +592,7 @@ describe("auto creates that could impersonate someone wait for the user", () => 
       person({ groups: ["Brand New"], phones: ["4155550304"] }),         // a group nobody is in yet
     ] });
     expect(r.changes.map((c: any) => [c.status, c.note])).toEqual([
-      ["review", "joins an existing group"], ["review", "joins an existing group"], ["auto_queued", ""], ["auto_queued", ""]]);
+      ["review", "joins an existing group"], ["review", "joins an existing group"], ["review", "new contact"], ["review", "new contact"]]);
   });
 
   test("several reasons are all in the note; a create whose handle is already known still converts to an edit (not a create in review)", async () => {

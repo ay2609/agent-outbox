@@ -7,7 +7,7 @@ public struct ExecSettings {
     public var transport = "dry"
     public var killSwitch = true      // missing or unparseable => engaged
     public var breakerOnFailure = true
-    /// v4: what auto-created contacts use. Anything but "live" means dry. It only counts when the trusted pin also allows contacts live.
+    /// v4: display only (heartbeat). Which lane a contact approval uses is decided by its signed manifest and the pin policy.
     public var contactsTransport = "dry"
 
     public static func load(_ db: Database) throws -> ExecSettings {

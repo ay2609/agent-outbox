@@ -20,7 +20,7 @@ import { APPROVAL_HOURS, challengeBytes } from "./approval";
 import { pinContactsLiveAllowed } from "./status";
 
 /** Changes still waiting for something (the owner, the executor). `failed`, `rejected`, `applied` and `undone` are over. */
-const OPEN = ["pending", "auto_queued", "review", "approved"];
+const OPEN = ["pending", "auto_queued", "review", "approved"]; // auto_queued: legacy value, migrated to review at open
 
 // ---------- manifest ----------
 export const contactManifestItem = (ch: Pick<ContactChange, "id" | "kind" | "target_macos_id" | "payload_json">): ContactManifestItem => ({
@@ -105,9 +105,7 @@ function checkApprovable(db: Database, ch: ContactChange, live: ContactApprovalR
   const ref = { change_id: ch.id };
   const ok = ch.status === "review" || ch.status === "approved";
   if (!ok) {
-    throw conflict("change_not_approvable", ch.status === "auto_queued"
-      ? "New contacts that are added automatically don't need approval."
-      : `A change that is ${ch.status} can't be approved.`, ref);
+    throw conflict("change_not_approvable", `A change that is ${ch.status} can't be approved.`, ref);
   }
   if (ch.status === "approved" && coveringContactApproval(db, ch, live)) throw conflict("already_approved", "A change is already in an approval that hasn't been used.", ref);
   if (contactChangeConsumed(db, ch.id)) throw conflict("change_consumed", "That change was already attempted; it can't be approved again.", ref);
@@ -354,26 +352,6 @@ export function restoreContactApprovals(db: Database, ids: string[], changeIds: 
   for (const s of sets) refreshSetStatus(db, s);
   if (approvals) audit(db, actor, "contact_approval.restore", null, { approvals, changes });
   return { approvals, changes };
-}
-
-// ---------- Stop: queued auto creates ----------
-/** Stop also holds every queued auto create (status auto_queued, nothing recorded by the executor): it becomes a `review` create
- *  that needs the owner's approval, note "held by Stop". Resume does not put them back; the owner approves them from Changes if
- *  they still want them. Run inside the Stop transaction, after the kill switch is set. */
-export function holdAutoCreates(db: Database, actor: string, why = "stop all sending"): { changes: number; change_ids: string[] } {
-  return db.transaction(() => {
-    const rows = db.query<{ id: string; set_id: string }, []>(
-      `SELECT id, set_id FROM contact_changes WHERE kind = 'create' AND status = 'auto_queued'
-         AND NOT EXISTS (SELECT 1 FROM contact_applies a WHERE a.change_id = contact_changes.id)`).all();
-    const sets = new Set<string>();
-    for (const r of rows) {
-      db.query("UPDATE contact_changes SET status = 'review', requires_approval = 1, note = 'held by Stop' WHERE id = ? AND status = 'auto_queued'").run(r.id);
-      sets.add(r.set_id);
-    }
-    for (const s of sets) refreshSetStatus(db, s);
-    if (rows.length) audit(db, actor, "contact_changes.hold", null, { why, count: rows.length, sets: [...sets] });
-    return { changes: rows.length, change_ids: rows.map((r) => r.id) };
-  })();
 }
 
 // ---------- undo ----------

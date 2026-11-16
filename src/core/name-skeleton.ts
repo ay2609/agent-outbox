@@ -1,7 +1,7 @@
 // Name "skeleton": what a name looks like once the tricks that make two different strings read the same are removed.
-// Used to send an auto-created contact to the user's review when it would look like someone already in Contacts
-// (an impersonation: "Alice Smith" with a book emoji, a Cyrillic "а", an accent). The Swift executor repeats the same
-// comparison against the live address book; this copy runs at propose time against the cache.
+// Used to flag a proposed new contact for the user's review when it would look like someone already in Contacts
+// (an impersonation: "Alice Smith" with a book emoji, a Cyrillic "а", an accent). This copy runs at propose time against the
+// cache and only adds a note for the user: the executor no longer repeats it, because every new contact needs Touch ID anyway.
 //
 // skeleton(s) = NFKC -> drop ZWJ / VS16 and emoji and symbol characters -> map common Cyrillic and Greek look-alikes to
 // Latin -> NFD with combining marks removed -> lowercase -> collapse whitespace.

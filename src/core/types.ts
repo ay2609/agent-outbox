@@ -125,7 +125,7 @@ export interface PinFile {
  *  Older pin files may carry extra pacing fields; readers ignore them. */
 export interface PinPolicy {
   live_allowed: boolean;      // false → executor never uses the live transport
-  /** v4: false or missing → contact changes (auto creates and approved edits) are only ever applied dry. */
+  /** v4: false or missing → approved contact changes (creates, edits, undos) are only ever applied dry. */
   contacts_live_allowed?: boolean;
 }
 export const DEFAULT_PIN_POLICY: PinPolicy = { live_allowed: false, contacts_live_allowed: false };
@@ -136,7 +136,7 @@ export interface Settings {
   kill_switch: boolean;
   kill_reason: "" | "owner" | "breaker";
   breaker_on_failure: boolean;
-  contacts_transport: "dry" | "live";   // v4: what auto creates use and what new contacts manifests ask for
+  contacts_transport: "dry" | "live";   // v4: what new contacts manifests ask for (the executor's lane is also capped by the pin policy)
 }
 
 // ===== v4: native contact management =====

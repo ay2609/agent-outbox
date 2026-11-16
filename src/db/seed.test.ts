@@ -65,3 +65,37 @@ describe("openDb liveDefaults", () => {
     expect(getPinPolicy(openDb(path))).toEqual({ live_allowed: true });
   });
 });
+
+describe("contacts are never added automatically: open-time migration", () => {
+  const insertSet = (db: ReturnType<typeof openDb>, id: string, status: string) =>
+    db.query("INSERT INTO contact_change_sets(id, title, created_by, source, status, created_at, updated_at) VALUES (?, 't', 'agent:x', 'mcp', ?, 'now', 'now')").run(id, status);
+  const insertChange = (db: ReturnType<typeof openDb>, id: string, set: string, status: string, requires: number, note = "") =>
+    db.query("INSERT INTO contact_changes(id, set_id, position, kind, payload_json, requires_approval, status, note, created_at) VALUES (?, ?, 0, 'create', '{}', ?, ?, ?, 'now')").run(id, set, requires, status, note);
+
+  test("a leftover auto_queued create (requires_approval 0) becomes review / requires_approval 1 at open, its drafting set becomes review; idempotent", () => {
+    const path = tmpDb();
+    const a = openDb(path);
+    insertSet(a, "s1", "drafting");
+    insertChange(a, "c1", "s1", "auto_queued", 0);
+    insertChange(a, "c2", "s1", "auto_queued", 0, "same name as an existing contact");
+    insertChange(a, "c3", "s1", "review", 0);                       // a review row that claims no approval is needed
+    insertChange(a, "c4", "s1", "applied", 0);                      // history is left alone ...
+    insertChange(a, "c5", "s1", "auto_queued", 0);                  // ... and so is a row the executor already consumed
+    a.query("INSERT INTO contact_applies(id, change_id, approval_id, transport, started_at) VALUES ('a5', 'c5', NULL, 'live', 'now')").run();
+    insertSet(a, "s2", "done");
+    a.close();
+    for (let i = 0; i < 2; i++) { // the second open changes nothing more
+      const b = openDb(path);
+      const rows = b.query("SELECT id, status, requires_approval, note FROM contact_changes ORDER BY id").all();
+      expect(rows).toEqual([
+        { id: "c1", status: "review", requires_approval: 1, note: "new contact" },
+        { id: "c2", status: "review", requires_approval: 1, note: "same name as an existing contact" },
+        { id: "c3", status: "review", requires_approval: 1, note: "new contact" },
+        { id: "c4", status: "applied", requires_approval: 0, note: "" },
+        { id: "c5", status: "auto_queued", requires_approval: 0, note: "" },
+      ]);
+      expect(b.query("SELECT id, status FROM contact_change_sets ORDER BY id").all()).toEqual([{ id: "s1", status: "review" }, { id: "s2", status: "done" }]);
+      b.close();
+    }
+  });
+});

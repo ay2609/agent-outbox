@@ -116,9 +116,7 @@ function Shell({ setup }: { setup: { login: boolean; approve: boolean } }) {
       setStopSheet(false);
       // Message approvals and (v4) contacts approvals are both cancelled by a stop.
       const n = (r.revoked_approvals ?? 0) + (r.revoked_contact_approvals ?? 0);
-      const held = r.held_contact_creates ?? 0; // queued new contacts that were waiting to be added automatically
-      const msg = (n ? `Stopped. ${n} approval${n === 1 ? "" : "s"} cancelled.` : "Stopped. Nothing will send.")
-        + (held ? ` ${held} new contact${held === 1 ? "" : "s"} waiting to be added now need${held === 1 ? "s" : ""} your approval.` : "");
+      const msg = (n ? `Stopped. ${n} approval${n === 1 ? "" : "s"} cancelled.` : "Stopped. Nothing will send.");
       // 10 seconds to change your mind: undo restores exactly the approvals this stop revoked.
       toast(msg, "good", {
         ms: 10_000,
@@ -189,7 +187,7 @@ function Shell({ setup }: { setup: { login: boolean; approve: boolean } }) {
         </nav>
         <Sheet open={stopSheet} onClose={() => setStopSheet(false)} title="Stop all sending?"
           footer={<><button className="btn btn-danger btn-wide" disabled={busy} onClick={stop} data-testid="stop-confirm">{busy ? "Stopping…" : "Stop all sending"}</button><button className="btn btn-wide" onClick={() => setStopSheet(false)}>Keep sending</button></>}>
-          <p>Nothing goes out until you resume. Every approval is cancelled and its messages go back to review, so you would approve them again. Approved contact changes are held back too.</p>
+          <p>Nothing goes out until you resume. Every approval is cancelled and its messages go back to review, so you would approve them again. Approved contact changes are held back too. Nothing is added to Contacts without your Touch ID approval.</p>
           <p className="small muted">{status.data?.counts?.drafts_approved ? `${status.data.counts.drafts_approved} approved message${status.data.counts.drafts_approved === 1 ? " is" : "s are"} waiting to send.` : "No approved messages are waiting."} You get 10 seconds to undo.</p>
         </Sheet>
         <Sheet open={resumeSheet} onClose={() => setResumeSheet(false)} title="Allow sending again?"

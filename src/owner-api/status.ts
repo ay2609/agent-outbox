@@ -69,7 +69,7 @@ export function pinLiveAllowed(cfg: OwnerConfig): boolean {
   const e = readEffectivePin(cfg);
   return !!e && e.pin.v === 2 && normalizePolicy(e.pin.policy)?.live_allowed === true;
 }
-/** v4: does the EFFECTIVE pin allow live contact changes (auto creates and approved edits)? */
+/** v4: does the EFFECTIVE pin allow live contact changes (approved creates, edits and undos)? */
 export function pinContactsLiveAllowed(cfg: OwnerConfig): boolean {
   const e = readEffectivePin(cfg);
   return !!e && e.pin.v === 2 && normalizePolicy(e.pin.policy)?.contacts_live_allowed === true;

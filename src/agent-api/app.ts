@@ -775,14 +775,13 @@ export function createAgentApp(opts: AgentAppOptions = {}): Hono {
   });
 
   // ----- contact changes (v4) -----
-  // Draft-only like everything here: creates are queued for the executor (after its live duplicate check), edits wait in
-  // review for the user's Touch ID. No route here approves, applies or undoes anything.
+  // Draft-only like everything here: new contacts and edits alike wait in review for the user's Touch ID. No route here
+  // approves, applies or undoes anything, and nothing here can queue a contact for automatic apply.
   const contactSetUrl = (setId: string) => `${origin}/#/contacts/changes/${setId}`;
   const contactSource = (w: Who): ContactSetSource => (w.source === "cli" ? "cli" : "mcp");
   function proposeView(r: ProposeResult, extra: object = {}) {
     const lines = [
-      r.counts.auto_queued ? `${r.counts.auto_queued} new contact(s) will be added automatically (after a live duplicate check)` : "",
-      r.counts.review ? `${r.counts.review} change(s) wait for the user's Touch ID approval (edits, and new contacts with one name only, a look-alike name or an existing group; see each note)` : "",
+      r.counts.review ? `${r.counts.review} change(s) (new contacts and edits) wait for the user's Touch ID approval; nothing is added to Contacts until they approve (see each note)` : "",
       r.counts.rejected ? `${r.counts.rejected} change(s) need nothing and were not queued` : "",
     ].filter(Boolean);
     return { set_id: r.set_id, status: r.status, dashboard_url: contactSetUrl(r.set_id), counts: r.counts, changes: r.changes.map((c) => ({ id: c.id, kind: c.kind, status: c.status, note: c.note })), message: lines.join("; ") + ". The user can undo any change.", ...extra };

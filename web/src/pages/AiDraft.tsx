@@ -35,11 +35,11 @@ const SECTIONS: Section[] = [
     prompts: [
       {
         title: "Add people to my contacts",
-        text: "Add these people to my contacts with agent-outbox: [paste your list: one person per line, name and number or email]. Tell me who was added, who was already in my contacts, and anything you couldn't use.",
+        text: "Add these people to my contacts with agent-outbox: [paste your list: one person per line, name and number or email]. Nothing is added until I approve it with Touch ID, so tell me who you drafted for my approval, who was already in my contacts, and anything you couldn't use.",
       },
       {
         title: "Make contacts from a file and save them as a group",
-        text: "From [path to the file], use agent-outbox to make contacts and save them as the group '[Book club]'. People who are already in my contacts still go in the group. Show me any rows you couldn't use.",
+        text: "From [path to the file], use agent-outbox to make contacts and save them as the group '[Book club]'. People who are already in my contacts still go in the group; new contacts wait for my Touch ID approval. Show me any rows you couldn't use.",
       },
     ],
   },

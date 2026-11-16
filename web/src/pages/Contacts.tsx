@@ -76,7 +76,7 @@ export function Contacts() {
       {(pending.data?.pending.length ?? 0) > 0 && !dq && (
         <section className="section">
           <h2 className="section-title">Waiting to be created</h2>
-          <p className="muted small">Added to your address book only when the batch they belong to is approved.</p>
+          <p className="muted small">Added to your address book only after you approve the batch they belong to with Touch ID.</p>
           <div className="stack">
             {pending.data!.pending.map((p) => (
               <a key={p.draft_id} className="card card-link" href={href("batch", p.batch_id)}>

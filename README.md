@@ -43,7 +43,7 @@ The installer builds the dashboard and the executor, starts two per-user LaunchA
 
 1. Open the setup link the installer printed (`http://localhost:7477/#/setup?token=…`). Lost it? `./install.sh --setup-link`.
 2. Create the two passkeys it asks for: one to sign in, one to approve sending.
-3. You start **live**: a message you approve with Touch ID is really sent. Nothing goes out without that approval, and every message needs its own. New contacts your agent proposes are different: they are added to your Mac's Contacts automatically (after a duplicate check), without Touch ID. Edits to existing contacts, and undoing a change, do need it. Ask your agent to draft a text to yourself and try it. On the first send macOS asks whether "Agent Outbox" may control Messages, and on the first contacts sync it asks for Contacts. Allow both only for "Agent Outbox".
+3. You start **live**: a message you approve with Touch ID is really sent. Nothing goes out without that approval, and every message needs its own. Contacts work the same way: new contacts, edits and undos your agent proposes wait for your Touch ID approval, and nothing is ever added to your Contacts automatically. Ask your agent to draft a text to yourself and try it. On the first send macOS asks whether "Agent Outbox" may control Messages, and on the first contacts sync it asks for Contacts. Allow both only for "Agent Outbox".
 
 The dashboard's **AI draft** tab has ready-made prompts to paste into your agent (text one person, personalise a batch, work from a spreadsheet, add contacts, check what was sent), each with a Copy button.
 
@@ -55,7 +55,7 @@ The dashboard's **AI draft** tab has ready-made prompts to paste into your agent
 
 ## Dry run and live
 
-You start live. To try things without sending anything, open Settings and switch **Sending** to **Dry run**: approved messages are only written to `~/Library/Application Support/agent-outbox/logs/dry-sends.jsonl` and Contacts is not touched. Switching back to **Live** asks for Touch ID. Live also means new contacts your agent proposes are added to your Contacts without Touch ID (after a duplicate check; you can undo them); edits and undos need Touch ID. (An install from before this change keeps the setting it had.)
+You start live. To try things without sending anything, open Settings and switch **Sending** to **Dry run**: approved messages are only written to `~/Library/Application Support/agent-outbox/logs/dry-sends.jsonl` and Contacts is not touched. Switching back to **Live** asks for Touch ID. Live also means approved contact changes are really written to your Contacts; every new contact, edit and undo still needs its own Touch ID approval first (and you can undo them). (An install from before this change keeps the setting it had.)
 
 Approved messages go out right away, 2 seconds apart. **Stop** halts everything and revokes unused approvals.
 
@@ -71,7 +71,7 @@ All draft-only.
 | `outbox_update_draft`, `outbox_update_drafts`, `outbox_cancel_batch` | Edit or cancel before approval |
 | `outbox_list_batches`, `outbox_get_batch` | Status, including what was sent |
 | `outbox_ingest_file`, `outbox_get_import`, `outbox_set_mapping`, `outbox_batch_from_import` | Turn a CSV, XLSX, vCard or pasted table into a batch |
-| `outbox_propose_contacts`, `outbox_contacts_from_import`, `outbox_get_contact_changes` | Propose new contacts (added automatically after a duplicate check) or edits (wait for Touch ID) |
+| `outbox_propose_contacts`, `outbox_contacts_from_import`, `outbox_get_contact_changes` | Propose new contacts or edits (both wait for your Touch ID approval; nothing is added automatically) |
 | `outbox_list_groups`, `outbox_get_group`, `outbox_create_group`, `outbox_add_to_group`, `outbox_update_group`, `outbox_batch_from_group` | Saved groups of people (see below) |
 | `outbox_sync_contacts` | Refresh the contact list |
 

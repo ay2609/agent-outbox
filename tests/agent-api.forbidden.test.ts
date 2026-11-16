@@ -72,6 +72,9 @@ describe("source scan: agent API, MCP and CLI never write gated tables or set a 
       // v4: no undo rows from here, and no contact-change status or set status other than the proposing ones
       expect(src).not.toMatch(/INSERT\s+INTO\s+contact_changes[^;]*['"]undo['"]/is);
       expect(src).not.toMatch(/UPDATE\s+contact_(changes|change_sets)\s+SET\s+status/i);
+      // contacts are never added automatically: nothing the agent side can write is queued for apply without approval
+      expect(src).not.toMatch(/auto_queued/);
+      expect(src).not.toMatch(/requires_approval\s*[:=]\s*(0|false)\b/);
       expect(src).not.toMatch(/osascript|NSAppleScript|child_process|Bun\.spawn|\bspawn\(/);
       expect(src).not.toMatch(/owner-api/);
     });
@@ -134,6 +137,13 @@ describe("behaviour: exercise every route, then nothing is approved or sent", ()
 
     // every route in the table was exercised
     expect([...hits].sort()).toEqual(ALLOWED_ROUTES);
+
+    // contacts are never added automatically: everything the routes queued (a clean create, an edit, import rows) waits in review
+    const queued = db.query("SELECT kind, status, requires_approval FROM contact_changes").all() as any[];
+    expect(queued.length).toBeGreaterThanOrEqual(2);
+    expect(queued.some((c) => c.kind === "create")).toBe(true);
+    for (const c of queued) expect(c).toMatchObject({ status: "review", requires_approval: 1 });
+    expect((db.query("SELECT COUNT(*) AS n FROM contact_changes WHERE status = 'auto_queued' OR requires_approval = 0").get() as any).n).toBe(0);
 
     // attempts to smuggle approval through the routes that exist, and routes that must not exist
     const batchId = b1.json.batch.id, draftId = d1.json.draft.id;

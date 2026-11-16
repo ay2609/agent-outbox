@@ -376,6 +376,8 @@ Next steps
   3. You start LIVE in SIMPLE mode: a message you approve with Touch ID is really sent. Nothing goes out
      without that approval. To try it without sending, open Settings and switch Sending to Dry run
      (approved messages are then only written to $STATE/logs/dry-sends.jsonl).
+     New contacts and contact edits wait for your Touch ID approval too; nothing is added to Contacts
+     automatically.
   4. On the first send macOS asks you to let "Agent Outbox" control Messages, and on the first contacts sync
      or contact change it asks for Contacts access. Click Allow, only for "Agent Outbox".
      Try it: ask Claude to draft a text to yourself and approve it in the dashboard.

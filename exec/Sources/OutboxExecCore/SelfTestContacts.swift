@@ -102,14 +102,15 @@ extension Harness {
     }
     /// A (hardened-mode) root pin that allows contact changes live (and optionally message sending live).
     func goContactsLive(messagesLive: Bool = false) throws { try goLive(allowed: messagesLive, policy: ["contacts_live_allowed": true]) }
-    /// Inserts an already-applied auto create into the daily-cap window (or outside it).
-    func fillerApplied(set: String, startedAt: Date, transport: String = "live") throws {
-        let id = newId()
-        let t = Time.iso(startedAt)
-        try db.exec("INSERT INTO contact_changes(id, set_id, position, kind, payload_json, requires_approval, status, created_at, applied_at, transport) VALUES(?, ?, 0, 'create', '{}', 0, 'applied', ?, ?, ?)",
-                    [.text(id), .text(set), .text(t), .text(t), .text(transport)])
-        try db.exec("INSERT INTO contact_applies(id, change_id, approval_id, transport, started_at, finished_at, result, macos_id) VALUES(?, ?, NULL, ?, ?, ?, 'applied', ?)",
-                    [.text(newId()), .text(id), .text(transport), .text(t), .text(t), .text("dry:" + id)])
+    /// A create in review that is then approved with a fabricated Touch ID signature, like the dashboard does. The manifest asks for
+    /// the transport the `contacts_transport` setting says (what the server signs); the pin policy still decides the lane.
+    @discardableResult
+    func approvedCreate(set: String, payload: [String: Any]? = nil, payloadJson: String? = nil, position: Int = 0) throws -> ChangeSpec {
+        let c = try addChange(set: set, payload: payload, payloadJson: payloadJson, position: position)
+        var o = ApprovalOpts()
+        o.transport = (try db.one("SELECT value FROM settings WHERE key = 'contacts_transport'")?.str("value")) == "live" ? "live" : "dry"
+        try approveContacts(set: set, items: [c], o)
+        return c
     }
 }
 
@@ -239,189 +240,33 @@ extension SelfTest {
             try expect(pf.policy.contactsLiveAllowed && !pf.policy.liveAllowed, "contacts live is independent of message live")
         }
 
-        // ---- auto creates -----------------------------------------------------------------------------------------------
-        test("contacts: auto create is applied (dry): apply row, dry log, fingerprint, nothing written to Contacts") { h in
+        // ---- creates (never automatic) -----------------------------------------------------------------------------------------------
+        test("contacts: an approved create applies (dry): apply row with the approval, dry log, fingerprint, nothing written to Contacts") { h in
             ready(h)
             let set = try h.makeSet(status: "drafting")
-            let c = try h.addChange(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"]), auto: true)
+            let c = try h.addChange(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"]))
+            let ap = try h.approveContacts(set: set, items: [c])
             _ = try h.tick()
             let r = try h.chg(c.id)
             try expect(r.str("status") == "applied" && r.str("transport") == "dry" && r.str("result_macos_id") == "dry:" + c.id && !r.isNull("applied_at"), "change row: \(r.values)")
             let expected = "{\"e\":[],\"f\":\"Lee\",\"g\":\"Sam\",\"n\":\"\",\"o\":\"\",\"p\":[\"+15551234567\"]}"
             try expect(r.str("after_fingerprint") == Hex.sha256Hex(expected), "after_fingerprint wrong: \(r.str("after_fingerprint"))")
             let a = h.applyRows(c.id)
-            try expect(a.count == 1 && a[0].isNull("approval_id") && a[0].str("transport") == "dry" && a[0].str("result") == "applied" && !a[0].isNull("finished_at"), "apply row wrong")
+            try expect(a.count == 1 && a[0].str("approval_id") == ap && a[0].str("transport") == "dry" && a[0].str("result") == "applied" && !a[0].isNull("finished_at"), "apply row wrong")
             let lines = h.dryContactLines()
-            try expect(lines.count == 1 && lines[0]["change_id"] as? String == c.id && lines[0]["kind"] as? String == "create" && lines[0]["approval_id"] is NSNull
+            try expect(lines.count == 1 && lines[0]["change_id"] as? String == c.id && lines[0]["kind"] as? String == "create" && lines[0]["approval_id"] as? String == ap
                        && lines[0]["target_macos_id"] is NSNull && (lines[0]["payload"] as? [String: Any])?["given_name"] as? String == "Sam" && lines[0]["at"] != nil, "dry log line wrong: \(lines)")
             try expect(h.contacts.writeCount == 0 && h.contacts.exportCalls <= 1, "dry mode wrote to Contacts")
             try expect(h.setStatus(set) == "done", "set should be done, is \(h.setStatus(set))")
             try expect(h.audit("contact_applied") == 1 && h.contacts.promptAsks == 0, "audit / prompt")
         }
-        test("contacts: a live handle hit turns the create into a review update ('already in Contacts'), or rejects it when nothing differs") { h in
-            ready(h)
-            let card = h.contacts.add(given: "Sam", family: "Lee", phones: ["+15551234567"])
-            let set = try h.makeSet(status: "drafting")
-            let a = try h.addChange(set: set, payload: CP.create(given: "Sam🐚", family: "Lee", phones: ["+15551234567"], emails: ["sam@example.com"], groups: ["Team"]), auto: true, position: 0)
-            let b = try h.addChange(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"]), auto: true, position: 1)
-            _ = try h.tick()
-            let r = try h.chg(a.id)
-            try expect(r.str("kind") == "update" && r.str("status") == "review" && r.i("requires_approval") == 1 && r.str("note") == "already in Contacts" && r.str("target_macos_id") == card.identifier, "converted row: \(r.values)")
-            guard case .update(let u) = try ContactPayloadParser.parse(kind: "update", json: r.str("payload_json"), targetMacosId: card.identifier) else { throw CaseFailure(message: "not an update") }
-            try expect(u.set == ["given_name": "Sam🐚"] && u.addPhones.isEmpty && u.addEmails.map { $0.value } == ["sam@example.com"] && u.addGroups == ["Team"] && u.fromCreate, "converted payload wrong: \(r.str("payload_json"))")
-            let rb = try h.chg(b.id)
-            try expect(rb.str("status") == "rejected" && rb.str("note") == "already in Contacts, nothing to change", "nothing-to-change row: \(rb.values)")
-            try expect(h.contacts.writeCount == 0 && h.applyRows(a.id).isEmpty && h.dryContactLines().isEmpty, "a converted create must write nothing")
-            try expect(h.setStatus(set) == "review", "set with a change in review should be review, is \(h.setStatus(set))")
-        }
-        test("contacts: handles matching more than one contact fail the create") { h in
-            ready(h)
-            h.contacts.add(given: "A", phones: ["+15551110001"])
-            h.contacts.add(given: "B", emails: ["b@example.com"])
-            let set = try h.makeSet()
-            let c = try h.addChange(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551110001"], emails: ["b@example.com"]), auto: true)
-            _ = try h.tick()
-            let r = try h.chg(c.id)
-            try expect(r.str("status") == "failed" && r.str("error").contains("matches 2 contacts") && h.contacts.writeCount == 0 && h.applyRows(c.id).isEmpty, "multi-hit: \(r.values)")
-        }
-        test("contacts: same name as an existing contact (case and diacritics ignored) goes to review and stays a create") { h in
-            ready(h)
-            h.contacts.add(given: "Sám", family: "LEE", phones: ["+15550000001"])
-            let set = try h.makeSet()
-            let c = try h.addChange(set: set, payload: CP.create(given: "sam", family: "lee", phones: ["+15551234567"]), auto: true)
-            let noFamily = try h.addChange(set: set, payload: CP.create(given: "Sam", family: "", phones: ["+15551234568"]), auto: true, position: 1)
-            _ = try h.tick()
-            let r = try h.chg(c.id)
-            try expect(r.str("status") == "review" && r.str("kind") == "create" && r.i("requires_approval") == 1 && r.str("note") == "same name as an existing contact" && h.applyRows(c.id).isEmpty, "name collision: \(r.values)")
-            let nf = try h.chg(noFamily.id)
-            try expect(nf.str("status") == "review" && nf.str("kind") == "create" && nf.i("requires_approval") == 1 && nf.str("note") == "only one name; please check" && h.applyRows(noFamily.id).isEmpty, "one name: \(nf.values)")
-        }
-        test("contacts: an auto create needs both a given and a family name (each with a letter or digit), else it goes to review") { h in
+        test("contacts: an invalid approved create fails and writes nothing (no handle, long name, bidi character)") { h in
             ready(h)
             let set = try h.makeSet()
-            let a = try h.addChange(set: set, payload: CP.create(given: "Madonna", family: "", phones: ["+15551110001"]), auto: true, position: 0)
-            let b = try h.addChange(set: set, payload: CP.create(given: "", family: "Cher", phones: ["+15551110002"]), auto: true, position: 1)
-            let c = try h.addChange(set: set, payload: CP.create(given: "Sam", family: "\u{1F41A}", phones: ["+15551110003"]), auto: true, position: 2)
-            let d = try h.addChange(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551110004"]), auto: true, position: 3)
-            _ = try h.tick()
-            for x in [a, b, c] {
-                let r = try h.chg(x.id)
-                try expect(r.str("status") == "review" && r.str("kind") == "create" && r.i("requires_approval") == 1 && r.str("note") == "only one name; please check" && h.applyRows(x.id).isEmpty, "\(r.values)")
-            }
-            try expect(h.chgStatus(d.id) == "applied", "two names apply")
-        }
-        test("contacts: name skeleton folds emoji, ZWJ/VS16, Cyrillic and Greek look-alikes, accents, case, width and spacing") { _ in
-            let want = "alice smith"
-            let variants = ["Alice Smith", "Alice\u{1F41A} Smith", "Alice \u{1F41A}Smith", "A\u{200D}lice Sm\u{FE0F}ith", "\u{0410}lic\u{0435} Smi\u{0442}h", "\u{0391}lice Smith",
-                            "\u{00C1}LICE   SMITH", "\u{FF21}\u{FF4C}\u{FF49}\u{FF43}\u{FF45} Smith", "Alice\u{1F469}\u{1F3FD} Smith", "  alice smith  ", "Alice \u{2605}Smith\u{00A9}",
-                            "Al\u{0456}ce \u{0405}mith", "\u{03B1}lice Smith"]
-            for v in variants { try expect(NameSkeleton.of(v) == want, "skeleton of \(v.debugDescription) is \(NameSkeleton.of(v).debugDescription)") }
-            try expect(NameSkeleton.of("Alice Smyth") != want && NameSkeleton.of("Alicia Smith") != want, "different names must stay different")
-            try expect(NameSkeleton.of("\u{1F41A}\u{1F41A}").isEmpty, "an all-emoji name has an empty skeleton")
-            // every mapped look-alike lands on its Latin letter
-            let pairs: [(String, String)] = [("\u{0430}", "a"), ("\u{0432}", "b"), ("\u{0435}", "e"), ("\u{043A}", "k"), ("\u{043C}", "m"), ("\u{043D}", "h"), ("\u{043E}", "o"),
-                                             ("\u{0440}", "p"), ("\u{0441}", "c"), ("\u{0442}", "t"), ("\u{0443}", "y"), ("\u{0445}", "x"), ("\u{0456}", "i"), ("\u{0458}", "j"),
-                                             ("\u{0455}", "s"), ("\u{0501}", "d"), ("\u{051B}", "q"), ("\u{051D}", "w"), ("\u{0410}", "a"), ("\u{0412}", "b"), ("\u{041D}", "h"),
-                                             ("\u{03B1}", "a"), ("\u{03B2}", "b"), ("\u{03B5}", "e"), ("\u{03B7}", "n"), ("\u{03B9}", "i"), ("\u{03BA}", "k"), ("\u{03BC}", "u"),
-                                             ("\u{03BD}", "v"), ("\u{03BF}", "o"), ("\u{03C1}", "p"), ("\u{03C4}", "t"), ("\u{03C5}", "u"), ("\u{03C7}", "x"), ("\u{0397}", "h")]
-            for (k, v) in pairs { try expect(NameSkeleton.of(k) == v, "U+\(k.unicodeScalars.first!.value) should map to \(v), got \(NameSkeleton.of(k))") }
-        }
-        test("contacts: a create that merely looks like an existing contact (emoji, ZWJ, Cyrillic, accents, nickname) goes to review; unrelated names apply") { h in
-            ready(h)
-            h.contacts.add(given: "Alice", family: "Smith", phones: ["+15550000001"])
-            h.contacts.add(given: "Zed", family: "Quinn", phones: ["+15550000002"], nickname: "Dizzy")
-            let set = try h.makeSet()
-            func mk(_ g: String, _ f: String, _ n: String, _ i: Int, nick: String = "") throws -> ChangeSpec {
-                try h.addChange(set: set, payload: CP.create(given: g, family: f, phones: ["+1555111000\(i)"], extra: nick.isEmpty ? [:] : ["nickname": nick]), auto: true, position: i)
-            }
-            let shell = try mk("Alice\u{1F41A}", "Smith", "", 1)
-            let cyr = try mk("\u{0410}lic\u{0435}", "Smi\u{0442}h", "", 2)
-            let zwj = try mk("Al\u{200D}ice", "Smith", "", 3)
-            let acc = try mk("\u{00C1}lice", "SMITH", "", 4)
-            let nickFull = try mk("Bob", "Jones", "Alice Smith", 5, nick: "Alice \u{1F41A}Smith")
-            let nickGiven = try mk("Bob", "Brown", "", 6, nick: "alice")
-            let nickNick = try mk("Cal", "Ray", "", 7, nick: "D\u{0456}zzy")
-            let fine = try mk("Carol", "Diaz", "", 8)
-            let fineNick = try mk("Dora", "Fox", "", 9, nick: "Dodo")
-            // the same pass: a second create that collides with the first one that was just applied
-            let first = try mk("Dan", "Moore", "", 10)
-            let echo = try mk("Dan\u{1F41A}", "Moore", "", 11)
-            _ = try h.tick()
-            for x in [shell, cyr, zwj, acc, nickFull, nickGiven, nickNick, echo] {
-                let r = try h.chg(x.id)
-                try expect(r.str("status") == "review" && r.str("kind") == "create" && r.i("requires_approval") == 1 && r.str("note") == "same name as an existing contact" && h.applyRows(x.id).isEmpty, "\(r.values)")
-            }
-            for x in [fine, fineNick, first] { try expect(h.chgStatus(x.id) == "applied", "an unrelated name should apply: \(h.chgDesc(x.id))") }
-            try expect(h.contacts.lookups >= 1 && h.dryContactLines().count == 3, "dry log: \(h.dryContactLines().count)")
-        }
-        test("contacts: a create that joins an existing group (or one that only looks like it) goes to review; new groups are fine") { h in
-            ready(h)
-            h.contacts.add(given: "Old", family: "Friend", phones: ["+15550000001"], groups: ["Family", "Outbox imports"])
-            h.contacts.extraGroups = ["Empty Group"]
-            let set = try h.makeSet()
-            func mk(_ i: Int, _ groups: [String]) throws -> ChangeSpec {
-                try h.addChange(set: set, payload: CP.create(given: "N\(i)", family: "Person", phones: ["+1555222000\(i)"], groups: groups), auto: true, position: i)
-            }
-            let fam = try mk(1, ["Family"])
-            let empty = try mk(2, ["Team", "Empty Group"])
-            let look = try mk(3, ["F\u{0430}mily"])
-            let imports = try mk(4, ["Outbox imports"])
-            let imLook = try mk(5, ["Outb\u{043E}x imports"])
-            let new1 = try mk(6, ["Brand New"])
-            let none = try mk(7, [])
-            _ = try h.tick()
-            for x in [fam, empty, look, imLook] {
-                let r = try h.chg(x.id)
-                try expect(r.str("status") == "review" && r.str("kind") == "create" && r.i("requires_approval") == 1 && r.str("note") == "joins an existing group" && h.applyRows(x.id).isEmpty, "\(r.values)")
-            }
-            for x in [imports, new1, none] { try expect(h.chgStatus(x.id) == "applied", "should apply: \(h.chgDesc(x.id))") }
-            // a group created by an earlier create in the same pass counts as existing for the next one
-            let set2 = try h.makeSet()
-            let a = try h.addChange(set: set2, payload: CP.create(given: "Eve", family: "One", phones: ["+15553330001"], groups: ["Fresh"]), auto: true, position: 0)
-            let b = try h.addChange(set: set2, payload: CP.create(given: "Eve", family: "Two", phones: ["+15553330002"], groups: ["Fresh"]), auto: true, position: 1)
-            _ = try h.tick()
-            try expect(h.chgStatus(a.id) == "applied" && h.chg(b.id).str("note") == "joins an existing group", "second create in a group the first one made: \(h.chgDesc(b.id))")
-        }
-        test("contacts: daily auto-create cap (100 live per 24 h) sends the next live create to review; older ones don't count") { h in
-            ready(h)
-            try h.goContactsLive(); try h.set("contacts_transport", "live")
-            let set = try h.makeSet()
-            for _ in 0..<100 { try h.fillerApplied(set: set, startedAt: h.clock.now.addingTimeInterval(-25 * 3600)) }
-            let first = try h.addChange(set: set, payload: CP.create(given: "A", family: "One", phones: ["+15551110001"]), auto: true)
-            _ = try h.tick()
-            try expect(h.chgStatus(first.id) == "applied" && h.chg(first.id).str("transport") == "live", "applies outside the 24 h window")
-            for _ in 0..<99 { try h.fillerApplied(set: set, startedAt: h.clock.now.addingTimeInterval(-3600)) }   // 1 + 99 = 100 in the window
-            let over = try h.addChange(set: set, payload: CP.create(given: "B", family: "Two", phones: ["+15551110002"]), auto: true)
-            _ = try h.tick()
-            let r = try h.chg(over.id)
-            try expect(r.str("status") == "review" && r.i("requires_approval") == 1 && r.str("note") == "daily auto-create limit" && h.applyRows(over.id).isEmpty, "cap: \(r.values)")
-        }
-        test("contacts: dry creates never count toward the daily cap, and a dry auto create is never held by it") { h in
-            ready(h)
-            let set = try h.makeSet()
-            for _ in 0..<100 { try h.fillerApplied(set: set, startedAt: h.clock.now.addingTimeInterval(-3600), transport: "dry") }
-            let a = try h.addChange(set: set, payload: CP.create(given: "A", family: "One", phones: ["+15551110001"]), auto: true)
-            _ = try h.tick()
-            try expect(h.chgStatus(a.id) == "applied" && h.chg(a.id).str("transport") == "dry", "100 dry creates must not cap a dry create: \(h.chgDesc(a.id))")
-            // a live create is not capped by dry ones either
-            try h.goContactsLive(); try h.set("contacts_transport", "live")
-            let b = try h.addChange(set: set, payload: CP.create(given: "B", family: "Two", phones: ["+15551110002"]), auto: true)
-            _ = try h.tick()
-            try expect(h.chgStatus(b.id) == "applied" && h.chg(b.id).str("transport") == "live", "dry creates counted toward the live cap: \(h.chgDesc(b.id))")
-            // dry autos stay uncapped even when 100 live ones are in the window
-            for _ in 0..<100 { try h.fillerApplied(set: set, startedAt: h.clock.now.addingTimeInterval(-3600)) }
-            try h.set("contacts_transport", "dry")
-            let c = try h.addChange(set: set, payload: CP.create(given: "C", family: "Three", phones: ["+15551110003"]), auto: true)
-            _ = try h.tick()
-            try expect(h.chgStatus(c.id) == "applied" && h.chg(c.id).str("transport") == "dry", "a dry auto create was capped: \(h.chgDesc(c.id))")
-        }
-        test("contacts: an invalid auto create fails and writes nothing (no handle, long name, bidi character)") { h in
-            ready(h)
-            let set = try h.makeSet()
-            let a = try h.addChange(set: set, payload: CP.create(given: "Sam", family: "Lee"), auto: true, position: 0)
-            let b = try h.addChange(set: set, payload: CP.create(given: String(repeating: "x", count: 101), family: "", phones: ["+15551234567"]), auto: true, position: 1)
-            let c = try h.addChange(set: set, payload: CP.create(given: "Sam\u{202E}", family: "Lee", phones: ["+15551234568"]), auto: true, position: 2)
-            let d = try h.addChange(set: set, payloadJson: "not json", auto: true, position: 3)
+            let a = try h.approvedCreate(set: set, payload: CP.create(given: "Sam", family: "Lee"), position: 0)
+            let b = try h.approvedCreate(set: set, payload: CP.create(given: String(repeating: "x", count: 101), family: "", phones: ["+15551234567"]), position: 1)
+            let c = try h.approvedCreate(set: set, payload: CP.create(given: "Sam\u{202E}", family: "Lee", phones: ["+15551234568"]), position: 2)
+            let d = try h.approvedCreate(set: set, payloadJson: "not json", position: 3)
             _ = try h.tick()
             for x in [a, b, c, d] {
                 let r = try h.chg(x.id)
@@ -432,7 +277,7 @@ extension SelfTest {
         test("contacts: an unknown payload key is refused (create and approved update)") { h in
             ready(h)
             let set = try h.makeSet()
-            let a = try h.addChange(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"], extra: ["note": "smuggled"]), auto: true)
+            let a = try h.approvedCreate(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"], extra: ["note": "smuggled"]))
             let card = h.contacts.add(given: "Kim", phones: ["+15550001111"])
             var o = CP.update(set: ["given_name": "Kim🐚"]); o["evil"] = true
             let u = try h.addChange(set: set, kind: "update", target: card.identifier, payload: o, position: 1)
@@ -448,54 +293,54 @@ extension SelfTest {
             try h.goContactsLive(); try h.set("contacts_transport", "live")
             h.contacts.failNextWrite = true
             let set = try h.makeSet()
-            let c = try h.addChange(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"]), auto: true)
+            let c = try h.approvedCreate(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"]))
             _ = try h.tick()
             let r = try h.chg(c.id), a = h.applyRows(c.id)
             try expect(r.str("status") == "failed" && r.str("error").contains("simulated") && a.count == 1 && a[0].str("result") == "failed", "failure: \(r.values)")
-            try h.db.exec("UPDATE contact_changes SET status = 'auto_queued' WHERE id = ?", [.text(c.id)])   // an agent re-queues it
+            try h.db.exec("UPDATE contact_changes SET status = 'approved' WHERE id = ?", [.text(c.id)])   // an agent re-opens it
             _ = try h.tick()
             try expect(h.contacts.writeCount == 0 && h.chgStatus(c.id) == "failed", "a consumed change was retried")
         }
 
         // ---- transports -------------------------------------------------------------------------------------------------
-        test("contacts: auto creates are live only with contacts_transport=live AND a trusted pin with contacts_live_allowed") { h in
+        test("contacts: approved creates are live only when signed live AND a trusted pin has contacts_live_allowed") { h in
             ready(h)
             let set = try h.makeSet()
             // 1. setting live, user pin only (its policy forbids contacts live): dry
             try h.set("contacts_transport", "live")
-            let a = try h.addChange(set: set, payload: CP.create(given: "A", family: "One", phones: ["+15551110001"]), auto: true)
+            let a = try h.approvedCreate(set: set, payload: CP.create(given: "A", family: "One", phones: ["+15551110001"]))
             _ = try h.tick()
             try expect(h.chg(a.id).str("transport") == "dry" && h.contacts.writeCount == 0, "setting live without a pin must stay dry")
             // 2. pin allows messages live but not contacts: dry
             try h.goLive(allowed: true)
-            let b = try h.addChange(set: set, payload: CP.create(given: "B", family: "Two", phones: ["+15551110002"]), auto: true)
+            let b = try h.approvedCreate(set: set, payload: CP.create(given: "B", family: "Two", phones: ["+15551110002"]))
             _ = try h.tick()
             try expect(h.chg(b.id).str("transport") == "dry" && h.contacts.writeCount == 0, "live_allowed alone must not enable live contacts")
             // 3. pin allows contacts live, setting dry: dry
             try h.goContactsLive(); try h.set("contacts_transport", "dry")
-            let c = try h.addChange(set: set, payload: CP.create(given: "C", family: "Three", phones: ["+15551110003"]), auto: true)
+            let c = try h.approvedCreate(set: set, payload: CP.create(given: "C", family: "Three", phones: ["+15551110003"]))
             _ = try h.tick()
             try expect(h.chg(c.id).str("transport") == "dry" && h.contacts.writeCount == 0, "pin alone must not enable live contacts")
             // 4. both: live
             try h.set("contacts_transport", "live")
-            let d = try h.addChange(set: set, payload: CP.create(given: "D", family: "Four", phones: ["+15551110004"], groups: ["Team"]), auto: true)
+            let d = try h.approvedCreate(set: set, payload: CP.create(given: "D", family: "Four", phones: ["+15551110004"], groups: ["Team"]))
             _ = try h.tick()
             let r = try h.chg(d.id)
-            try expect(r.str("transport") == "live" && h.contacts.creates.count == 1 && r.str("result_macos_id") == "FAKE-NEW-1", "live auto create: \(r.values)")
+            try expect(r.str("transport") == "live" && h.contacts.creates.count == 1 && r.str("result_macos_id") == "FAKE-NEW-1", "live create: \(r.values)")
             try expect(h.contacts.creates[0].groups == ["Outbox imports", "Team"] && h.contacts.creates[0].phones == [LabeledValue("+15551110004", "mobile")], "new contact: groups/labels wrong")
             let stored = h.contacts.current("FAKE-NEW-1")!
             try expect(r.str("after_fingerprint") == ContactMath.fingerprint(stored), "after_fingerprint is not the stored card's")
             try expect(h.dryContactLines().count == 3, "the three dry creates should each have logged")
         }
-        test("contacts: a live auto create re-exports Contacts (and dry ones don't)") { h in
+        test("contacts: a live approved create re-exports Contacts (and dry ones don't)") { h in
             ready(h)
             try h.exec.state.set("last_contacts_export", Time.iso(h.clock.now))
             let set = try h.makeSet()
-            try h.addChange(set: set, payload: CP.create(given: "A", family: "One", phones: ["+15551110001"]), auto: true)
+            try h.approvedCreate(set: set, payload: CP.create(given: "A", family: "One", phones: ["+15551110001"]))
             _ = try h.tick()
             try expect(h.contacts.exportCalls == 0, "dry apply must not force an export")
             try h.goContactsLive(); try h.set("contacts_transport", "live")
-            try h.addChange(set: set, payload: CP.create(given: "B", family: "Two", phones: ["+15551110002"]), auto: true)
+            try h.approvedCreate(set: set, payload: CP.create(given: "B", family: "Two", phones: ["+15551110002"]))
             _ = try h.tick()
             try expect(h.contacts.exportCalls == 1 && h.contacts.creates.count == 1, "live apply should export once (\(h.contacts.exportCalls))")
         }
@@ -629,16 +474,16 @@ extension SelfTest {
             _ = try h.tick()
             try expect(h.chgStatus(c.id) == "review", "Stop revokes: the change goes back to review even with the kill switch on")
         }
-        test("contacts: the kill switch blocks auto creates and approved changes, which then apply once it is off") { h in
+        test("contacts: the kill switch blocks approved creates and edits, which then apply once it is off") { h in
             ready(h)
             let card = h.contacts.add(given: "Sam", phones: ["+15551234567"])
             let set = try h.makeSet()
-            let c = try h.addChange(set: set, payload: CP.create(given: "Kim", family: "Park", phones: ["+15550001111"]), auto: true)
+            let c = try h.approvedCreate(set: set, payload: CP.create(given: "Kim", family: "Park", phones: ["+15550001111"]))
             let u = try h.addChange(set: set, kind: "update", target: card.identifier, payload: CP.update(set: ["given_name": "Sam🐚"]), position: 1)
             try h.approveContacts(set: set, items: [u])
             try h.set("kill_switch", "1")
             let r = try h.tick()
-            try expect(r == .held("kill switch is on") && h.chgStatus(c.id) == "auto_queued" && h.chgStatus(u.id) == "approved"
+            try expect(r == .held("kill switch is on") && h.chgStatus(c.id) == "approved" && h.chgStatus(u.id) == "approved"
                        && h.dryContactLines().isEmpty && h.applyRows(c.id).isEmpty && h.applyRows(u.id).isEmpty && h.contacts.lookups == 0, "applied with the kill switch on")
             try h.set("kill_switch", "0")
             _ = try h.tick()
@@ -647,11 +492,11 @@ extension SelfTest {
         test("contacts: without Contacts access the changes wait (visible note), nothing prompts, messages still send") { h in
             h.contacts.accessGranted = false
             let set = try h.makeSet()
-            let c = try h.addChange(set: set, payload: CP.create(given: "Kim", family: "Park", phones: ["+15550001111"]), auto: true)
+            let c = try h.approvedCreate(set: set, payload: CP.create(given: "Kim", family: "Park", phones: ["+15550001111"]))
             let (_, d, _) = try single(h)
             let r = try h.tick()
             try expect(r == .processed(draftId: d.draftId, result: "sent"), "contacts trouble must not hold back messages: \(r)")
-            try expect(h.chgStatus(c.id) == "auto_queued" && h.applyRows(c.id).isEmpty, "change should wait")
+            try expect(h.chgStatus(c.id) == "approved" && h.applyRows(c.id).isEmpty, "change should wait")
             try expect(h.lastError().contains("Contacts access") && h.contacts.promptAsks == 0 && h.contacts.lookups == 0, "last_error '\(h.lastError())', prompts \(h.contacts.promptAsks)")
             ready(h)
             _ = try h.tick()
@@ -659,23 +504,56 @@ extension SelfTest {
         }
         test("contacts: an approved create re-runs the live lookup (a hit fails it, never a duplicate) and applies otherwise") { h in
             ready(h)
-            h.contacts.add(given: "Sam", family: "Lee", phones: ["+15550000001"])
             let set = try h.makeSet()
-            let a = try h.addChange(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"]), auto: true, position: 0)
-            _ = try h.tick()                                                   // name collision → review
-            try expect(h.chgStatus(a.id) == "review" && h.chg(a.id).str("kind") == "create", "parked for review")
-            try h.approveContacts(set: set, items: [a])
-            h.contacts.add(given: "Someone", phones: ["+15551234567"])        // the number appeared in Contacts meanwhile
+            let a = try h.approvedCreate(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"]))
+            let existing = h.contacts.add(given: "Someone", phones: ["+15551234567"])        // the number appeared in Contacts after the user looked
             _ = try h.tick()
-            try expect(h.chgStatus(a.id) == "failed" && h.chg(a.id).str("error") == "already in Contacts" && h.dryContactLines().isEmpty, "hit: \(h.chgDesc(a.id))")
-            // a clean one: collision parked, user approves, applies dry with the approval recorded
+            try expect(h.chgStatus(a.id) == "failed" && h.chg(a.id).str("error") == "already in Contacts" && h.dryContactLines().isEmpty && h.contacts.writeCount == 0, "hit: \(h.chgDesc(a.id))")
+            try expect(h.chg(a.id).str("kind") == "create" && h.contacts.cards.count == 1 && h.contacts.current(existing.identifier)?.given == "Someone", "a hit must neither convert the create nor touch the card")
+            try expect(h.applyRows(a.id).count == 1 && h.applyRows(a.id)[0].str("result") == "failed", "the failed create is consumed")
+            // a hit on an email of a second contact, and on both of two contacts: still a failure
+            h.contacts.add(given: "Other", emails: ["o@example.com"])
             let set2 = try h.makeSet()
-            let b = try h.addChange(set: set2, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15557770000"]), auto: true)
+            let b = try h.approvedCreate(set: set2, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551110009"], emails: ["o@example.com"]))
             _ = try h.tick()
-            let ap = try h.approveContacts(set: set2, items: [b])
+            try expect(h.chgStatus(b.id) == "failed" && h.chg(b.id).str("error") == "already in Contacts" && h.contacts.writeCount == 0, "email hit: \(h.chgDesc(b.id))")
+            // a clean one applies dry with the approval recorded
+            let set3 = try h.makeSet()
+            let c = try h.addChange(set: set3, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15557770000"]))
+            let ap = try h.approveContacts(set: set3, items: [c])
             _ = try h.tick()
-            let ab = h.applyRows(b.id)
-            try expect(h.chgStatus(b.id) == "applied" && ab.count == 1 && ab[0].str("approval_id") == ap && h.dryContactLines().count == 1, "approved create: \(h.chgDesc(b.id))")
+            let ac = h.applyRows(c.id)
+            try expect(h.chgStatus(c.id) == "applied" && ac.count == 1 && ac[0].str("approval_id") == ap && h.dryContactLines().count == 1, "approved create: \(h.chgDesc(c.id))")
+        }
+        test("contacts: an auto_queued row (or one with requires_approval = 0) is never applied: it goes to review, in any lane") { h in
+            ready(h)
+            try h.goContactsLive(); try h.set("contacts_transport", "live")          // the most permissive setup there is
+            let set = try h.makeSet(status: "drafting")
+            let a = try h.addChange(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"]), auto: true, position: 0)
+            let b = try h.addChange(set: set, payload: CP.create(given: "Kim", family: "Park", phones: ["+15550001111"]), position: 1)
+            try h.db.exec("UPDATE contact_changes SET requires_approval = 0 WHERE id = ?", [.text(b.id)])     // review, but claims no approval is needed
+            // a row that says no approval is needed, with a perfectly valid signature over it: the signature cannot vouch for it
+            let c = try h.addChange(set: set, payload: CP.create(given: "Eve", family: "Ng", phones: ["+15552223333"]), position: 2)
+            try h.approveContacts(set: set, items: [c])
+            try h.db.exec("UPDATE contact_changes SET requires_approval = 0 WHERE id = ?", [.text(c.id)])
+            _ = try h.tick(); _ = try h.tick()
+            for x in [a, b, c] {
+                let r = try h.chg(x.id)
+                try expect(r.str("status") == "review" && r.i("requires_approval") == 1 && h.applyRows(x.id).isEmpty && !r.str("note").isEmpty, "\(x.id): \(r.values)")
+            }
+            try expect(h.contacts.writeCount == 0 && h.dryContactLines().isEmpty && h.contacts.lookups == 0, "nothing may be written or even looked up")
+            try expect(h.setStatus(set) == "review" && h.audit("contact_applied") == 0 && h.audit("contact_sent_to_review") >= 3, "set \(h.setStatus(set))")
+            // it also holds when the kill switch is on (database only), and a consumed row is left alone
+            try h.set("kill_switch", "1")
+            let d = try h.addChange(set: set, payload: CP.create(given: "Ann", family: "Bo", phones: ["+15554445555"]), auto: true, position: 3)
+            _ = try h.tick()
+            try expect(h.chgStatus(d.id) == "review" && h.applyRows(d.id).isEmpty, "held while stopped: \(h.chgDesc(d.id))")
+            // once approved with Touch ID it applies (live), exactly once
+            try h.set("kill_switch", "0")
+            var o = ApprovalOpts(); o.transport = "live"
+            try h.approveContacts(set: set, items: [a], o)
+            _ = try h.tick()
+            try expect(h.chgStatus(a.id) == "applied" && h.contacts.creates.count == 1 && h.applyRows(a.id).count == 1 && !h.applyRows(a.id)[0].isNull("approval_id"), "approved: \(h.chgDesc(a.id))")
         }
 
         // ---- undo -------------------------------------------------------------------------------------------------------
@@ -744,8 +622,8 @@ extension SelfTest {
             try h.goContactsLive(); try h.set("contacts_transport", "live")
             let mine = h.contacts.add(given: "Old", family: "Friend", phones: ["+15550000009"])      // not created by the outbox
             let set = try h.makeSet()
-            let a = try h.addChange(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"]), auto: true, position: 0)
-            let b = try h.addChange(set: set, payload: CP.create(given: "Kim", family: "Park", phones: ["+15550001111"]), auto: true, position: 1)
+            let a = try h.approvedCreate(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"]), position: 0)
+            let b = try h.approvedCreate(set: set, payload: CP.create(given: "Kim", family: "Park", phones: ["+15550001111"]), position: 1)
             _ = try h.tick()
             let ra = try h.chg(a.id), rb = try h.chg(b.id)
             try expect(ra.str("transport") == "live" && rb.str("transport") == "live" && h.contacts.creates.count == 2, "setup")
@@ -774,7 +652,7 @@ extension SelfTest {
             ready(h)
             try h.goContactsLive(); try h.set("contacts_transport", "live")
             let set = try h.makeSet()
-            let a = try h.addChange(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"]), auto: true)
+            let a = try h.approvedCreate(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"]))
             _ = try h.tick()
             let ra = try h.chg(a.id)
             let id = ra.str("result_macos_id")
@@ -821,7 +699,7 @@ extension SelfTest {
         test("contacts: undo of a dry change is applied dry whatever the manifest says; undo of a live change cannot be downgraded to dry") { h in
             ready(h)
             let set = try h.makeSet()
-            let c = try h.addChange(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"]), auto: true)
+            let c = try h.approvedCreate(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"]))
             _ = try h.tick()                                                   // dry create
             let r = try h.chg(c.id)
             try expect(r.str("transport") == "dry", "setup")
@@ -846,7 +724,7 @@ extension SelfTest {
         test("contacts: crash recovery marks an unfinished apply unknown and its change failed 'interrupted', never retried") { h in
             ready(h)
             let set = try h.makeSet()
-            let c = try h.addChange(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"]), auto: true)
+            let c = try h.approvedCreate(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"]))
             try h.db.exec("INSERT INTO contact_applies(id, change_id, approval_id, transport, started_at) VALUES(?, ?, NULL, 'dry', ?)", [.text(newId()), .text(c.id), .text(Time.iso(h.clock.now))])
             try expect(try h.exec.recoverInterrupted() == 1, "one interrupted apply")
             let a = h.applyRows(c.id)[0]
@@ -859,24 +737,25 @@ extension SelfTest {
         test("contacts: a trigger on a contact table, or a view shadowing one, makes the executor refuse to run; missing contacts tables only switch contacts off") { h in
             ready(h)
             let set = try h.makeSet()
-            let c = try h.addChange(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"]), auto: true)
-            try h.db.runSchemaScript("CREATE TRIGGER sneaky AFTER UPDATE ON contact_changes BEGIN UPDATE contact_changes SET status = 'auto_queued'; END;")
+            let c = try h.approvedCreate(set: set, payload: CP.create(given: "Sam", family: "Lee", phones: ["+15551234567"]))
+            try h.db.runSchemaScript("CREATE TRIGGER sneaky AFTER UPDATE ON contact_changes BEGIN UPDATE contact_changes SET status = 'review'; END;")
             let r = try h.tick()
-            try expect(isHeld(r) && heldText(r).contains("trigger sneaky on contact_changes") && h.chgStatus(c.id) == "auto_queued" && h.dryContactLines().isEmpty, "got \(r)")
+            try expect(isHeld(r) && heldText(r).contains("trigger sneaky on contact_changes") && h.chgStatus(c.id) == "approved" && h.dryContactLines().isEmpty, "got \(r)")
             try h.db.runSchemaScript("DROP TRIGGER sneaky;")
             try h.db.runSchemaScript("DROP TABLE contact_applies; CREATE VIEW contact_applies AS SELECT 'x' AS id, 'y' AS change_id, NULL AS approval_id, 'dry' AS transport, 'z' AS started_at, 'z' AS finished_at, 'applied' AS result, NULL AS error, NULL AS macos_id;")
             let r2 = try h.tick()
-            try expect(isHeld(r2) && heldText(r2).contains("view contact_applies") && h.chgStatus(c.id) == "auto_queued", "view: \(r2)")
+            try expect(isHeld(r2) && heldText(r2).contains("view contact_applies") && h.chgStatus(c.id) == "approved", "view: \(r2)")
             // 2. missing v4 tables (an old outboxd): start-up does not throw, messages still send, contacts wait with a visible note
             try h.db.runSchemaScript("DROP VIEW contact_applies; DROP TABLE contact_approvals;")
             try h.rebuild()
             let (_, d, _) = try single(h)
             let r3 = try h.tick()
             try expect(r3 == .processed(draftId: d.draftId, result: "sent"), "a missing contacts table must not stop messages: \(r3)")
-            try expect(h.lastError() == "contacts tables missing: restart outboxd" && h.chgStatus(c.id) == "auto_queued" && h.dryContactLines().isEmpty && h.contacts.writeCount == 0,
+            try expect(h.lastError() == "contacts tables missing: restart outboxd" && h.chgStatus(c.id) == "approved" && h.dryContactLines().isEmpty && h.contacts.writeCount == 0,
                        "last_error '\(h.lastError())', change \(h.chgStatus(c.id))")
             // 3. outboxd restarts and creates the tables: the next tick notices, clears the note and goes on
             try h.db.runSchemaScript(h.schema)
+            try h.approveContacts(set: set, items: [c])                       // the approvals table was dropped with the rest: sign again
             _ = try h.tick()
             try expect(h.chgStatus(c.id) == "applied" && !h.lastError().contains("contacts tables missing"), "contacts should resume: \(h.chgDesc(c.id)), last_error '\(h.lastError())'")
         }

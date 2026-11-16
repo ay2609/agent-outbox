@@ -1,4 +1,4 @@
-// The name skeleton: two names that read the same collapse to the same string (impersonation guard for auto creates).
+// The name skeleton: two names that read the same collapse to the same string (the impersonation note on proposed new contacts).
 import { describe, expect, test } from "bun:test";
 import { fullNameSkeleton, nameSkeleton } from "../src/core/name-skeleton";
 

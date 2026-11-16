@@ -12,7 +12,7 @@ public struct WriteContext {
 
 /// The only way contact changes reach the address book. `LiveContactsWriter` saves through CNContactStore (via the provider);
 /// `DryContactsWriter` appends to logs/dry-contacts.jsonl and touches nothing. Which one runs is decided per change, from the
-/// signed manifest (or, for auto creates, the setting) AND the pin policy (trusted pin, hardened or simple), never by a DB value alone.
+/// signed manifest AND the pin policy (trusted pin, hardened or simple), never by a DB value alone.
 public protocol ContactsWriter: AnyObject {
     var name: String { get }                // "dry" | "live"
     /// Returns the new contact's identifier ("dry:<change_id>" for the dry writer).

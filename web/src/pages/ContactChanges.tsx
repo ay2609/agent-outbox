@@ -10,13 +10,13 @@ type Change = any;
 
 const FIELD_LABEL: Record<string, string> = { given_name: "First name", family_name: "Last name", nickname: "Nickname", org: "Company" };
 const STATUS_LABEL: Record<string, string> = {
-  pending: "Waiting", auto_queued: "Adding automatically", review: "Needs approval", approved: "Approved, applying", applied: "Done",
+  pending: "Waiting", review: "Needs approval", approved: "Approved, applying", applied: "Done",
   failed: "Failed", rejected: "Rejected", undone: "Undone",
 };
 const STATUS_TONE: Record<string, "neutral" | "good" | "warn" | "bad" | "info"> = {
-  pending: "neutral", auto_queued: "info", review: "info", approved: "good", applied: "good", failed: "bad", rejected: "neutral", undone: "neutral",
+  pending: "neutral", review: "info", approved: "good", applied: "good", failed: "bad", rejected: "neutral", undone: "neutral",
 };
-const SET_LABEL: Record<string, string> = { drafting: "adding", review: "needs approval", approved: "approved", applying: "applying", done: "done", cancelled: "cancelled" };
+const SET_LABEL: Record<string, string> = { drafting: "waiting", review: "needs approval", approved: "approved", applying: "applying", done: "done", cancelled: "cancelled" };
 
 /** Needs the owner: waiting for a signature, or approved but its approval ended (expired, revoked) so it can be signed again. */
 const needsApproval = (c: Change): boolean => c.status === "review" || (c.status === "approved" && !c.covered_by);
@@ -106,9 +106,9 @@ export function ContactChangesList() {
       <ContactsNav active="changes" />
       {q.error && <ErrorNote>{q.error}</ErrorNote>}
       {q.loading && !q.data && <Spinner />}
-      {q.data && sets.length === 0 && <Empty title="No contact changes">When a Claude session proposes new contacts or edits, they show up here. New people are added automatically, unless they have only one name, look like someone you already have, or join an existing group; then they wait for you, like edits to existing contacts (Touch ID). You can undo any change.</Empty>}
+      {q.data && sets.length === 0 && <Empty title="No contact changes">When a Claude session proposes new contacts or edits, they show up here. New people are never added automatically: every new contact and every edit waits here for your Touch ID approval, and nothing reaches your address book before that. You can undo any change after it is applied.</Empty>}
       {review.length > 0 && <section className="section"><h2 className="section-title">Needs your approval</h2><div className="stack">{review.map((s) => <SetCard key={s.id} s={s} />)}</div></section>}
-      {running.length > 0 && <section className="section"><h2 className="section-title">Adding and applying</h2><div className="stack">{running.map((s) => <SetCard key={s.id} s={s} />)}</div></section>}
+      {running.length > 0 && <section className="section"><h2 className="section-title">Approved, applying</h2><div className="stack">{running.map((s) => <SetCard key={s.id} s={s} />)}</div></section>}
       {closed.length > 0 && <section className="section"><h2 className="section-title">History</h2><div className="stack">{closed.slice(0, 40).map((s) => <SetCard key={s.id} s={s} muted />)}</div></section>}
     </>
   );
@@ -122,7 +122,6 @@ export function SetCard({ s, muted }: { s: any; muted?: boolean }) {
       <div className="card-row"><h3 className="card-title">{s.title}</h3><span className="muted nowrap">{timeAgo(s.created_at)}</span></div>
       <div className="chips">
         {(c.review ?? 0) > 0 && <Chip tone="info">{c.review} to approve</Chip>}
-        {(c.auto_queued ?? 0) > 0 && <Chip tone="info">{c.auto_queued} adding</Chip>}
         {(c.approved ?? 0) > 0 && <Chip tone="good">{c.approved} approved</Chip>}
         {(c.applied ?? 0) > 0 && <Chip tone="good">{c.applied} done</Chip>}
         {(c.undone ?? 0) > 0 && <Chip>{c.undone} undone</Chip>}
@@ -150,7 +149,7 @@ export function ContactChangeDetail({ id, status }: { id: string; status: any })
 
   const pending = changes.filter(needsApproval);
   const selected = pending.filter((c) => !excluded.has(c.id));
-  const waiting = changes.filter((c) => (c.status === "auto_queued" || c.status === "pending" || (c.status === "approved" && c.covered_by)));
+  const waiting = changes.filter((c) => (c.status === "pending" || (c.status === "approved" && c.covered_by)));
   const history = changes.filter((c) => !pending.includes(c) && !waiting.includes(c));
   const undoable = changes.filter(canUndo);
   const cancelled = set.status === "cancelled";
@@ -200,7 +199,7 @@ export function ContactChangeDetail({ id, status }: { id: string; status: any })
                 </div>
                 <div className="chips tight">
                   <Chip tone={c.kind === "undo" ? "warn" : "info"}>{kindLabel(c)}</Chip>
-                  {c.note && <Chip tone="warn">{c.note}</Chip>}
+                  {c.note && c.note !== "new contact" && <Chip tone="warn">{c.note}</Chip>}
                   {c.status === "approved" && <Chip tone="warn" title="Its approval ran out or was cancelled. Approve it again.">Approval ended</Chip>}
                 </div>
                 <Diff kind={c.kind} payload={c.payload} before={c.before} original={c.original} />
@@ -241,7 +240,7 @@ export function ContactChangeDetail({ id, status }: { id: string; status: any })
           </div>
         </section>
       )}
-      {!cancelled && set.status !== "done" && changes.some((c) => ["pending", "auto_queued", "review", "approved"].includes(c.status)) && (
+      {!cancelled && set.status !== "done" && changes.some((c) => ["pending", "review", "approved"].includes(c.status)) && (
         <button className="btn btn-danger-text" onClick={cancel} data-testid="cancel-set">Cancel this set</button>
       )}
 

@@ -30,7 +30,7 @@ const HELP = `outbox: draft iMessages for the user to approve. Nothing here send
   outbox mapping <import_id> [--set field=Column[,Column2...]]... [--var name=Column]... [--unset field]... [--region GB] [--file mapping.json]
   outbox contacts search [<query>] [--tag <group>] [--has phone|email|none] [--source macos|import|manual] [--limit <n>] [--offset <n>] [--tags]
   outbox contacts show <contact_id>
-  outbox contacts propose --file <json|->     (new contacts are added automatically after a live duplicate check, unless they have one name only, look like an existing contact or join an existing group; those and all edits wait for the user's Touch ID; the user can undo any change)
+  outbox contacts propose --file <json|->     (new contacts and edits alike only wait for the user's Touch ID approval; nothing is added automatically; the user can undo any change)
   outbox contacts from-import <import_id> [--suffix <text>] [--prefix <text>] [--title <t>] [--include 0,1,2] [--group <name>]...
   outbox contacts changes [<set_id>] [--status drafting|review|approved|applying|done|cancelled]
   outbox groups list
@@ -138,7 +138,7 @@ function fmtContactSet(r: Json): string {
       if (what) lines.push(`      ${what}`);
     }
   } else if (r.set_id) {
-    lines.push(`contact change set ${r.set_id} [${r.status}]: ${r.counts.auto_queued} automatic, ${r.counts.review} waiting for the user's approval, ${r.counts.rejected} not needed`);
+    lines.push(`contact change set ${r.set_id} [${r.status}]: ${r.counts.review} waiting for the user's Touch ID approval, ${r.counts.rejected} not needed`);
     for (const c of r.changes ?? []) lines.push(`  - ${c.id}  ${c.kind}  [${c.status}]${c.note ? "  (" + c.note + ")" : ""}`);
     if (r.skipped?.length) lines.push(`  skipped ${r.skipped.length} row(s): ${r.skipped.slice(0, 5).map((s: any) => `#${s.row_index} ${s.reason}`).join("; ")}${r.skipped.length > 5 ? "; ..." : ""}`);
     if (r.message) lines.push(`  ${r.message}`);

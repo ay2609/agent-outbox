@@ -116,17 +116,17 @@ extension SelfTest {
             try h.set("contacts_transport", "live")
             // user pin without contacts_live_allowed (live_allowed alone doesn't count): dry
             try h.goLiveSimple(allowed: true)
-            let a = try h.addChange(set: set, payload: CP.create(given: "A", family: "One", phones: ["+15551110001"]), auto: true)
+            let a = try h.approvedCreate(set: set, payload: CP.create(given: "A", family: "One", phones: ["+15551110001"]))
             _ = try h.tick()
             try expect(h.chg(a.id).str("transport") == "dry" && h.contacts.writeCount == 0, "live_allowed alone enabled live contacts in simple mode")
             // contacts_live_allowed true: live
             try h.goLiveSimple(allowed: false, policy: ["contacts_live_allowed": true])
-            let b = try h.addChange(set: set, payload: CP.create(given: "B", family: "Two", phones: ["+15551110002"]), auto: true)
+            let b = try h.approvedCreate(set: set, payload: CP.create(given: "B", family: "Two", phones: ["+15551110002"]))
             _ = try h.tick()
             try expect(h.chg(b.id).str("transport") == "live" && h.contacts.creates.count == 1, "contacts_live_allowed in simple mode should enable live")
             // turned off again: dry
             try h.goLiveSimple(allowed: false, policy: ["contacts_live_allowed": false])
-            let c = try h.addChange(set: set, payload: CP.create(given: "C", family: "Three", phones: ["+15551110003"]), auto: true)
+            let c = try h.approvedCreate(set: set, payload: CP.create(given: "C", family: "Three", phones: ["+15551110003"]))
             _ = try h.tick()
             try expect(h.chg(c.id).str("transport") == "dry" && h.contacts.creates.count == 1, "contacts stayed live after the policy was turned off")
         }
