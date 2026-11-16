@@ -78,7 +78,7 @@ function Gate({ auth, step, onDone, onSkip }: { auth: AuthState; step: 1 | 2 | "
             {busy ? "Waiting for Touch ID…" : step === 1 ? "Create sign-in key" : "Create approval key"}
           </button>
           {step === 2 && onSkip && <button className="btn-text" onClick={onSkip}>Later (nothing can be approved until you do)</button>}
-          <p className="fine">{step === 1 ? "Next you will create the approval key." : "After this you are in. Settings has an optional one-command step to harden the install."}</p>
+          <p className="fine">{step === 1 ? "Next you will create the approval key." : "After this you are in. Messages send only after you approve them with Touch ID. (Settings has a Dry run switch to try it without sending.)"}</p>
         </>
       )}
       {err && <ErrorNote>{err}</ErrorNote>}
