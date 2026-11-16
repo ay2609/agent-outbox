@@ -1,6 +1,6 @@
 import Foundation
 
-// Pure building blocks of native contact management (docs/design/CONTRACTS.md "v4"): the card model, edits, the canonical fingerprint
+// Pure building blocks of native contact management: the card model, edits, the canonical fingerprint
 // and the payload validation. Nothing here touches Contacts or the database, so selftest can pin every rule down directly.
 
 public struct LabeledValue: Equatable {
@@ -96,7 +96,7 @@ public enum ContactMath {
     /// E.164 when the number parses, else the raw string unchanged (contract: "unparseable ones kept raw").
     public static func normalizedPhone(_ raw: String) -> String { e164(raw) ?? raw }
 
-    /// Canonical fingerprint (CONTRACTS v4): sha256 hex of the UTF-8 JSON
+    /// Canonical fingerprint: sha256 hex of the UTF-8 JSON
     /// `{"e":[sorted lowercased emails],"f":family,"g":given,"n":nickname,"o":org,"p":[sorted E.164 phones]}` (keys in that order,
     /// no whitespace). Groups are not part of it.
     public static func fingerprint(_ c: ContactCard) -> String {
@@ -139,7 +139,7 @@ public enum ContactMath {
     static func jsonArray(_ a: [String]) -> String { "[" + a.map(jsonString).joined(separator: ",") + "]" }
 }
 
-/// Name "skeleton" (CONTRACTS v4, same idea as src/core/name-skeleton.ts): what a name looks like once the tricks that make two
+/// Name "skeleton" (same idea as src/core/name-skeleton.ts): what a name looks like once the tricks that make two
 /// different strings read the same are removed. NFKC, drop ZWJ / VS16 / invisible characters and every emoji and symbol scalar,
 /// map common Cyrillic and Greek look-alikes to Latin, then fold case and diacritics and collapse whitespace.
 public enum NameSkeleton {
@@ -292,7 +292,7 @@ public struct UpdatePayload {
         return e
     }
 
-    /// The JSON the executor writes back when it converts a create (CONTRACTS v4 "Convert").
+    /// The JSON the executor writes back when it converts a create.
     public func json() -> String {
         var o: [String: Any] = [:]
         if !set.isEmpty { o["set"] = set }
@@ -316,7 +316,7 @@ public enum ContactPayload {
     case undo(UndoPayload)
 }
 
-/// Payload validation, identical in intent to the TypeScript side (CONTRACTS v4 "Validation"). Every failure is a `Rejection`
+/// Payload validation, identical in intent to the TypeScript side. Every failure is a `Rejection`
 /// with a reason that ends up in `contact_changes.error`. Unknown keys are refused at every level, so nothing unsigned rides along.
 public enum ContactPayloadParser {
     public static let maxText = 100
@@ -461,7 +461,7 @@ public enum ContactPayloadParser {
 
     static func isSha(_ s: String) -> Bool { s.count == 64 && s.allSatisfy { $0.isHexDigit && !$0.isUppercase } }
 
-    /// CONTRACTS v4 "Convert": the update that brings an existing card up to what a create asked for, or nil when the card already
+    /// The "convert" rule: the update that brings an existing card up to what a create asked for, or nil when the card already
     /// has all of it (and the create has no groups to add).
     public static func convert(_ c: CreatePayload, existing: ContactCard) -> UpdatePayload? {
         var u = UpdatePayload()

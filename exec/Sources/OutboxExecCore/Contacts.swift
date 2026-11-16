@@ -8,7 +8,7 @@ public protocol ContactsProvider: AnyObject {
     var accessGranted: Bool { get }
     /// Non-blocking: shows the macOS prompt if access was never decided. Called only once per process, and only in live mode.
     func requestAccessIfNeeded()
-    /// All contacts as the export JSON document (see docs/design/CONTRACTS.md).
+    /// All contacts as the export JSON document.
     func exportAll(now: Date) throws -> Data
     /// Creates a contact (iCloud container if present) in the "Outbox imports" group. Returns the CNContact identifier.
     func create(_ c: ProposedContactModel) throws -> String

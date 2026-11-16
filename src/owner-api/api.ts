@@ -1,6 +1,6 @@
 // The /api routes (everything except /api/auth). All of these sit behind the session + CSRF middleware in index.ts.
 //
-// Every read-then-write section is `db.transaction(fn).immediate()` (CONTRACTS v2 item 8): a deferred transaction that
+// Every read-then-write section is `db.transaction(fn).immediate()`: a deferred transaction that
 // reads and then writes hits SQLITE_BUSY_SNAPSHOT when another connection (the executor, the agent API) writes in between.
 import type { Context, Hono } from "hono";
 import { getCookie } from "hono/cookie";

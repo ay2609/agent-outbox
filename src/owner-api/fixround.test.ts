@@ -1,4 +1,4 @@
-// Fix-round tests (CONTRACTS v2): transactions, approvability, expiry, stop/undo, PATCH guards, warnings, contacts,
+// Fix-round tests: transactions, approvability, expiry, stop/undo, PATCH guards, warnings, contacts,
 // pin policy, imports paging. The two-key registration tests live in auth.test.ts.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";

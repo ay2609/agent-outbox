@@ -22,7 +22,7 @@ export interface BDeps {
 
 let cached: BDeps | null = null;
 
-/** Imports modules at the paths fixed in docs/design/CONTRACTS.md. Throws a readable error if one is missing. */
+/** Imports modules at their fixed paths. Throws a readable error if one is missing. */
 export async function loadBDeps(): Promise<BDeps> {
   if (cached) return cached;
   try {

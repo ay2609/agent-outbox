@@ -1,4 +1,4 @@
-// The gate test (docs/design/CONTRACTS.md): the agent API must have no way to approve or send.
+// The gate test: the agent API must have no way to approve or send.
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";

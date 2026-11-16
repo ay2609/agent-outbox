@@ -1,4 +1,4 @@
-// The agent API: draft-only. Nothing here can approve or send. See docs/design/CONTRACTS.md and the
+// The agent API: draft-only. Nothing here can approve or send. See the
 // forbidden-route test in tests/agent-api.forbidden.test.ts, which fails if a route or a SQL write to a gated table
 // appears in src/agent-api/.
 import type { Database } from "bun:sqlite";

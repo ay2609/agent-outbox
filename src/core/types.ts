@@ -136,7 +136,7 @@ export interface Settings {
   contacts_transport: "dry" | "live";   // v4: what auto creates use and what new contacts manifests ask for
 }
 
-// ===== v4: native contact management (contract: docs/design/CONTRACTS.md "v4") =====
+// ===== v4: native contact management =====
 export type ContactChangeKind = "create" | "update" | "undo";
 export type ContactChangeStatus =
   | "pending" | "auto_queued" | "review" | "approved" | "applied" | "failed" | "rejected" | "undone";

@@ -1,6 +1,6 @@
 import Foundation
 
-// Native contact management in the executor (docs/design/CONTRACTS.md "v4").
+// Native contact management in the executor.
 //
 // Two ways a change reaches the address book:
 //  - auto creates (`kind = create`, `requires_approval = 0`, status `auto_queued`): applied without approval, but only after a LIVE

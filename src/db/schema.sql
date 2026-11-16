@@ -233,7 +233,7 @@ CREATE TABLE IF NOT EXISTS contact_attrs (
   birthday    TEXT NOT NULL DEFAULT ''
 );
 
--- ===== v4: native contact management (contract in docs/design/CONTRACTS.md "v4") =====
+-- ===== v4: native contact management =====
 -- A change set groups proposed contact changes. Creates apply automatically (outbox-exec, after a live handle lookup);
 -- updates and undos need a passkey-signed contacts manifest stored in contact_approvals.
 CREATE TABLE IF NOT EXISTS contact_change_sets (

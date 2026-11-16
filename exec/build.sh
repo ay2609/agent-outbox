@@ -3,7 +3,7 @@
 # Run with the Bash sandbox off (swift and codesign write outside the working directory).
 #
 # Every rebuild changes the code hash, so macOS drops the executor's Automation (Messages) and Contacts grants:
-# approve the two prompts again the next time the executor needs them. That is deliberate (ARCHITECTURE section 10).
+# approve the two prompts again the next time the executor needs them. That is deliberate: a long-lived signing key could sign a rogue Messages-capable app.
 set -euo pipefail
 cd "$(dirname "$0")"
 HERE="$PWD"

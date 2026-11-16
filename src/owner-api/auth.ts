@@ -1,6 +1,6 @@
 // Passkey registration and login, owner sessions, login rate limiting and the pin-file writer.
 //
-// Two passkey purposes (CONTRACTS v2 item 1): `login` (signs in, shown by iOS as "Sign in to Outbox") and `approve`
+// Two passkey purposes: `login` (signs in, shown by iOS as "Sign in to Outbox") and `approve`
 // (signs approvals, shown as "APPROVE SENDING (Outbox)"). Login and reauth only ever accept login keys; approvals only
 // approve keys; the pin file lists approve keys only. So a login assertion harvested from a tampered dashboard can never
 // satisfy the executor, and an approval sheet during a login is recognisable on the system's own Touch ID prompt.

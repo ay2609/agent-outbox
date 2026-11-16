@@ -94,7 +94,7 @@ export function buildComposeEnv(source: Record<string, string | undefined> = pro
   return env;
 }
 
-/** Pure: the argv and env for the child. Hardened (docs/ARCHITECTURE.md §2, L2): no prompts (dontAsk), only the outbox MCP
+/** Pure: the argv and env for the child. Hardened: no prompts (dontAsk), only the outbox MCP
  *  server, no built-in tools, no user hooks / plugins / CLAUDE.md (safe mode, and settings from the empty cwd only), and a
  *  minimal environment. The caller runs it in a fresh empty directory. */
 export function buildComposeCommand(input: ComposeInput, label: string, o: { claudePath?: string; projectRoot?: string; bunPath?: string; env?: Record<string, string | undefined>; safeMode?: boolean } = {}) {

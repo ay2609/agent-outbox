@@ -1,5 +1,5 @@
 // The approval flow: build a manifest, turn its exact bytes into a WebAuthn challenge, verify the signed assertion,
-// and record it. Invariant (ARCHITECTURE section 2): the executor only sends what a pinned passkey signed, so every
+// and record it. Invariant: the executor only sends what a pinned passkey signed, so every
 // choice here is about making the signed bytes exactly what the owner saw.
 //
 // Challenge encoding (checked in node_modules/@simplewebauthn/server/esm, 14.1.0):
@@ -230,7 +230,7 @@ export async function approveVerify(cfg: OwnerConfig, db: Database, limiter: Fai
 
   const pk = db.query<PasskeyRow, [string]>("SELECT * FROM passkeys WHERE credential_id = ?").get(response.id);
   if (!pk) { limiter.fail(); throw new ApiError(401, "approval_failed", "That passkey isn't registered here."); }
-  // A sign-in key can never approve (CONTRACTS v2 item 1), whatever it signed.
+  // A sign-in key can never approve, whatever it signed.
   if (pk.purpose !== "approve") { limiter.fail(); throw new ApiError(401, "approval_failed", "That passkey can't approve sending. Use your approval key."); }
   let newCounter: number;
   try {

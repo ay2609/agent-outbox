@@ -1,4 +1,4 @@
-// Native contact management, TypeScript side (docs/design/CONTRACTS.md "v4"). Validation, the create -> update "convert" rule,
+// Native contact management, TypeScript side. Validation, the create -> update "convert" rule,
 // the import -> change-set transform, and the read views shared by the agent API and the user API.
 //
 // Nothing in here approves, applies or undoes anything: it only PROPOSES (inserts sets and changes as auto_queued or review).

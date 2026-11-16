@@ -1,5 +1,5 @@
-// Late-bound access to compose and to the ingest / personalisation / lint modules at the paths fixed in
-// docs/design/CONTRACTS.md. Loaded with dynamic import() so the passkey and approval core loads and tests without them.
+// Late-bound access to compose and to the ingest / personalisation / lint modules at their fixed paths.
+// Loaded with dynamic import() so the passkey and approval core loads and tests without them.
 import type { Database } from "bun:sqlite";
 import { ApiError } from "./errors";
 

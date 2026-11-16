@@ -346,7 +346,7 @@ Next steps
      contacts sync or contact change it asks for Contacts access. Click Allow, only for "Agent Outbox".
   5. To harden (recommended before you rely on it): Settings > "Harden your install" shows one sudo command.
      Run it in Terminal yourself. It copies your approval key to a root-owned file so nothing running as your
-     user can swap it. See SECURITY.md.
+     user can swap it. See the README.
 
 Logs:       $STATE/logs/
 Stop:       launchctl bootout gui/$UID_N/$EXEC_LABEL ; launchctl bootout gui/$UID_N/$LABEL

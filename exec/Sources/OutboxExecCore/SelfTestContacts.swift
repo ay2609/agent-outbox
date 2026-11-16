@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-// Selftest cases for native contact management (docs/design/CONTRACTS.md "v4"). Everything runs on the in-memory FakeContacts; the real
+// Selftest cases for native contact management. Everything runs on the in-memory FakeContacts; the real
 // Contacts framework is never touched.
 
 struct ChangeSpec {
