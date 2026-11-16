@@ -10,6 +10,8 @@ EXEC_LABEL="$LABEL.exec"
 EXEC_BUNDLE_ID="$EXEC_LABEL"
 MCP_NAME="agent-outbox"
 DEFAULT_PORT=7477
+MIN_BUN="1.4.0"     # bun.lock is lockfileVersion 2
+MIN_SWIFT="6.0"     # exec/Package.swift: swift-tools-version 6.0
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE="${OUTBOX_HOME:-$HOME/Library/Application Support/agent-outbox}"
@@ -69,6 +71,20 @@ step() { printf '\n==> %s\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
 die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+# version_at_least <have> <need>: dotted numeric versions; a suffix like "-canary.1" is ignored. Fails on an empty <have>.
+version_at_least() {
+  local have="${1%%[-+]*}" need="$2" i h n
+  [[ "$have" =~ ^[0-9]+(\.[0-9]+)*$ ]] || return 1
+  local IFS=.
+  local -a H=($have) N=($need)
+  for i in 0 1 2; do
+    h="${H[$i]:-0}"; n="${N[$i]:-0}"
+    if [ "$((10#$h))" -gt "$((10#$n))" ]; then return 0; fi
+    if [ "$((10#$h))" -lt "$((10#$n))" ]; then return 1; fi
+  done
+  return 0
+}
 
 # Run a command, or only print it under --dry-run.
 run() {
@@ -198,7 +214,19 @@ ERROR: Bun is not installed. Install it, open a new terminal, and run this again
 EOF
   exit 1
 fi
-info "bun $("$BUN" --version) at $BUN"
+BUN_VERSION="$("$BUN" --version 2>/dev/null || true)"
+# bun.lock uses lockfileVersion 2, which Bun reads and writes from 1.4 on. Older Bun fails with a cryptic
+# "Unknown lockfile version" at the install step, so check first.
+if ! version_at_least "$BUN_VERSION" "$MIN_BUN"; then
+  cat >&2 <<EOF
+ERROR: Bun $MIN_BUN or newer is required (found ${BUN_VERSION:-an unknown version} at $BUN).
+  Upgrade it, then run this again:
+    bun upgrade                        (if you installed Bun with the curl script)
+    brew upgrade oven-sh/bun/bun       (if you installed it with Homebrew)
+EOF
+  exit 1
+fi
+info "bun $BUN_VERSION at $BUN"
 
 if ! xcode-select -p >/dev/null 2>&1; then
   echo "ERROR: the Xcode Command Line Tools are not installed (needed to build the executor). Run: xcode-select --install" >&2
@@ -208,6 +236,13 @@ if ! swift --version >/dev/null 2>&1; then
   echo "ERROR: 'swift --version' fails. Reinstall the Command Line Tools: xcode-select --install" >&2
   exit 1
 fi
+SWIFT_VERSION="$(swift --version 2>&1 | sed -n 's/.*Swift version \([0-9][0-9.]*\).*/\1/p' | head -n 1)"
+if ! version_at_least "$SWIFT_VERSION" "$MIN_SWIFT"; then
+  echo "ERROR: Swift $MIN_SWIFT or newer is required to build the executor (found ${SWIFT_VERSION:-an unknown version})." >&2
+  echo "  Update Xcode or the Command Line Tools (Software Update, or: xcode-select --install)." >&2
+  exit 1
+fi
+info "Swift $SWIFT_VERSION"
 info "Xcode Command Line Tools: $(xcode-select -p)"
 
 if [ -n "$PORT_ARG" ]; then

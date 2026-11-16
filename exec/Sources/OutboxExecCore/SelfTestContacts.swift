@@ -178,7 +178,7 @@ extension SelfTest {
             try bad("create", CP.create(given: "Sam", family: "L", phones: ph, extra: ["notes": "x"]), "unknown key")
             try bad("create", CP.create(given: "Sam", family: "L", phones: ph, extra: ["phones": [["e164": "+15551234567", "label": "m", "extra": 1]]]), "unknown nested key")
             try bad("create", ["given_name": 5, "phones": [["e164": "+15551234567", "label": "m"]]], "wrong type")
-            try good("update", CP.update(set: ["given_name": "Sam🐚"]), "update set", )
+            try good("update", CP.update(set: ["given_name": "Sam🐚"]), "update set")
             try bad("update", CP.update(set: ["given_name": "Sam"]), target: nil, "update without target")
             try bad("update", CP.update(set: ["notes": "x"]), "set key outside the four")
             try bad("update", [:], "update that changes nothing")

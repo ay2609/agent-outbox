@@ -16,8 +16,8 @@ The gate holds even when the agent is confused or prompt-injected: there is no s
 ## Requirements
 
 - macOS 14 or newer, Apple silicon or Intel
-- [Bun](https://bun.sh) (`brew install oven-sh/bun/bun`)
-- Xcode Command Line Tools (`xcode-select --install`)
+- [Bun](https://bun.sh) 1.4 or newer (`brew install oven-sh/bun/bun`; already have an older one? `bun upgrade` or `brew upgrade oven-sh/bun/bun`)
+- Xcode Command Line Tools with Swift 6.0 or newer (`xcode-select --install`)
 - Messages signed in to your Apple ID (for SMS to non-iPhones, turn on Text Message Forwarding on your iPhone)
 - Safari or Chrome. Macs without Touch ID unlock the passkey with your Mac password, or with your phone.
 
