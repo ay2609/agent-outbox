@@ -9,7 +9,7 @@ export interface McpOptions {
   client?: AgentClient;
   socketPath?: string;
   label?: string;
-  source?: "mcp" | "compose";
+  source?: "mcp";
   fetchImpl?: (url: string, init: RequestInit) => Promise<Response>;
 }
 
@@ -53,7 +53,7 @@ function headline(r: Json): string {
 export function createOutboxMcpServer(o: McpOptions = {}): McpServer {
   const api = o.client ?? createAgentClient({
     client: o.label ?? process.env.OUTBOX_CLIENT ?? "claude",
-    source: o.source ?? (process.env.OUTBOX_SOURCE === "compose" ? "compose" : "mcp"),
+    source: o.source ?? "mcp",
     ...(o.socketPath ? { socketPath: o.socketPath } : {}),
     ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}),
   });

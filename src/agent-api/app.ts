@@ -134,12 +134,12 @@ const importContactChangesS = z.object({
 // ---------- helpers ----------
 const sanitizeLabel = (s: string | undefined): string => (s ?? "").replace(/[^A-Za-z0-9._-]/g, "").slice(0, 40) || "unknown";
 
-interface Who { label: string; actor: string; source: BatchSource; revisionActor: "agent" | "compose" }
+interface Who { label: string; actor: string; source: BatchSource; revisionActor: "agent" }
 function who(c: Context): Who {
   const label = sanitizeLabel(c.req.header("x-outbox-client"));
   const s = c.req.header("x-outbox-source");
-  const source: BatchSource = s === "cli" || s === "compose" ? s : "mcp";
-  return { label, actor: `agent:${label}`, source, revisionActor: source === "compose" ? "compose" : "agent" };
+  const source: BatchSource = s === "cli" ? s : "mcp";
+  return { label, actor: `agent:${label}`, source, revisionActor: "agent" };
 }
 
 async function parseJson<S extends z.ZodType>(c: Context, schema: S): Promise<z.infer<S>> {

@@ -22,7 +22,7 @@ import {
   type FailureLimiter, listPasskeys, normalizePolicy, passkeyCount, registerVerify, registerOptions, sessionAgeMs, setPinPolicy, verifyLoginAssertion,
   writePinFiles, getPinPolicy,
 } from "./auth";
-import { loadB, loadCompose, tryLint } from "./integrations";
+import { loadB, tryLint } from "./integrations";
 import { assertionSchema, attestationSchema, readJson, readJsonOptional, reauthSchema } from "./schemas";
 import { buildStatus, pinContactsLiveAllowed, pinLiveAllowed, pinMode } from "./status";
 import { registerContactApi } from "./contact-api";
@@ -526,23 +526,27 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
 
   app.get("/api/contacts", (c) => {
     const q = (c.req.query("q") ?? "").trim();
-    const limit = Math.min(200, Math.max(1, Number(c.req.query("limit") ?? 60) || 60));
+    // Offset paging over a stable order (name, then id) so pages never repeat or skip a contact; search pages the same way.
+    const num = (v: string | undefined, dflt: number) => { const n = v === undefined || v === "" ? NaN : Math.floor(Number(v)); return Number.isFinite(n) ? n : dflt; };
+    const limit = Math.min(200, Math.max(1, num(c.req.query("limit"), 100)));
+    const offset = Math.max(0, num(c.req.query("offset"), 0));
     const esc = (s: string) => `%${s.replace(/[\\%_]/g, (m) => "\\" + m)}%`;
+    const total = db().query<{ n: number }, []>("SELECT COUNT(*) AS n FROM contacts").get()?.n ?? 0;
     let rows: any[];
+    let matched = total;
     if (!q) {
-      rows = db().query("SELECT * FROM contacts ORDER BY display_name COLLATE NOCASE LIMIT ?").all(limit);
+      rows = db().query("SELECT * FROM contacts ORDER BY display_name COLLATE NOCASE, id LIMIT ? OFFSET ?").all(limit, offset);
     } else {
       const digits = q.replace(/\D/g, "");
-      rows = db().query(
-        `SELECT DISTINCT c.* FROM contacts c LEFT JOIN contact_handles h ON h.contact_id = c.id
+      const where = `FROM contacts c LEFT JOIN contact_handles h ON h.contact_id = c.id
          WHERE c.display_name LIKE ? ESCAPE '\\' OR c.given_name LIKE ? ESCAPE '\\' OR c.family_name LIKE ? ESCAPE '\\'
             OR c.nickname LIKE ? ESCAPE '\\' OR c.org LIKE ? ESCAPE '\\' OR c.tags_json LIKE ? ESCAPE '\\' OR h.handle LIKE ? ESCAPE '\\'
-            OR (? <> '' AND h.handle LIKE ? ESCAPE '\\')
-         ORDER BY c.display_name COLLATE NOCASE LIMIT ?`,
-      ).all(esc(q), esc(q), esc(q), esc(q), esc(q), esc(q), esc(q), digits.length >= 3 ? "x" : "", esc(digits), limit);
+            OR (? <> '' AND h.handle LIKE ? ESCAPE '\\')`;
+      const args = [esc(q), esc(q), esc(q), esc(q), esc(q), esc(q), esc(q), digits.length >= 3 ? "x" : "", esc(digits)];
+      rows = db().query(`SELECT DISTINCT c.* ${where} ORDER BY c.display_name COLLATE NOCASE, c.id LIMIT ? OFFSET ?`).all(...args, limit, offset);
+      matched = db().query<{ n: number }, any[]>(`SELECT COUNT(DISTINCT c.id) AS n ${where}`).get(...args)?.n ?? 0;
     }
-    const total = db().query<{ n: number }, []>("SELECT COUNT(*) AS n FROM contacts").get()?.n ?? 0;
-    return c.json({ contacts: rows.map(rowToContact), total });
+    return c.json({ contacts: rows.map(rowToContact), total, matched, offset, limit, has_more: offset + rows.length < matched });
   });
   app.get("/api/contacts/pending", (c) => {
     const rows = db().query<any, []>(
@@ -575,30 +579,6 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
       audit: auditRows.map((a) => ({ ...a, details: safeJson(a.details_json), details_json: undefined })),
       next: { sends_before: sends.length === limit ? sends[sends.length - 1]?.started_at ?? null : null, audit_before: auditRows.length === limit ? auditRows[auditRows.length - 1]?.id ?? null : null },
     });
-  });
-
-  // ---------- compose ("Ask Claude") ----------
-  app.post("/api/compose", async (c) => {
-    const body = await readJson(c, z.object({
-      instructions: z.string().min(1).max(8000), contact_ids: z.array(z.string()).max(500).optional(),
-      import_id: z.string().optional(), tag: z.string().max(100).optional(), title: z.string().max(200).optional(),
-    }));
-    const avail = cfg.compose();
-    if (!avail.enabled) {
-      throw new ApiError(409, "compose_disabled", avail.reason === "off"
-        ? "Ask Claude is turned off (\"compose\" is \"off\" in config.json)."
-        : "Ask Claude needs the claude command, and it wasn't found. Install Claude Code, or set \"claude_path\" in config.json.");
-    }
-    const lib = await loadCompose();
-    const r = await lib.startCompose(body, avail.path ? { claudePath: avail.path } : undefined);
-    audit(db(), OWNER, "compose.start", r.job_id, { contacts: body.contact_ids?.length ?? 0, import_id: body.import_id ?? null, tag: body.tag ?? null });
-    return c.json(r);
-  });
-  app.get("/api/compose/:job", async (c) => {
-    const lib = await loadCompose();
-    const job = await lib.getComposeJob(c.req.param("job"));
-    if (!job) throw notFound("No such compose job.");
-    return c.json(job);
   });
 }
 

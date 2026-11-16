@@ -258,7 +258,16 @@ try {
   // 6. settings: simple mode, the harden card with ONE sha256-checked command, expected keys, live permissions
   await page.getByRole("button", { name: "Done" }).click();
   ok(await page.getByTestId("simple-badge").isVisible(), "a persistent 'Simple mode' badge is in the app chrome");
-  ok((await page.getByRole("link", { name: "Ask Claude" }).count()) === 1, "'Ask Claude' is offered while compose is available");
+  ok((await page.getByRole("link", { name: "Ask Claude" }).count()) === 0, "there is no 'Ask Claude' tab any more");
+  await page.getByRole("link", { name: "AI draft" }).click();
+  await page.getByRole("heading", { name: "AI draft" }).waitFor();
+  ok(page.url().endsWith("#/ai"), "the AI draft tab opens #/ai");
+  ok((await page.getByTestId("prompt-card").count()) >= 10, "the AI draft page lists the copy-paste prompts");
+  const promptTexts = await page.getByTestId("prompt-text").allInnerTexts();
+  ok(promptTexts.filter((t) => t.includes("[")).length >= 8 && promptTexts.some((t) => t.includes("my group")), "prompts have [fill-in] parts and the group prompts are there");
+  ok((await page.locator("main").innerText()).includes("nothing sends until you approve with Touch ID"), "the page says nothing sends until you approve with Touch ID");
+  await page.getByTestId("copy-prompt").first().click();
+  ok((await page.getByTestId("toast").innerText()).includes("Copied"), "Copy shows a 'Copied' toast");
   await page.getByTestId("simple-badge").click();
   await page.getByRole("heading", { name: "Harden your install" }).waitFor();
   ok(page.url().endsWith("#/settings/harden"), "the badge links to the Settings harden card");
@@ -600,6 +609,40 @@ try {
     await page.getByTestId("contact-set-card").waitFor();
     ok((await page.locator(".section .card-link").first().getAttribute("data-testid")) === "contact-set-card", "the Inbox lists the contact set above the message batches");
     ok((await page.getByTestId("contact-set-card").innerText()).includes("2 to approve"), "the Inbox card says how many edits wait for approval");
+    // Address book pages past 100 contacts: 230 extra people -> infinite scroll / "Show more", and search pages too
+    {
+      const ins = db.query("INSERT INTO contacts(id, source, display_name, given_name, family_name, phones_json, updated_at) VALUES (?,?,?,?,?,'[]',?)");
+      db.transaction(() => { for (let i = 0; i < 230; i++) ins.run(`c-page-${i}`, "manual", `Pager ${String(i).padStart(3, "0")}`, "Pager", String(i), new Date().toISOString()); })();
+      const total = db.query<any, []>("SELECT COUNT(*) AS n FROM contacts").get()!.n as number;
+      const cards = page.getByTestId("contact-card");
+      const more = page.getByTestId("show-more");
+      const cardsReach = async (n: number, ms = 8000) => { const t = Date.now(); while ((await cards.count()) < n && Date.now() - t < ms) await page.waitForTimeout(100); return (await cards.count()) >= n; };
+      await page.goto(`${B}/#/contacts`);
+      await page.reload();
+      await page.getByTestId("book-title").filter({ hasText: `Address book (${total})` }).waitFor();
+      ok(await cardsReach(100), "the address book shows a first page of 100");
+      // Scroll to the end until everyone is in (infinite scroll); tap the button if the observer hasn't fired.
+      for (let i = 0; i < 15 && (await cards.count()) < total; i++) {
+        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await page.waitForTimeout(300);
+        if ((await cards.count()) < total && (await more.count()) === 1 && !(await more.isDisabled())) await more.click();
+      }
+      ok((await cards.count()) === total, `every contact is listed (${total}), not just the first 100`);
+      ok((await more.count()) === 0, "'Show more' is gone once everyone is loaded");
+      const names = await cards.locator("strong").allInnerTexts();
+      ok(new Set(names).size === names.length, "no contact is listed twice");
+      // search: its own count, and it pages too
+      await page.getByRole("searchbox", { name: "Search contacts" }).fill("Pager");
+      await page.getByTestId("book-title").filter({ hasText: "230 matches" }).waitFor();
+      ok(await cardsReach(100) && (await cards.count()) === 100 && (await more.count()) === 1, "search says '230 matches', shows 100 and offers Show more");
+      await more.click();
+      ok(await cardsReach(200), "Show more appends the next 100 matches");
+      await page.getByRole("searchbox", { name: "Search contacts" }).fill("Pager 007");
+      await page.getByTestId("book-title").filter({ hasText: "1 match" }).waitFor();
+      await page.waitForTimeout(300);
+      ok((await cards.count()) === 1, "a narrower search replaces the list; nothing stale is appended");
+      db.query("DELETE FROM contacts WHERE id LIKE 'c-page-%'").run();
+    }
     // Contacts tab -> Changes
     await page.goto(`${B}/#/contacts`);
     await page.getByTestId("contacts-changes-tab").click();

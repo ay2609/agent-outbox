@@ -90,7 +90,7 @@ export function makeHarness(over: Parameters<typeof createOwnerApp>[0] = {}, o2:
   const app = createOwnerApp({
     db: () => wrap(db), rpId, origin, port, stateDir: dir, userPinFile: join(dir, "passkeys.json"), setupToken: setup,
     rootPinFile: join(dir, "root", "passkeys.json"), webDist: join(dir, "dist"),
-    compose: () => ({ enabled: true, reason: null, path: "/usr/local/bin/claude" }), ...over,
+    ...over,
   });
   const h: Harness = {
     app, db, dir, rpId, origin, setup, setupToken, auth: new SoftAuthenticator(rpId, origin), login: new SoftAuthenticator(rpId, origin), cookie: "",

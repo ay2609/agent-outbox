@@ -2,10 +2,10 @@
 
 export type Service = "iMessage" | "SMS" | "auto";
 export type BatchStatus = "drafting" | "review" | "approved" | "sending" | "done" | "cancelled";
-export type BatchSource = "mcp" | "cli" | "dashboard" | "compose";
+export type BatchSource = "mcp" | "cli" | "dashboard" | "compose"; // "compose": old rows from the removed Ask Claude runner
 export type DraftStatus =
   | "draft" | "review" | "approved" | "sending" | "sent" | "failed" | "unknown" | "skipped" | "rejected";
-export type RevisionActor = "agent" | "owner" | "compose" | "template";
+export type RevisionActor = "agent" | "owner" | "compose" | "template"; // "compose": old rows only
 export type MatchStatus = "matched" | "new" | "ambiguous" | "invalid" | "duplicate";
 
 export interface Phone { e164: string; label: string; raw?: string }

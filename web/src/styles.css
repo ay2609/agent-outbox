@@ -61,6 +61,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .spinner { width: 26px; height: 26px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; margin: 28px auto; }
 @keyframes spin { to { transform: rotate(360deg); } } @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
 .pre { white-space: pre-wrap; word-break: break-word; font-size: 13px; background: var(--surface-2); padding: 10px; border-radius: 10px; margin: 8px 0 0; }
+/* AI draft: a prompt to copy, with the [fill-in] parts picked out */
+.prompt { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14.5px; line-height: 1.5; background: var(--surface-2); padding: 10px 12px; border-radius: 10px; margin: 8px 0 10px; }
+.prompt .fill { color: var(--accent); font-weight: 600; }
 .details { margin: 12px 0; } .details summary { min-height: 40px; display: flex; align-items: center; cursor: pointer; color: var(--accent); font-weight: 550; }
 
 /* buttons & forms */

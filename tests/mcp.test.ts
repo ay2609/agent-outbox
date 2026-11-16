@@ -170,7 +170,7 @@ describe("daemon down", () => {
   });
 });
 
-describe("real stdio launch (the command compose and `claude mcp add` use)", () => {
+describe("real stdio launch (the command `claude mcp add` uses)", () => {
   test("bun run src/mcp/index.ts speaks MCP over stdio and reaches the socket", async () => {
     const transport = new StdioClientTransport({
       command: process.execPath, args: ["run", join(import.meta.dir, "../src/mcp/index.ts")],

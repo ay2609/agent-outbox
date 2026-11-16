@@ -4,8 +4,7 @@ import type { Database } from "bun:sqlite";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getDb } from "../db";
-import { composeAvailability, type ComposeAvailability } from "../core/config";
-import { ORIGIN, PORT, RP_ID, config, paths } from "../core/paths";
+import { ORIGIN, PORT, RP_ID, paths } from "../core/paths";
 import { SetupToken, defaultSetupToken } from "./setup-token";
 
 export interface OwnerConfig {
@@ -28,8 +27,6 @@ export interface OwnerConfig {
   challengeTtlMs: number;
   sessionTtlMs: number;
   maxUploadBytes: number;
-  /** Whether "Ask Claude" is available (a claude binary was found and compose isn't "off"). Evaluated per call. */
-  compose: () => ComposeAvailability;
   /** Where uploaded import files are stored; undefined = the ingest library's default (paths.imports). Tests set a temp dir. */
   importsDir?: string;
 }
@@ -62,7 +59,6 @@ export function resolveConfig(over: Partial<OwnerConfig> = {}): OwnerConfig {
     challengeTtlMs: 5 * 60_000,
     sessionTtlMs: 30 * 24 * 3600_000,
     maxUploadBytes: 25 * 1024 * 1024,
-    compose: () => composeAvailability(config),
     ...over,
   };
 }

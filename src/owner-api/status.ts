@@ -1,4 +1,4 @@
-// /api/status: executor heartbeat, pin mode and pin-file validity, compose availability, counts.
+// /api/status: executor heartbeat, pin mode and pin-file validity, counts.
 import type { Database } from "bun:sqlite";
 import { lstatSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
@@ -148,8 +148,6 @@ export function buildStatus(cfg: OwnerConfig, db: Database) {
     contacts_transport: settings.contacts_transport,
     /** v4: the effective pin's policy.contacts_live_allowed. When contacts_transport is live but this is false, the executor applies contact changes dry. */
     pin_contacts_live_allowed: effective.contacts_live_allowed,
-    /** "Ask Claude": available only when a claude binary was found and config compose isn't "off". */
-    compose: (({ enabled, reason }) => ({ enabled, reason }))(cfg.compose()),
     exec: exec ? { ...exec, pin_file_ok: !!exec.pin_file_ok, heartbeat_age_s: age, alive: age !== null && age < 30 } : null,
     pin: {
       /** "hardened" iff the root pin file exists (then only it counts), else "simple". */

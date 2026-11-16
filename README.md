@@ -45,6 +45,8 @@ The installer builds the dashboard and the executor, starts two per-user LaunchA
 2. Create the two passkeys it asks for: one to sign in, one to approve sending.
 3. You start in **dry mode**: approved messages are written to `~/Library/Application Support/agent-outbox/logs/dry-sends.jsonl` and nothing is sent. Ask your agent to draft a text and try it.
 
+The dashboard's **AI draft** tab has ready-made prompts to paste into your agent (text one person, personalise a batch, work from a spreadsheet, add contacts, check what was sent), each with a Copy button.
+
 ## Simple and hardened mode
 
 **Simple mode** (the default) keeps your approval keys in a file you own. That stops an agent using its tools, and prompt injection, from sending anything. It does not stop a program running as you, outside a sandbox, from planting its own key in that file.
@@ -81,10 +83,10 @@ Other MCP clients: run `bun run <repo>/src/mcp/index.ts` as a stdio server. The 
 Optional `~/Library/Application Support/agent-outbox/config.json`:
 
 ```json
-{ "port": 7477, "compose": "auto", "claude_path": "/abs/path/to/claude" }
+{ "port": 7477 }
 ```
 
-`compose` shows an "Ask Claude" box in the dashboard when `claude` is found (`"off"` hides it). Environment overrides: `OUTBOX_HOME`, `OUTBOX_PORT`. After changing the port, re-run `./install.sh`.
+Environment overrides: `OUTBOX_HOME`, `OUTBOX_PORT`. After changing the port, re-run `./install.sh`.
 
 ## Uninstall
 

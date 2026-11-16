@@ -1,4 +1,4 @@
-// Late-bound access to compose and to the ingest / personalisation / lint modules at their fixed paths.
+// Late-bound access to the ingest / personalisation / lint modules at their fixed paths.
 // Loaded with dynamic import() so the passkey and approval core loads and tests without them.
 import type { Database } from "bun:sqlite";
 import { ApiError } from "./errors";
@@ -16,11 +16,6 @@ export interface BLib {
   renderTemplate(template: string, vars: Record<string, string>): { body: string; unresolved: string[]; empty: string[] };
   varsForRow(row: any, columns: string[]): Record<string, string>;
 }
-export interface ComposeLib {
-  startCompose(a: { instructions: string; contact_ids?: string[]; import_id?: string; tag?: string; title?: string }, deps?: { claudePath?: string }): { job_id: string } | Promise<{ job_id: string }>;
-  getComposeJob(id: string): any;
-}
-
 let b: BLib | null = null;
 export async function loadB(): Promise<BLib> {
   if (b) return b;
@@ -51,17 +46,5 @@ export function dropResolvedAmbiguity(db: Database, batchId: string): void {
       const ws = (JSON.parse(r.warnings_json) as { code: string }[]).filter((w) => w.code !== "ambiguous_contact");
       db.query("UPDATE drafts SET warnings_json = ? WHERE id = ?").run(JSON.stringify(ws), r.id);
     } catch { /* leave it */ }
-  }
-}
-
-let compose: ComposeLib | null = null;
-export async function loadCompose(): Promise<ComposeLib> {
-  if (compose) return compose;
-  try {
-    const m = await import("../core/compose");
-    compose = { startCompose: m.startCompose, getComposeJob: m.getComposeJob } as unknown as ComposeLib;
-    return compose;
-  } catch (e) {
-    throw new ApiError(503, "unavailable", `Compose isn't available: ${(e as Error).message}`);
   }
 }

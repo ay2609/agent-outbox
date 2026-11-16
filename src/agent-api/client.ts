@@ -5,7 +5,7 @@ import { paths } from "../core/paths";
 export interface ClientOptions {
   socketPath?: string;
   client: string;                         // X-Outbox-Client label
-  source?: "mcp" | "cli" | "compose";     // X-Outbox-Source
+  source?: "mcp" | "cli";                 // X-Outbox-Source
   fetchImpl?: (url: string, init: RequestInit) => Promise<Response>;
 }
 

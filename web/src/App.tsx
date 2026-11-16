@@ -7,7 +7,7 @@ import { ErrorNote, Sheet, Spinner, ToastHost, useToast } from "./ui";
 import { Controls } from "./controls";
 import { Inbox } from "./pages/Inbox";
 import { BatchPage } from "./pages/Batch";
-import { Compose, ComposeOff } from "./pages/Compose";
+import { AiDraft } from "./pages/AiDraft";
 import { Imports } from "./pages/Imports";
 import { Contacts } from "./pages/Contacts";
 import { ContactChangeDetail, ContactChangesList } from "./pages/ContactChanges";
@@ -88,7 +88,7 @@ function Gate({ auth, step, onDone, onSkip }: { auth: AuthState; step: 1 | 2 | "
 
 const TABS: { key: string; label: string; icon: ReactNode }[] = [
   { key: "", label: "Inbox", icon: <path d="M4 13l2.2-7a2 2 0 0 1 1.9-1.4h7.8A2 2 0 0 1 17.8 6L20 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5zm0 0h4.5a1.5 1.5 0 0 0 1.5 1.5h4a1.5 1.5 0 0 0 1.5-1.5H20" /> },
-  { key: "compose", label: "Ask Claude", icon: <path d="M4 20l1-4L16.5 4.5a2 2 0 0 1 3 3L8 19l-4 1zM14 7l3 3" /> },
+  { key: "ai", label: "AI draft", icon: <path d="M4 20l1-4L16.5 4.5a2 2 0 0 1 3 3L8 19l-4 1zM14 7l3 3" /> },
   { key: "imports", label: "Imports", icon: <path d="M12 4v11m0 0l-4-4m4 4l4-4M5 19h14" /> },
   { key: "contacts", label: "Contacts", icon: <path d="M16 19v-1.5a3.5 3.5 0 0 0-3.5-3.5h-3A3.5 3.5 0 0 0 6 17.5V19M11 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 8v5m2.5-2.5h-5" /> },
   { key: "activity", label: "Activity", icon: <path d="M4 12h3l2.5-6 4 12 2.5-6H20" /> },
@@ -105,8 +105,6 @@ function Shell({ setup }: { setup: { login: boolean; approve: boolean } }) {
   const killed = !!status.data?.kill_switch;
   const reason: string = status.data?.kill_reason ?? "";
   const section = route[0] ?? "";
-  // "Ask Claude" needs the claude command; until the status has loaded the tab stays, afterwards it follows compose.enabled.
-  const composeOn = status.data?.compose?.enabled !== false;
   const simple = status.data?.pin?.mode === "simple";
   const refreshAll = async () => { await status.reload(); window.dispatchEvent(new Event("outbox:refresh")); };
 
@@ -145,7 +143,7 @@ function Shell({ setup }: { setup: { login: boolean; approve: boolean } }) {
   let page: ReactNode;
   switch (section) {
     case "batch": page = <BatchPage id={route[1] ?? ""} status={status.data} />; break;
-    case "compose": page = composeOn ? <Compose /> : <ComposeOff reason={status.data?.compose?.reason} />; break;
+    case "ai": page = <AiDraft />; break;
     case "imports": page = <Imports id={route[1]} />; break;
     case "contacts": page = route[1] === "changes" ? (route[2] ? <ContactChangeDetail id={route[2]} status={status.data} /> : <ContactChangesList />) : <Contacts />; break;
     case "activity": page = <Activity />; break;
@@ -173,7 +171,7 @@ function Shell({ setup }: { setup: { login: boolean; approve: boolean } }) {
         )}
         <main className="page" key={route.join("/")}>{page}</main>
         <nav className="tabbar" aria-label="Sections">
-          {TABS.filter((t) => t.key !== "compose" || composeOn).map((t) => (
+          {TABS.map((t) => (
             <a key={t.key} href={href(...(t.key ? [t.key] : []))} className={`tab ${section === t.key || (t.key === "" && section === "batch") ? "active" : ""}`} aria-current={section === t.key ? "page" : undefined}>
               <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{t.icon}</svg>
               <span>{t.label}</span>

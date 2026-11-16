@@ -64,11 +64,4 @@ describe("owner imports", () => {
     expect((await h.call("POST", "/api/imports", { nope: 1 })).status).toBe(400);
     expect((await h.call("POST", "/api/imports/x/batch", { title: "", template: "" })).status).toBe(400);
   });
-
-  test("compose routes answer 404 for unknown jobs", async () => {
-    const h = makeHarness();
-    await h.signUp();
-    expect((await h.call("GET", "/api/compose/missing")).status).toBe(404);
-    expect((await h.call("POST", "/api/compose", { instructions: "" })).status).toBe(400);
-  });
 });

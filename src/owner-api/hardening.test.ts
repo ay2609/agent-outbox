@@ -1,4 +1,4 @@
-// Simple vs hardened pin mode, the local-only hardening (Host allowlist, 127.0.0.1 redirect, cookies) and compose availability.
+// Simple vs hardened pin mode, the local-only hardening (Host allowlist, 127.0.0.1 redirect, cookies).
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -291,22 +291,5 @@ describe("local-only hardening", () => {
     const s = await status(h);
     expect("dev" in s).toBe(false);
     expect(s).toMatchObject({ rp_id: "localhost", origin: "http://localhost:7477", port: 7477 });
-  });
-});
-
-describe("compose availability", () => {
-  test("status reports it; POST /api/compose is refused (409 compose_disabled) when off or claude is missing", async () => {
-    const on = await ready();
-    expect((await status(on)).compose).toEqual({ enabled: true, reason: null });
-    const off = await ready({ compose: () => ({ enabled: false, reason: "off", path: null }) });
-    expect((await status(off)).compose).toEqual({ enabled: false, reason: "off" });
-    const r = await off.call("POST", "/api/compose", { instructions: "Say hi" });
-    expect([r.status, r.json.error]).toEqual([409, "compose_disabled"]);
-    expect(r.json.message).toContain("turned off");
-    const missing = await ready({ compose: () => ({ enabled: false, reason: "claude_not_found", path: null }) });
-    expect((await status(missing)).compose).toEqual({ enabled: false, reason: "claude_not_found" });
-    const m = await missing.call("POST", "/api/compose", { instructions: "Say hi" });
-    expect([m.status, m.json.error]).toEqual([409, "compose_disabled"]);
-    expect(m.json.message).toContain("claude_path");
   });
 });

@@ -314,14 +314,16 @@ describe("misc", () => {
     expect(r.status).toBe(404);
     expect(r.json.error.message).toContain("no approve or send routes");
   });
-  test("client label is sanitised; source header is limited to mcp|cli|compose", async () => {
+  test("client label is sanitised; source header is limited to mcp|cli", async () => {
     const r = await call(app, "POST", "/v1/drafts", { to: "4151230001", body: "x" }, { "X-Outbox-Client": "ev/il;label", "X-Outbox-Source": "dashboard" });
     expect(r.json.batch.created_by).toBe("agent:evillabel");
     expect(r.json.batch.source).toBe("mcp");
     const c = await call(app, "POST", "/v1/drafts", { to: "4151230001", body: "x" }, { "X-Outbox-Source": "compose" });
-    expect(c.json.batch.source).toBe("compose");
+    expect(c.json.batch.source).toBe("mcp");
     expect(c.json.batch.created_by).toBe("agent:unknown");
-    expect((db.query("SELECT actor FROM draft_revisions ORDER BY rowid DESC LIMIT 1").get() as any).actor).toBe("compose");
+    expect((db.query("SELECT actor FROM draft_revisions ORDER BY rowid DESC LIMIT 1").get() as any).actor).toBe("agent");
+    const l = await call(app, "POST", "/v1/drafts", { to: "4151230001", body: "x" }, { "X-Outbox-Source": "cli" });
+    expect(l.json.batch.source).toBe("cli");
   });
   test("health", async () => { expect((await call(app, "GET", "/v1/health")).json.ok).toBe(true); });
 });
