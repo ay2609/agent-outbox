@@ -205,3 +205,9 @@ blockquote { margin: 8px 0 4px; padding: 8px 12px; border-left: 3px solid var(--
   .toast { bottom: 96px; }
 }
 @media (min-width: 900px) and (max-width: 1099px) { .tab:not(.tab-stop) span { display: none; } }
+
+/* Settings: the folded-away Advanced block */
+.advanced { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 4px; }
+.advanced > summary { font-size: 15px; }
+.advanced[open] > summary { margin-bottom: 4px; }
+.advanced #harden, .advanced .section { margin-top: 18px; }

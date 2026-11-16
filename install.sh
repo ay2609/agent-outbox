@@ -373,12 +373,12 @@ Next steps
   1. $STEP1
   2. Create your two passkeys with Touch ID: one to sign in, one to approve sending. Macs without Touch ID
      use the Mac password or a phone passkey.
-  3. You are in DRY mode in SIMPLE mode: approved messages are only written to a log
-     ($STATE/logs/dry-sends.jsonl), nothing is sent and Contacts is not touched.
-     Try it: ask Claude to draft a text, approve it in the dashboard and check that log.
-  4. To go live: Settings > "Allow live sending", then switch the transport to live (Touch ID).
-     On the first live send macOS asks you to let "Agent Outbox" control Messages, and on the first
-     contacts sync or contact change it asks for Contacts access. Click Allow, only for "Agent Outbox".
+  3. You start LIVE in SIMPLE mode: a message you approve with Touch ID is really sent. Nothing goes out
+     without that approval. To try it without sending, open Settings and switch Sending to Dry run
+     (approved messages are then only written to $STATE/logs/dry-sends.jsonl).
+  4. On the first send macOS asks you to let "Agent Outbox" control Messages, and on the first contacts sync
+     or contact change it asks for Contacts access. Click Allow, only for "Agent Outbox".
+     Try it: ask Claude to draft a text to yourself and approve it in the dashboard.
   5. To harden (recommended before you rely on it): Settings > "Harden your install" shows one sudo command.
      Run it in Terminal yourself. It copies your approval key to a root-owned file so nothing running as your
      user can swap it. See the README.

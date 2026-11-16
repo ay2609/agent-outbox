@@ -26,7 +26,7 @@ The gate holds even when the agent is confused or prompt-injected: there is no s
 **Let your agent do it.** Paste this into Claude Code (or any coding agent):
 
 ```text
-Set up Agent Outbox on this Mac: clone https://github.com/ay2609/agent-outbox (or pull it if I already have it), read its README and run ./install.sh. Never use sudo. When it finishes, give me the setup link it printed and stop: I create the passkeys with Touch ID myself. Don't open that link, don't edit anything in ~/Library/Application Support/agent-outbox, don't run the harden command and don't turn on live sending. Then tell me to start a new session so the agent-outbox MCP tools load. From then on, draft messages with the outbox_* tools for me to approve in the dashboard; you can't send, so don't try.
+Set up Agent Outbox on this Mac: clone https://github.com/ay2609/agent-outbox (or pull it if I already have it), read its README and run ./install.sh. Never use sudo. When it finishes, give me the setup link it printed and stop: I create the passkeys with Touch ID myself. Don't open that link, don't edit anything in ~/Library/Application Support/agent-outbox, don't run the harden command and don't change Settings. Then tell me to start a new session so the agent-outbox MCP tools load. From then on, draft messages with the outbox_* tools for me to approve in the dashboard; you can't send, so don't try.
 ```
 
 **Or by hand:**
@@ -43,7 +43,7 @@ The installer builds the dashboard and the executor, starts two per-user LaunchA
 
 1. Open the setup link the installer printed (`http://localhost:7477/#/setup?token=…`). Lost it? `./install.sh --setup-link`.
 2. Create the two passkeys it asks for: one to sign in, one to approve sending.
-3. You start in **dry mode**: approved messages are written to `~/Library/Application Support/agent-outbox/logs/dry-sends.jsonl` and nothing is sent. Ask your agent to draft a text and try it.
+3. You start **live**: a message you approve with Touch ID is really sent. Nothing goes out without that approval, and every message needs its own. Ask your agent to draft a text to yourself and try it. On the first send macOS asks whether "Agent Outbox" may control Messages, and on the first contacts sync it asks for Contacts. Allow both only for "Agent Outbox".
 
 The dashboard's **AI draft** tab has ready-made prompts to paste into your agent (text one person, personalise a batch, work from a spreadsheet, add contacts, check what was sent), each with a Copy button.
 
@@ -53,11 +53,9 @@ The dashboard's **AI draft** tab has ready-made prompts to paste into your agent
 
 **Hardened mode** moves the keys to a root-owned file, `/Library/Application Support/agent-outbox/passkeys.json`, and the executor then trusts only that. Settings > "Harden your install" shows the one sudo command. Run it yourself in Terminal; never let an agent run it. Do it before you rely on live sending, especially if an agent on this Mac has an unsandboxed shell.
 
-## Going live
+## Dry run and live
 
-1. Settings: tick "Allow live sending", then switch the transport to live (both ask for Touch ID).
-2. On the first live send macOS asks whether "Agent Outbox" may control Messages, and on the first contacts sync it asks for Contacts. Allow both only for "Agent Outbox".
-3. Send a first message to yourself.
+You start live. To try things without sending anything, open Settings and switch **Sending** to **Dry run**: approved messages are only written to `~/Library/Application Support/agent-outbox/logs/dry-sends.jsonl` and Contacts is not touched. Switching back to **Live** asks for Touch ID. (An install from before this change keeps the setting it had.)
 
 Approved messages go out right away, 2 seconds apart. **Stop** halts everything and revokes unused approvals.
 
@@ -112,7 +110,7 @@ cd exec && ./build.sh && build/OutboxExec.app/Contents/MacOS/outbox-exec selftes
 OUTBOX_HOME=$TMPDIR/ao OUTBOX_PORT=7478 bun run src/server.ts   # dev server on a throwaway state dir
 ```
 
-Never weaken the send gate: no agent-facing tool may send, approve or change settings. Keep dry mode the default.
+Never weaken the send gate: no agent-facing tool may send, approve or change settings. Keep the Touch ID approval for every send.
 
 ## Acceptable use
 

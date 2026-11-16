@@ -208,7 +208,7 @@ INSERT OR IGNORE INTO settings(key, value) VALUES
   ('breaker_on_failure','1');
 -- v3: no pacing, daily cap or quiet hours. Approved messages send right away, 2 s apart (fixed in outbox-exec).
 DELETE FROM settings WHERE key IN ('pace_min_s','pace_max_s','burst_size_min','burst_size_max','burst_pause_min_s',
-  'burst_pause_max_s','daily_cap','quiet_start','quiet_end','timezone','pin_policy');
+  'burst_pause_max_s','daily_cap','quiet_start','quiet_end','timezone');
 
 CREATE TABLE IF NOT EXISTS audit_log (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,

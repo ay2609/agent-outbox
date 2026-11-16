@@ -27,7 +27,10 @@ mkdirSync(shots, { recursive: true });
 // Never read the real root pin (/Library/Application Support/agent-outbox): point it at a temp path the test controls (no file = simple mode).
 const { paths } = await import("../../src/core/paths");
 paths.rootPinFile = join(home, "root-pin.json");
-const { getDb } = await import("../../src/db");
+const { getDb, openDb } = await import("../../src/db");
+// A brand-new database made through getDb() starts LIVE (see src/db/seed.test.ts). This run asserts dry manifests, so create the file
+// the way unit tests do (dry defaults) first: getDb() then sees an existing database and leaves it alone.
+openDb().close();
 const { addDraft, createBatch, getDrafts, getSettings, setBatchStatus } = await import("../../src/core/store");
 const { ownerApp } = await import("../../src/owner-api");
 const { defaultSetupToken } = await import("../../src/owner-api/setup-token");
@@ -271,6 +274,7 @@ try {
   await page.getByTestId("simple-badge").click();
   await page.getByRole("heading", { name: "Harden your install" }).waitFor();
   ok(page.url().endsWith("#/settings/harden"), "the badge links to the Settings harden card");
+  ok(await page.getByTestId("advanced").evaluate((d) => (d as HTMLDetailsElement).open), "...and opens the folded-away Advanced block");
   await page.getByTestId("install-cmd").waitFor();
   const REAL_PIN = "/Library/Application Support/agent-outbox/passkeys.json"; // the test's root pin path is a temp file; show the real path in the docs
   // Screenshots for the docs show a real install's paths, not the test's temp dir (the command quotes the user pin: it has a space).
@@ -292,7 +296,12 @@ try {
       n.nodeValue = t.split(homeTmp!).join(dirReal);
     }
   }, [paths.rootPinFile, REAL_PIN, tempUserPin, REAL_USER_PIN, home]);
-  const shotMasked = async (name: string) => { await maskPaths(); await shot(name); await page.reload(); await page.getByTestId("pin-card").waitFor(); };
+  // Advanced is folded away on #/settings; #/settings/harden (the badge) opens it. A hash-only navigation keeps the page, so open it by hand.
+  const openAdvanced = async () => {
+    await page.getByTestId("advanced").waitFor({ state: "attached" });
+    if (!(await page.getByTestId("advanced").evaluate((d) => (d as HTMLDetailsElement).open))) await page.getByText("Advanced: hardening, permissions, contacts").click();
+  };
+  const shotMasked = async (name: string) => { await maskPaths(); await shot(name); await page.reload(); await openAdvanced(); await page.getByTestId("pin-card").waitFor(); };
   await shotMasked("settings.png");
   const simpleText = await page.getByTestId("harden-simple").innerText();
   ok(/doesn't defend against/.test(simpleText) && /outside its sandbox/.test(simpleText) && /approve its own messages/.test(simpleText), "simple mode says in plain words what it does not defend");
@@ -306,9 +315,10 @@ try {
   ok(Bun.spawnSync(["bash", "-c", cmd.split(" && ")[0]!]).exitCode === 0, "the command's sha256 check passes against the user pin on disk");
   const expectedText = await page.getByTestId("expected-keys").innerText();
   ok(expectedText.includes(approveKey.credential_id) && expectedText.includes(approveKey.label) && !expectedText.includes(loginKey.credential_id), "the expected credential ids and labels are listed next to the command (approval key only)");
-  ok((await page.getByTestId("live-state").innerText()).includes("Live is not available"), "live is shown as unavailable until the pin allows it");
-  ok(await page.getByRole("radiogroup", { name: "Transport", exact: true }).getByRole("radio", { name: "Live" }).isDisabled(), "the Live switch is disabled");
-  ok((await page.getByTestId("contacts-live-state").innerText()).includes("Live is not available"), "live contact changes are shown as unavailable until the pin allows them");
+  const modeSwitch = page.getByTestId("mode-switch");
+  ok((await modeSwitch.getByRole("radio", { name: "Dry run" }).getAttribute("aria-checked")) === "true" && (await page.getByTestId("mode-help").innerText()).includes("Nothing is sent"), "the Sending switch starts on Dry run here (this run began dry) and says nothing is sent");
+  ok(await modeSwitch.getByRole("radio", { name: "Live" }).isEnabled(), "in simple mode the Live switch is available: one Touch ID turns the permissions on too");
+  ok((await page.getByTestId("contacts-live-state").innerText()).includes("isn't available"), "live contact changes are shown as unavailable until the pin allows them");
   ok(await page.getByRole("radiogroup", { name: "Contacts transport" }).getByRole("radio", { name: "Live" }).isDisabled(), "the contacts Live switch is disabled");
   const settingsText = await page.locator("main, body").first().innerText();
   ok(!/\b(pace[ds]?|burst|daily cap|quiet hours|time zone|sent today)\b/i.test(settingsText), "Settings has no pacing, cap, quiet-hours or time-zone controls");
@@ -320,7 +330,6 @@ try {
   await livePolicy.check();
   await page.getByText(/Saved\. Live sending is allowed now/).waitFor({ timeout: 8000 });
   ok(JSON.parse(readFileSync(userPinPath, "utf8")).policy.live_allowed === true, "ticking 'Allow live sending' (after Touch ID) writes live_allowed into the user pin at once");
-  ok(await page.getByRole("radiogroup", { name: "Transport", exact: true }).getByRole("radio", { name: "Live" }).isEnabled(), "...and the Live switch unlocks without any sudo step");
   await livePolicy.uncheck();
   await page.getByText(/Saved\. Live sending is off/).waitFor({ timeout: 8000 });
   ok(JSON.parse(readFileSync(userPinPath, "utf8")).policy.live_allowed === false, "unticking writes it back to false");
@@ -333,11 +342,25 @@ try {
   ok(candPolicy().live_allowed === false, "...without touching live_allowed");
   await contactsPolicy.uncheck();
   ok(await until(() => candPolicy().contacts_live_allowed === false), "unticking writes contacts_live_allowed back to false");
+  // The Sending switch: ONE Touch ID turns on the policy, both transports and the pin; Dry run needs none.
+  const transports = () => `${getSettings(db).transport}/${getSettings(db).contacts_transport}`;
+  await modeSwitch.getByRole("radio", { name: "Live" }).click();
+  await page.getByText(/Live\. Messages you approve will send/).waitFor({ timeout: 8000 });
+  const modeAudit = JSON.parse(db.query<any, []>("SELECT details_json FROM audit_log WHERE action = 'mode.set' ORDER BY id DESC").get()!.details_json);
+  ok(transports() === "live/live" && candPolicy().live_allowed === true && candPolicy().contacts_live_allowed === true, "Live (one Touch ID) set both transports live and wrote both permissions into the user pin");
+  ok(modeAudit.mode === "live" && modeAudit.policy_changed === true && (await page.getByTestId("mode-help").innerText()).includes("Each one still needs your Touch ID"), "the line under the switch says each message still needs Touch ID");
+  ok(await livePolicy.isChecked() && await contactsPolicy.isChecked(), "...and the two Live permissions in Advanced are ticked");
+  await modeSwitch.getByRole("radio", { name: "Dry run" }).click();
+  await page.getByText(/Dry run\. Nothing will be sent/).waitFor({ timeout: 8000 });
+  ok(transports() === "dry/dry", "Dry run (no Touch ID) put both transports back to dry");
+  await livePolicy.uncheck(); await contactsPolicy.uncheck();
+  ok(await until(() => candPolicy().live_allowed === false && candPolicy().contacts_live_allowed === false), "the permissions are switched off again for the hardening steps");
   await page.getByTestId("expected-keys").evaluate((el) => el.scrollIntoView({ block: "center" }));
   await shotMasked("settings-pin.png");
   // Hardening: the root pin appears (as after the sudo command). The badge goes, the chip says Hardened, and from then on only that file counts.
   writeFileSync(paths.rootPinFile, readFileSync(userPinPath));
   await page.goto(`${B}/#/settings`);
+  await openAdvanced();
   await page.getByTestId("installed-pin").waitFor({ timeout: 10000 });
   ok((await page.getByTestId("pin-card").innerText()).includes("Hardened"), "with the root pin present the card shows the 'Hardened' chip");
   ok((await page.getByTestId("simple-badge").count()) === 0, "...and the Simple mode badge is gone");
@@ -345,7 +368,7 @@ try {
   await page.getByText(/Saved\. Run the harden command again/).waitFor({ timeout: 8000 });
   await page.getByTestId("rerun-note").waitFor();
   ok(candPolicy().live_allowed === true && JSON.parse(readFileSync(paths.rootPinFile, "utf8")).policy.live_allowed === false, "hardened: the policy change reaches the user pin only; the root pin is untouched until the command is re-run");
-  ok(await page.getByRole("radiogroup", { name: "Transport", exact: true }).getByRole("radio", { name: "Live" }).isDisabled(), "...so Live stays locked");
+  ok(await modeSwitch.getByRole("radio", { name: "Live" }).isDisabled() && (await page.getByTestId("live-state").innerText()).includes("hardened pin doesn't allow live sending"), "...so Live stays locked, with the way forward in plain words");
   await shotMasked("settings-hardened.png");
   rmSync(paths.rootPinFile, { force: true });
   writeFileSync(userPinPath, JSON.stringify({ ...JSON.parse(readFileSync(userPinPath, "utf8")), policy: { live_allowed: false, contacts_live_allowed: false } }, null, 2) + "\n", { mode: 0o600 });

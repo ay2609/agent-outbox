@@ -380,8 +380,55 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
     return c.json({ settings: getSettings(db()) });
   });
 
+  // ---------- mode: the one Live / Dry run switch ----------
+  // dry: both transports to dry, no Touch ID (it can only make sending safer). live: needs a fresh sign-in assertion whenever it
+  // changes anything. Simple mode: turns the policy on too (what PUT /api/pin-policy does) and both transports live, ONE Touch ID.
+  // Hardened mode: never touches the policy or the root pin; it only flips a transport the installed pin already allows.
+  // Sending itself is unchanged: every message still needs a Touch ID approval of its exact text.
+  app.post("/api/mode", async (c) => {
+    const { mode, reauth } = await readJson(c, z.object({ mode: z.enum(["live", "dry"]), reauth: reauthSchema.optional() }).strict());
+    const finish = (extra: object) => c.json({ settings: getSettings(db()), status: buildStatus(cfg, db()).pin, ...extra });
+    if (mode === "dry") {
+      tx(() => {
+        const cur = getSettings(db());
+        const changed = { transport: cur.transport !== "dry", contacts_transport: cur.contacts_transport !== "dry" };
+        if (changed.transport) setSetting(db(), "transport", "dry", OWNER);
+        if (changed.contacts_transport) setSetting(db(), "contacts_transport", "dry", OWNER);
+        audit(db(), OWNER, "mode.set", null, { mode: "dry", ...changed });
+      });
+      return finish({ contacts: "dry" });
+    }
+    const hardened = pinMode(cfg) === "hardened";
+    const policy = getPinPolicy(db());
+    const before = getSettings(db());
+    if (hardened && !pinLiveAllowed(cfg)) {
+      throw new ApiError(409, "pin_not_live_allowed", `The installed pin file doesn't allow live sending. In Settings, open Advanced and tick "Allow live sending", then run the harden command again.`);
+    }
+    // Hardened and the pin lacks contacts: messages go live, contact changes stay as they are (the sender applies them dry).
+    const contactsOk = !hardened || pinContactsLiveAllowed(cfg);
+    const policyChange = !hardened && (!policy.live_allowed || policy.contacts_live_allowed !== true);
+    const changes = policyChange || before.transport !== "live" || (contactsOk && before.contacts_transport !== "live");
+    if (changes) {
+      if (!reauth) throw new ApiError(403, "reauth_required", "Going live needs a sign-in confirmation (Touch ID).");
+      await verifyLoginAssertion(cfg, db(), limiterFor(c, "reauth"), reauth.challenge_id, reauth.response as any);
+      tx(() => {
+        // Re-read inside the lock: the policy and settings may have changed while the assertion was being checked.
+        if (!hardened) {
+          const p = getPinPolicy(db());
+          if (!p.live_allowed || p.contacts_live_allowed !== true) setPinPolicy(db(), { live_allowed: true, contacts_live_allowed: true }, OWNER);
+        }
+        const cur = getSettings(db());
+        if (cur.transport !== "live") setSetting(db(), "transport", "live", OWNER);
+        if (contactsOk && cur.contacts_transport !== "live") setSetting(db(), "contacts_transport", "live", OWNER);
+        audit(db(), OWNER, "mode.set", null, { mode: "live", policy_changed: policyChange, hardened, contacts: contactsOk ? "live" : "dry_pin" });
+      });
+      if (!hardened) writePinFiles(cfg, db());
+    }
+    return finish({ contacts: contactsOk ? "live" : "dry_pin", policy_changed: policyChange });
+  });
+
   // ---------- imports  ----------
-  const region = z.string().regex(/^[A-Za-z]{2}$/).transform((s) => s.toUpperCase());
+  const region =z.string().regex(/^[A-Za-z]{2}$/).transform((s) => s.toUpperCase());
   app.get("/api/imports", (c) => {
     const rows = db().query<any, []>("SELECT id, filename, kind, sheet, row_count, mapping_json, created_by, created_at FROM imports ORDER BY created_at DESC LIMIT 50").all();
     return c.json({
