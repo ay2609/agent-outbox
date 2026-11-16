@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bunx tsc --noEmit -p .
+      - name: Unit tests
+        run: bun test
+      - name: Build the dashboard
+        run: bun run web:build
+      - name: Build and self-test the executor
+        run: |
+          cd exec
+          ./build.sh
+          build/OutboxExec.app/Contents/MacOS/outbox-exec selftest
