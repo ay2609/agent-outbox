@@ -732,6 +732,98 @@ try {
     rmSync(paths.rootPinFile, { force: true });
     db.query("UPDATE settings SET value = 'dry' WHERE key = 'contacts_transport'").run();
   }
+
+  // 14. saved groups: one an agent made, opened in the dashboard: list, rename, remove, add from the address book, prompt,
+  //     new group, save an import's rows as a group, delete (with a confirm), and the owner routes refuse without a session / CSRF
+  {
+    const { createGroup, addMembers } = await import("../../src/core/groups");
+    const { normalizeHandle } = await import("../../src/ingest/normalize");
+    const gdeps = { normalizeHandle };
+    const made = createGroup(db, { name: "Book club", description: "Thursday readers", actor: "agent:e2e" });
+    addMembers(db, gdeps, made.id, [{ contact_id: "c-ann" }, { contact_id: "c-ben" }, { to: "(415) 555-0188", name: "Walk-in" }], { actor: "agent:e2e" });
+    const gname = (id: string) => db.query<any, [string]>("SELECT name FROM contact_groups WHERE id = ?").get(id)?.name;
+    const gcount = (id: string) => db.query<any, [string]>("SELECT COUNT(*) n FROM contact_group_members WHERE group_id = ?").get(id)!.n;
+    const cookieHdr = async () => (await ctx.cookies()).map((c) => `${c.name}=${c.value}`).join("; ");
+
+    await page.goto(`${B}/#/contacts`);
+    await page.reload();
+    await page.getByTestId("contacts-groups-tab").click();
+    await page.getByTestId("group-card").waitFor();
+    ok(page.url().endsWith("#/contacts/groups") && (await page.getByTestId("group-card").innerText()).includes("Book club") && (await page.getByTestId("group-card").innerText()).includes("3 people"), "Contacts has a Groups tab at #/contacts/groups listing the agent's group with its size");
+    await shot("groups-list.png");
+    await page.getByTestId("group-card").click();
+    await page.getByTestId("group-members").waitFor();
+    ok(page.url().endsWith(`#/contacts/groups/${made.id}`) && (await page.getByTestId("group-name").innerText()) === "Book club", "the group opens at #/contacts/groups/<id>");
+    ok((await page.locator('[data-testid="group-members"] > .card').count()) === 3, "the group lists its three people");
+    const memberText = await page.getByTestId("group-members").innerText();
+    ok(memberText.includes("Ann Lee") && memberText.includes("Walk-in") && memberText.includes("not in your address book"), "members show the contact's name, or the saved name when they aren't a contact");
+    ok((await page.getByTestId("group-prompt").innerText()).includes("everyone in my agent-outbox group 'Book club': [what to say]"), "the detail page has a copyable prompt naming the group");
+    await shot("group-detail.png", { fullPage: true });
+
+    // rename + description
+    await page.getByTestId("group-rename").click();
+    await page.getByTestId("group-name-input").fill("Readers");
+    await page.getByTestId("group-save").click();
+    await page.getByRole("heading", { name: "Readers" }).waitFor();
+    ok(gname(made.id) === "Readers" && db.query<any, []>("SELECT COUNT(*) n FROM audit_log WHERE action = 'group.rename' AND actor = 'owner'").get()!.n === 1, "renaming in the dashboard saves the new name and is audited as the owner");
+    // a clash is refused with a message
+    createGroup(db, { name: "Climbing", actor: "owner" });
+    await page.getByTestId("group-rename").click();
+    await page.getByTestId("group-name-input").fill("climbing");
+    await page.getByTestId("group-save").click();
+    await page.locator("form .note-bad").waitFor();
+    ok((await page.locator("form .note-bad").innerText()).includes("already exists") && gname(made.id) === "Readers", "renaming onto another group's name is refused and nothing changes");
+    await page.getByRole("button", { name: "Cancel" }).click();
+
+    // remove one person
+    await page.getByRole("button", { name: "Remove Walk-in" }).click();
+    await page.waitForFunction(() => document.querySelectorAll('[data-testid="group-members"] > .card').length === 2);
+    ok(gcount(made.id) === 2 && !db.query<any, [string]>("SELECT 1 x FROM contact_group_members WHERE group_id = ? AND handle = '+14155550188'").get(made.id), "Remove takes the person out of the group");
+
+    // add people from the address book with one tap
+    await page.getByTestId("group-add-search").fill("Dana");
+    await page.getByTestId("group-add-result").waitFor();
+    await page.getByTestId("group-add-result").getByRole("button", { name: "Add" }).click();
+    await page.waitForFunction(() => document.querySelectorAll('[data-testid="group-members"] > .card').length === 3);
+    ok(db.query<any, [string]>("SELECT contact_id FROM contact_group_members WHERE group_id = ? AND handle = '+12025550130'").get(made.id)?.contact_id === "c-dana", "searching the address book and tapping Add puts the contact in the group");
+    ok((await page.getByTestId("group-add-result").innerText()).includes("in the group"), "a contact already in the group shows 'in the group' instead of Add");
+
+    // a new, empty group from the list
+    await page.getByRole("link", { name: "‹ Groups" }).click();
+    await page.getByTestId("new-group").click();
+    await page.getByTestId("new-group-name").fill("Climbing crew");
+    await page.getByTestId("new-group-create").click();
+    await page.getByTestId("group-name").waitFor();
+    ok((await page.getByTestId("group-name").innerText()) === "Climbing crew" && db.query<any, []>("SELECT created_by FROM contact_groups WHERE name = 'Climbing crew'").get()?.created_by === "owner", "New group makes an empty group and opens it");
+
+    // an import's rows as a group (the earlier pasted table: 2 usable rows, 1 without a number)
+    await page.goto(`${B}/#/imports/${importId}`);
+    await page.getByTestId("import-group-name").waitFor();
+    await page.getByTestId("import-group-name").fill("Pasted people");
+    await page.getByTestId("import-group-save").click();
+    await page.getByTestId("group-members").waitFor();
+    const pasted = db.query<any, []>("SELECT id FROM contact_groups WHERE name = 'Pasted people'").get()!;
+    ok(gcount(pasted.id) === 2 && (await page.getByTestId("group-members").innerText()).includes("Ada Park") && (await page.getByTestId("group-members").innerText()).includes("Leo Chen"), "Save rows as a group on an import adds the usable rows (the row without a number is skipped)");
+
+    // the owner routes need a session and the CSRF header
+    ok((await fetch(`${B}/api/groups`)).status === 401, "/api/groups without a session is refused (401)");
+    ok((await fetch(`${B}/api/groups/${made.id}`, { method: "DELETE", headers: { cookie: await cookieHdr() } })).status === 403 && gname(made.id) === "Readers", "a delete without the CSRF header is refused (403) and the group is still there");
+
+    // delete, with a confirmation
+    await page.goto(`${B}/#/contacts/groups/${made.id}`);
+    await page.getByTestId("group-delete").click();
+    await page.getByTestId("group-delete-confirm").waitFor();
+    ok((await page.locator(".sheet").innerText()).includes("Nobody is removed from your address book"), "the delete sheet explains what is and isn't deleted");
+    await shot("group-delete-sheet.png");
+    await page.getByRole("button", { name: "Keep it" }).click();
+    ok(gname(made.id) === "Readers", "Keep it leaves the group alone");
+    await page.getByTestId("group-delete").click();
+    await page.getByTestId("group-delete-confirm").click();
+    await page.getByTestId("new-group").waitFor();
+    ok(gname(made.id) === undefined && gcount(made.id) === 0 && page.url().endsWith("#/contacts/groups"), "Delete group removes it and its people and returns to the list");
+    ok(db.query<any, []>("SELECT COUNT(*) n FROM contacts WHERE id IN ('c-ann','c-ben','c-dana')").get()!.n === 3, "...without touching the address book");
+    ok(db.query<any, []>("SELECT COUNT(*) n FROM audit_log WHERE action = 'group.delete' AND actor = 'owner'").get()!.n === 1, "...and the delete is audited");
+  }
 } catch (e) {
   failed = true;
   console.error(String((e as Error).stack ?? e));

@@ -12,6 +12,10 @@ import {
   validateProposal, type ProposeResult,
 } from "../core/contact-changes";
 import { contactVars } from "../core/contacts-sync";
+import {
+  GroupError, addMembers, createGroup, getGroup, groupSummary, itemsForBatch, listGroups, membersFromContactIds, membersFromImport,
+  removeMembers, updateGroup, type AddResult, type MemberInput,
+} from "../core/groups";
 import { loadBDeps, type BDeps } from "../core/deps";
 import { FileProblemError, MAX_UPLOAD_BYTES, PathRefusedError, checkImportPath, expandHome } from "../core/upload";
 import { availableVars, resolveColumn } from "../ingest/mapping";
@@ -114,6 +118,29 @@ const importBatchS = z.object({
   instructions: z.string().optional(),
   allow_unknown_vars: z.boolean().optional(),
 });
+
+// Saved groups (v5). Members: a phone or email and/or a contact id; people can also come from contacts or an import.
+const MAX_MEMBERS_PER_CALL = 1000;
+const memberS = z.object({
+  to: z.string().min(1).optional(), contact_id: z.string().min(1).optional(), name: z.string().max(200).optional(), vars: varsS.optional(),
+}).strict();
+const memberSources = {
+  members: z.array(memberS).max(MAX_MEMBERS_PER_CALL).optional(),
+  contact_ids: z.array(z.string().min(1)).max(MAX_MEMBERS_PER_CALL).optional(),
+  from_import: z.object({ import_id: z.string().min(1), rows: z.array(z.number().int().min(0)).optional() }).strict().optional(),
+};
+const groupCreateS = z.object({ name: z.string().min(1), description: z.string().optional(), ...memberSources }).strict();
+const groupMembersS = z.object({ ...memberSources }).strict();
+const groupRemoveS = z.object({ handles: z.array(z.string().min(1)).max(MAX_MEMBERS_PER_CALL).optional(), contact_ids: z.array(z.string().min(1)).max(MAX_MEMBERS_PER_CALL).optional() }).strict();
+const groupPatchS = z.object({ name: z.string().min(1).optional(), description: z.string().optional() }).strict();
+const groupBatchS = z.object({
+  title: z.string().min(1).max(200),
+  template: z.string().optional(),
+  bodies: z.record(z.string(), z.string().max(20000)).optional(),
+  only: z.array(z.string().min(1)).optional(),
+  instructions: z.string().optional(),
+  submit: z.boolean().optional(),
+}).strict();
 
 // Contact changes (v4). The items themselves are validated by src/core/contact-changes.ts, which refuses unknown keys.
 const CONTACT_SET_STATUSES = ["drafting", "review", "approved", "applying", "done", "cancelled"] as const;
@@ -346,10 +373,8 @@ export function createAgentApp(opts: AgentAppOptions = {}): Hono {
     return c.json(withLint({ ...view, draft: view.drafts[0] }, lintError), 201);
   });
 
-  app.post("/v1/batches", async (c) => {
-    const w = who(c);
-    const input = await parseJson(c, batchBodyS);
-    const db = getDatabase(); const deps = await getDeps();
+  /** Resolves the items (all or nothing), creates the batch and lints it. Shared by POST /v1/batches and the group batch. */
+  async function makeBatch(w: Who, db: Database, deps: BDeps, input: { title: string; template?: string; instructions?: string; items?: Item[]; submit?: boolean }) {
     const drafts = await resolveItems(db, deps, input.items ?? [], input.template ?? null, w);
     if (input.submit && drafts.length === 0) throw new ApiError(400, "empty_batch", "can't submit a batch with no items");
     const batchId = db.transaction(() => {
@@ -362,7 +387,14 @@ export function createAgentApp(opts: AgentAppOptions = {}): Hono {
     }).immediate();
     const lintError = drafts.length ? safeLint(deps, db, batchId) : undefined;
     const view = batchView(db, batchId);
-    return c.json({ ...withLint(view, lintError), next_step: view.batch.status === "drafting" ? "Add items with POST /v1/batches/:id/items if needed, then submit with POST /v1/batches/:id/submit so the user can review it." : "Submitted. The user reviews and approves it in the dashboard." }, 201);
+    return { ...withLint(view, lintError), next_step: view.batch.status === "drafting" ? "Add items with POST /v1/batches/:id/items if needed, then submit with POST /v1/batches/:id/submit so the user can review it." : "Submitted. The user reviews and approves it in the dashboard." };
+  }
+
+  app.post("/v1/batches", async (c) => {
+    const w = who(c);
+    const input = await parseJson(c, batchBodyS);
+    const db = getDatabase(); const deps = await getDeps();
+    return c.json(await makeBatch(w, db, deps, input), 201);
   });
 
   app.post("/v1/batches/:id/items", async (c) => {
@@ -811,6 +843,111 @@ export function createAgentApp(opts: AgentAppOptions = {}): Hono {
     const set = getContactSet(db, c.req.param("id"));
     if (!set) throw new ApiError(404, "contact_set_not_found", `contact change set ${c.req.param("id")} not found`);
     return c.json(contactSetView(db, set, { origin }));
+  });
+
+  // ----- saved groups (v5) -----
+  // Draft-only like everything here. Agents may create groups, change them and address a batch to one; deleting a group is
+  // the owner's (dashboard). A group only chooses recipients: the batch it makes is an ordinary one the user must approve.
+  type GroupSummary = ReturnType<typeof groupSummary>;
+  const groupUrl = (id: string) => `${origin}/#/contacts/groups/${id}`;
+  const groupBody = (g: GroupSummary) => ({ ...g, dashboard_url: groupUrl(g.id) });
+  const groupActor = (w: Who) => (w.source === "cli" ? "cli" : w.actor);
+  const asApi = (e: unknown): never => {
+    if (e instanceof GroupError) throw new ApiError(e.status, e.code, e.message, e.details);
+    throw e;
+  };
+
+  interface MemberSources { members?: MemberInput[]; contact_ids?: string[]; from_import?: { import_id: string; rows?: number[] } }
+  /** The member inputs from whichever of members / contact_ids / from_import was given (an import is read first, so a bad
+   *  import id fails before anything is written). */
+  async function gatherMembers(db: Database, deps: BDeps, input: MemberSources) {
+    const inputs: MemberInput[] = [...(input.members ?? []), ...membersFromContactIds(input.contact_ids ?? [])];
+    let skipped: ReturnType<typeof membersFromImport>["invalid"] = [];
+    if (input.from_import) {
+      const fi = membersFromImport(await loadImport(db, deps, input.from_import.import_id), input.from_import.rows);
+      inputs.push(...fi.members); skipped = fi.invalid;
+    }
+    return { inputs, skipped };
+  }
+  function addGathered(db: Database, deps: BDeps, w: Who, ref: string, g: { inputs: MemberInput[]; skipped: AddResult["invalid"] }, importId?: string) {
+    try {
+      const r = addMembers(db, deps, ref, g.inputs, { actor: w.actor, addedBy: groupActor(w), lenient: !!importId, ...(importId ? { source: `import ${importId}` } : {}) });
+      return { added: r.added, already: r.already, invalid: [...r.invalid, ...g.skipped], group: groupBody(r.group) };
+    } catch (e) { return asApi(e); }
+  }
+
+  app.get("/v1/groups", (c) => c.json({
+    groups: listGroups(getDatabase()).map((g) => ({ id: g.id, name: g.name, description: g.description, members: g.members, updated_at: g.updated_at })),
+  }));
+
+  app.post("/v1/groups", async (c) => {
+    const w = who(c);
+    const input = await parseJson(c, groupCreateS);
+    const db = getDatabase(); const deps = await getDeps();
+    const gathered = await gatherMembers(db, deps, input);
+    let made: GroupSummary;
+    try { made = createGroup(db, { name: input.name, description: input.description, actor: w.actor, createdBy: groupActor(w) }); } catch (e) { return asApi(e); }
+    return c.json(addGathered(db, deps, w, made.id, gathered, input.from_import?.import_id), 201);
+  });
+
+  app.get("/v1/groups/:ref", (c) => {
+    try {
+      const r = getGroup(getDatabase(), c.req.param("ref"));
+      return c.json({ group: groupBody(r.group), members: r.members });
+    } catch (e) { return asApi(e); }
+  });
+
+  app.post("/v1/groups/:ref/members", async (c) => {
+    const w = who(c);
+    const input = await parseJson(c, groupMembersS);
+    const db = getDatabase(); const deps = await getDeps();
+    return c.json(addGathered(db, deps, w, c.req.param("ref"), await gatherMembers(db, deps, input), input.from_import?.import_id));
+  });
+
+  app.post("/v1/groups/:ref/remove", async (c) => {
+    const w = who(c);
+    const input = await parseJson(c, groupRemoveS);
+    if (!input.handles?.length && !input.contact_ids?.length) throw new ApiError(400, "validation_error", "give handles and/or contact_ids to remove");
+    const db = getDatabase(); const deps = await getDeps();
+    try {
+      const r = removeMembers(db, deps, c.req.param("ref"), { ...input, actor: w.actor });
+      return c.json({ removed: r.removed, not_found: r.not_found, group: groupBody(r.group) });
+    } catch (e) { return asApi(e); }
+  });
+
+  app.patch("/v1/groups/:ref", async (c) => {
+    const w = who(c);
+    const input = await parseJson(c, groupPatchS);
+    if (input.name === undefined && input.description === undefined) throw new ApiError(400, "validation_error", "give name and/or description");
+    try { return c.json({ group: groupBody(updateGroup(getDatabase(), c.req.param("ref"), { ...input, actor: w.actor })) }); } catch (e) { return asApi(e); }
+  });
+
+  // A batch addressed to the group's members, built by the same resolver as POST /v1/batches: `to`, `contact_id`, the name
+  // and `vars` come from the member; `bodies` (keyed by handle) wins over the template. Personalised bodies are the better path.
+  app.post("/v1/groups/:ref/batch", async (c) => {
+    const w = who(c);
+    const input = await parseJson(c, groupBatchS);
+    const db = getDatabase(); const deps = await getDeps();
+    let made: ReturnType<typeof itemsForBatch>;
+    try { made = itemsForBatch(db, deps, c.req.param("ref"), { only: input.only }); } catch (e) { return asApi(e); }
+    const name = made.group.name;
+    if (!made.items.length) throw new ApiError(400, "empty_group", `group "${name}" has no people${input.only ? " in that selection" : ""}`);
+    if (made.items.length > 500) throw new ApiError(400, "too_many_members", `${made.items.length} people is more than one batch holds (500). Pass "only" with up to 500 handles per call.`);
+    const have = new Set(made.items.map((i) => i.to));
+    const bodies = new Map<string, string>();
+    for (const [raw, body] of Object.entries(input.bodies ?? {})) {
+      const n = deps.normalizeHandle(raw);
+      const h = n.valid && n.handle && have.has(n.handle) ? n.handle : have.has(raw.trim().toLowerCase()) ? raw.trim().toLowerCase() : null;
+      if (!h) throw new ApiError(400, "not_in_group", `bodies has "${raw}", who is not in group "${name}"${input.only ? " (or not in only)" : ""}`);
+      bodies.set(h, body);
+    }
+    if (!input.template && !made.items.every((i) => bodies.has(i.to))) {
+      const missing = made.items.filter((i) => !bodies.has(i.to)).map((i) => i.recipient_name || i.to);
+      throw new ApiError(400, "missing_body", `give a template, or a body for every person; missing: ${missing.slice(0, 5).join(", ")}${missing.length > 5 ? ", ..." : ""}`);
+    }
+    const items: Item[] = made.items.map((i) => ({ ...i, ...(bodies.has(i.to) ? { body: bodies.get(i.to) } : {}) }));
+    const r = await makeBatch(w, db, deps, { title: input.title, template: input.template, instructions: input.instructions, items, submit: input.submit ?? true });
+    return c.json({ ...r, group: { id: made.group.id, name } }, 201);
   });
 
   // ----- errors -----

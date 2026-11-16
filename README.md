@@ -72,9 +72,14 @@ All draft-only.
 | `outbox_list_batches`, `outbox_get_batch` | Status, including what was sent |
 | `outbox_ingest_file`, `outbox_get_import`, `outbox_set_mapping`, `outbox_batch_from_import` | Turn a CSV, XLSX, vCard or pasted table into a batch |
 | `outbox_propose_contacts`, `outbox_contacts_from_import`, `outbox_get_contact_changes` | Propose new contacts (added automatically after a duplicate check) or edits (wait for Touch ID) |
+| `outbox_list_groups`, `outbox_get_group`, `outbox_create_group`, `outbox_add_to_group`, `outbox_update_group`, `outbox_batch_from_group` | Saved groups of people (see below) |
 | `outbox_sync_contacts` | Refresh the contact list |
 
 Other MCP clients: run `bun run <repo>/src/mcp/index.ts` as a stdio server. The same API is available as a CLI: `bun run cli --help`.
+
+## Groups
+
+A group is a saved list of people ("Book club"), kept by Agent Outbox itself. They are not groups in the macOS Contacts app (those show up as contact tags). An agent can save one from a spreadsheet, a pasted list or your contacts, add to it later, and draft a personalised message to everyone in it; a group only chooses who a draft is addressed to, so every message still needs your Touch ID approval. Groups live under Contacts, then Groups in the dashboard, where you can rename them, remove people, add people from your address book, and delete them (agents can't delete). A person stays in a group even if the contact is later removed from your address book.
 
 ## Configuration
 

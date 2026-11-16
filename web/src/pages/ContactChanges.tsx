@@ -25,13 +25,14 @@ const canUndo = (c: Change): boolean => c.status === "applied" && !c.undo_blocke
 const hex = (b: ArrayBuffer): string => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("");
 async function sha256Hex(s: string): Promise<string> { return hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s))); }
 
-/** Address book | Changes, shared by both Contacts pages. */
-export function ContactsNav({ active }: { active: "book" | "changes" }) {
+/** Address book | Groups | Changes, shared by the Contacts pages. */
+export function ContactsNav({ active }: { active: "book" | "groups" | "changes" }) {
   const q = useLoad<{ sets: any[] }>("/api/contact-changes?status=review");
   const n = q.data?.sets.length ?? 0;
   return (
     <div className="seg" role="tablist" aria-label="Contacts sections">
       <a role="tab" aria-selected={active === "book"} className={active === "book" ? "on" : ""} href={href("contacts")}>Address book</a>
+      <a role="tab" aria-selected={active === "groups"} className={active === "groups" ? "on" : ""} href={href("contacts", "groups")} data-testid="contacts-groups-tab">Groups</a>
       <a role="tab" aria-selected={active === "changes"} className={active === "changes" ? "on" : ""} href={href("contacts", "changes")} data-testid="contacts-changes-tab">Changes{n > 0 ? ` (${n})` : ""}</a>
     </div>
   );

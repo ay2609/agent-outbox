@@ -33,10 +33,19 @@ const HELP = `outbox: draft iMessages for the user to approve. Nothing here send
   outbox contacts propose --file <json|->     (new contacts are added automatically after a live duplicate check, unless they have one name only, look like an existing contact or join an existing group; those and all edits wait for the user's Touch ID; the user can undo any change)
   outbox contacts from-import <import_id> [--suffix <text>] [--prefix <text>] [--title <t>] [--include 0,1,2] [--group <name>]...
   outbox contacts changes [<set_id>] [--status drafting|review|approved|applying|done|cancelled]
+  outbox groups list
+  outbox groups show <group>        (a group is an id or its exact name; groups are saved lists kept by the outbox, not Contacts-app groups)
+  outbox groups create <name> [--description <t>] [--members <json file|->] [--contacts id,id] [--from-import <import_id> [--include 0,1,2]]
+  outbox groups add <group> (--members <json file|-> | --contacts id,id | --from-import <import_id> [--include 0,1,2])
+  outbox groups remove <group> (--handles <phone|email>,... | --contacts id,id)
+  outbox groups rename <group> <new name> [--description <t>]
+  outbox groups batch <group> --title <t> (--template <t> | --bodies <json file|->) [--only <phone|email>,...] [--instructions <t>] [--no-submit]
   outbox sync-contacts
   outbox status
 
 A contacts propose file is JSON: {"title": "...", "creates": [{"given_name","family_name","phones":[...],"emails":[...],"org"?,"nickname"?,"groups"?}], "updates": [{"contact_id","set"?:{"given_name"...},"add_phones"?,"add_emails"?,"add_groups"?}]}.
+
+A groups members file is a JSON array of {to?, contact_id?, name?, vars?}. A --bodies file is a JSON object {"<phone or email>": "message"}. Groups can't be deleted from here; the user does that in the dashboard.
 
 Add --json to any command for machine-readable output. Items files are a JSON array of {to|contact_id, body?, vars?, recipient_name?, proposed_contact?, service?}.
 Merge templates: {{first_name}}, or {{first_name|there}} for a fallback.`;
@@ -140,6 +149,26 @@ function fmtContactSet(r: Json): string {
   if (r.dashboard_url) lines.push(`  dashboard: ${r.dashboard_url}`);
   return lines.join("\n");
 }
+
+function fmtGroup(r: Json): string {
+  if (Array.isArray(r.groups)) {
+    if (!r.groups.length) return "no groups";
+    return r.groups.map((g: any) => `${g.id}  ${g.name}  (${g.members} ${g.members === 1 ? "person" : "people"})${g.description ? "  " + g.description : ""}`).join("\n");
+  }
+  const lines: string[] = [];
+  const g = r.group;
+  if (g) {
+    lines.push(`${g.name}  ${g.id}  (${g.members} ${g.members === 1 ? "person" : "people"})${g.description ? "\n  " + g.description : ""}`);
+    for (const m of r.members ?? []) lines.push(`  - ${m.contact?.display_name || m.name || "(no name)"} <${m.handle}>${m.contact ? "" : "  (not in contacts)"}`);
+    if (r.added) lines.push(`  added ${r.added.length}, already in the group ${r.already.length}, not added ${r.invalid.length}`);
+    if (r.removed) lines.push(`  removed ${r.removed.length}${r.not_found?.length ? `, not in the group: ${r.not_found.join(", ")}` : ""}`);
+    for (const i of r.invalid ?? []) lines.push(`  not added: ${i.input || "#" + i.index}: ${i.reason}`);
+    lines.push(`  dashboard: ${g.dashboard_url}`);
+  }
+  return lines.join("\n");
+}
+/** "a,b,c" -> ["a","b","c"] */
+const csv = (s: string | undefined): string[] | undefined => (s ? s.split(",").map((x) => x.trim()).filter(Boolean) : undefined);
 
 type Fmt = (r: Json) => string;
 
@@ -306,6 +335,70 @@ export async function main(argv: string[], io: Partial<CliIo> = {}): Promise<num
           return 0;
         }
         throw new UsageError("contacts needs a subcommand: search, show, propose, from-import, changes");
+      }
+      case "groups": {
+        const [sub, ...r2] = rest;
+        const importRef = (values: Record<string, any>) => values["from-import"]
+          ? { import_id: values["from-import"] as string, ...(values.include ? { rows: (csv(values.include) ?? []).map(Number).filter((n) => Number.isInteger(n)) } : {}) } : undefined;
+        const membersFile = async (file: string | undefined): Promise<any[] | undefined> => {
+          if (!file) return undefined;
+          const raw = file === "-" ? await full.readStdin() : readFileSync(file, "utf8");
+          let j: any; try { j = JSON.parse(raw); } catch (e) { throw new UsageError(`the members file isn't valid JSON: ${(e as Error).message}`); }
+          const list = Array.isArray(j) ? j : j?.members;
+          if (!Array.isArray(list)) throw new UsageError("members must be a JSON array of {to?, contact_id?, name?, vars?}");
+          return list;
+        };
+        const people = { members: { type: "string" as const }, contacts: { type: "string" as const }, "from-import": { type: "string" as const }, include: { type: "string" as const } };
+        if (sub === "list") { opts(r2, {}); show(await api.get("/v1/groups"), fmtGroup); return 0; }
+        if (sub === "show") {
+          const { positionals } = opts(r2, {});
+          if (!positionals[0]) throw new UsageError("groups show needs a group (id or name)");
+          show(await api.get(`/v1/groups/${encodeURIComponent(positionals[0])}`), fmtGroup);
+          return 0;
+        }
+        if (sub === "create") {
+          const { values, positionals } = opts(r2, { description: { type: "string" }, ...people });
+          if (!positionals.length) throw new UsageError("groups create needs a name");
+          show(await api.post("/v1/groups", { name: positionals.join(" "), description: values.description, members: await membersFile(values.members), contact_ids: csv(values.contacts), from_import: importRef(values) }), fmtGroup);
+          return 0;
+        }
+        if (sub === "add") {
+          const { values, positionals } = opts(r2, people);
+          if (!positionals[0]) throw new UsageError("groups add needs a group (id or name)");
+          const body = { members: await membersFile(values.members), contact_ids: csv(values.contacts), from_import: importRef(values) };
+          if (!body.members && !body.contact_ids && !body.from_import) throw new UsageError("groups add needs --members, --contacts or --from-import");
+          show(await api.post(`/v1/groups/${encodeURIComponent(positionals[0])}/members`, body), fmtGroup);
+          return 0;
+        }
+        if (sub === "remove") {
+          const { values, positionals } = opts(r2, { handles: { type: "string" }, contacts: { type: "string" } });
+          if (!positionals[0]) throw new UsageError("groups remove needs a group (id or name)");
+          if (!values.handles && !values.contacts) throw new UsageError("groups remove needs --handles or --contacts");
+          show(await api.post(`/v1/groups/${encodeURIComponent(positionals[0])}/remove`, { handles: csv(values.handles), contact_ids: csv(values.contacts) }), fmtGroup);
+          return 0;
+        }
+        if (sub === "rename") {
+          const { values, positionals } = opts(r2, { description: { type: "string" } });
+          const [ref, ...name] = positionals;
+          if (!ref || (!name.length && values.description === undefined)) throw new UsageError("groups rename needs a group and a new name (or --description)");
+          show(await api.patch(`/v1/groups/${encodeURIComponent(ref)}`, { name: name.length ? name.join(" ") : undefined, description: values.description }), fmtGroup);
+          return 0;
+        }
+        if (sub === "batch") {
+          const { values, positionals } = opts(r2, { title: { type: "string" }, template: { type: "string" }, bodies: { type: "string" }, only: { type: "string" }, instructions: { type: "string" }, "no-submit": { type: "boolean" } });
+          if (!positionals[0] || !values.title) throw new UsageError("groups batch needs a group and --title");
+          if (!values.template && !values.bodies) throw new UsageError("groups batch needs --template or --bodies");
+          let bodies: Record<string, string> | undefined;
+          if (values.bodies) {
+            const raw = values.bodies === "-" ? await full.readStdin() : readFileSync(values.bodies, "utf8");
+            try { bodies = JSON.parse(raw); } catch (e) { throw new UsageError(`the bodies file isn't valid JSON: ${(e as Error).message}`); }
+          }
+          show(await api.post(`/v1/groups/${encodeURIComponent(positionals[0])}/batch`, {
+            title: values.title, template: values.template, bodies, only: csv(values.only), instructions: values.instructions, submit: values["no-submit"] ? false : undefined,
+          }), fmtBatch);
+          return 0;
+        }
+        throw new UsageError("groups needs a subcommand: list, show, create, add, remove, rename, batch");
       }
       case "sync-contacts": {
         opts(rest, {});

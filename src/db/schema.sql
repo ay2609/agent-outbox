@@ -300,3 +300,26 @@ CREATE TABLE IF NOT EXISTS contact_applies (
 );
 
 INSERT OR IGNORE INTO settings(key, value) VALUES ('contacts_transport','dry');
+
+-- v5: saved groups. Agent Outbox's own named lists of people (NOT macOS Contacts groups, which show up as contact tags).
+-- Agents may write these tables: a group only decides who a draft is addressed to, and every draft still needs the owner's approval.
+CREATE TABLE IF NOT EXISTS contact_groups (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  name_key    TEXT NOT NULL UNIQUE,          -- lower(trim(name)), collapsed spaces: names are unique, case-insensitively
+  description TEXT NOT NULL DEFAULT '',
+  created_by  TEXT NOT NULL,                 -- 'agent:<label>' | 'owner' | 'cli'
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS contact_group_members (
+  group_id    TEXT NOT NULL REFERENCES contact_groups(id) ON DELETE CASCADE,
+  handle      TEXT NOT NULL,                 -- E.164 or lowercased email: the member's identity within the group
+  contact_id  TEXT REFERENCES contacts(id) ON DELETE SET NULL,  -- contacts sync deletes removed contacts
+  name        TEXT NOT NULL DEFAULT '',      -- display name when added (used when contact_id is null)
+  vars_json   TEXT NOT NULL DEFAULT '{}',    -- per-member template variables, e.g. from an import row
+  added_by    TEXT NOT NULL,
+  added_at    TEXT NOT NULL,
+  PRIMARY KEY (group_id, handle)
+);
+CREATE INDEX IF NOT EXISTS idx_group_members_contact ON contact_group_members(contact_id);

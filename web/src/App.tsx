@@ -11,6 +11,7 @@ import { Compose, ComposeOff } from "./pages/Compose";
 import { Imports } from "./pages/Imports";
 import { Contacts } from "./pages/Contacts";
 import { ContactChangeDetail, ContactChangesList } from "./pages/ContactChanges";
+import { GroupDetail, GroupsList } from "./pages/Groups";
 import { Activity } from "./pages/Activity";
 import { Settings } from "./pages/Settings";
 
@@ -147,7 +148,8 @@ function Shell({ setup }: { setup: { login: boolean; approve: boolean } }) {
     case "batch": page = <BatchPage id={route[1] ?? ""} status={status.data} />; break;
     case "compose": page = composeOn ? <Compose /> : <ComposeOff reason={status.data?.compose?.reason} />; break;
     case "imports": page = <Imports id={route[1]} />; break;
-    case "contacts": page = route[1] === "changes" ? (route[2] ? <ContactChangeDetail id={route[2]} status={status.data} /> : <ContactChangesList />) : <Contacts />; break;
+    case "contacts": page = route[1] === "changes" ? (route[2] ? <ContactChangeDetail id={route[2]} status={status.data} /> : <ContactChangesList />)
+      : route[1] === "groups" ? (route[2] ? <GroupDetail id={route[2]} /> : <GroupsList />) : <Contacts />; break;
     case "activity": page = <Activity />; break;
     case "settings": page = <Settings status={status.data} reloadStatus={status.reload} focus={route[1]} />; break;
     default: page = <Inbox status={status.data} />;

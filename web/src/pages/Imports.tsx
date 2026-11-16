@@ -3,6 +3,7 @@ import { errText, get, post, put } from "../api";
 import { useDebounced, useLoad } from "../hooks";
 import { href, navigate } from "../router";
 import { Chip, Empty, ErrorNote, Spinner, prettyHandle, timeAgo, useToast } from "../ui";
+import { SaveRowsAsGroup } from "./Groups";
 
 /** Country the phone numbers without a "+" are read in. */
 const REGIONS: [string, string][] = [["US", "United States"], ["CA", "Canada"], ["GB", "United Kingdom"], ["IE", "Ireland"], ["AU", "Australia"], ["NZ", "New Zealand"], ["IN", "India"],
@@ -234,6 +235,8 @@ function ImportDetail({ id }: { id: string }) {
           {rows.length < rowsTotal && <button className="btn btn-small btn-wide" disabled={rowsBusy} onClick={() => void loadRows(rows.length)}>{rowsBusy ? "Loading…" : `Show more (${rows.length} of ${rowsTotal})`}</button>}
         </div>
       </section>
+
+      {confirmed && <SaveRowsAsGroup importId={id} filename={imp.filename} />}
 
       <section className="section">
         <h2 className="section-title">3. Message</h2>

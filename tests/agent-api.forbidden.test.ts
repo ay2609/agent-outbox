@@ -18,6 +18,9 @@ const ALLOWED_ROUTES = [
   "POST /v1/imports", "GET /v1/imports/:id", "PUT /v1/imports/:id/mapping", "POST /v1/imports/:id/batch",
   // v4 contact changes: propose and read only. Approval, apply and undo are not here and never will be.
   "POST /v1/contact-changes", "POST /v1/imports/:id/contact-changes", "GET /v1/contact-changes", "GET /v1/contact-changes/:id",
+  // v5 saved groups: agents may make and change groups and address a draft batch to one. No delete, nothing that approves or sends.
+  "GET /v1/groups", "POST /v1/groups", "GET /v1/groups/:ref", "PATCH /v1/groups/:ref", "POST /v1/groups/:ref/members",
+  "POST /v1/groups/:ref/remove", "POST /v1/groups/:ref/batch",
 ].sort();
 
 function makeApp() {
@@ -40,10 +43,10 @@ describe("route table", () => {
     for (const r of routes) expect(bad.test(r.split(" ")[1]!)).toBe(false);
   });
 
-  test("the only writes are POST/PUT/PATCH on drafts, batches, items, submit, cancel, sync, imports and contact-change proposals", () => {
+  test("the only writes are POST/PUT/PATCH on drafts, batches, items, submit, cancel, sync, imports, contact-change proposals and groups", () => {
     const writes = routes.filter((r) => !r.startsWith("GET "));
     for (const w of writes) {
-      expect(w).toMatch(/^(POST|PUT|PATCH) \/v1\/(drafts|batches|batches\/:id\/(items|submit|cancel)|drafts\/:id|contacts\/sync|imports|imports\/:id\/(mapping|batch|contact-changes)|contact-changes)$/);
+      expect(w).toMatch(/^(POST|PUT|PATCH) \/v1\/(drafts|batches|batches\/:id\/(items|submit|cancel)|drafts\/:id|contacts\/sync|imports|imports\/:id\/(mapping|batch|contact-changes)|contact-changes|groups|groups\/:ref(\/(members|remove|batch))?)$/);
     }
     // contact changes have no per-change or per-set write route at all (no approve, apply, undo, cancel, reject)
     expect(routes.filter((r) => /contact-changes\/:id(\/|$)/.test(r) && !r.startsWith("GET ") && !r.startsWith("POST /v1/imports/:id"))).toEqual([]);
@@ -54,8 +57,9 @@ describe("route table", () => {
 describe("source scan: agent API, MCP and CLI never write gated tables or set a sent-ish status", () => {
   const dirs = ["src/agent-api", "src/mcp", "src/cli"];
   // src/core/contact-changes.ts is what the agent routes call to propose contact changes: it is held to the same rules.
-  const files = [...dirs.flatMap((d) => readdirSync(join(ROOT, d)).filter((f) => f.endsWith(".ts")).map((f) => join(d, f))), "src/core/contact-changes.ts"];
-  test("scanned files exist", () => expect(files.length).toBeGreaterThanOrEqual(7));
+  // src/core/groups.ts is what the group routes call (v5): held to the same rules.
+  const files = [...dirs.flatMap((d) => readdirSync(join(ROOT, d)).filter((f) => f.endsWith(".ts")).map((f) => join(d, f))), "src/core/contact-changes.ts", "src/core/groups.ts"];
+  test("scanned files exist", () => expect(files.length).toBeGreaterThanOrEqual(8));
   for (const f of files) {
     const src = readFileSync(join(ROOT, f), "utf8");
     test(f, () => {
@@ -117,6 +121,17 @@ describe("behaviour: exercise every route, then nothing is approved or sent", ()
     await hit("GET", "/v1/contact-changes/:id", `/v1/contact-changes/${cc.json.set_id}`);
     await hit("POST", "/v1/imports/:id/contact-changes", `/v1/imports/${iid}/contact-changes`, { first_name_suffix: "📚" });
 
+    // v5: groups. Make one, add, read, rename, remove, then a batch addressed to it (still just a review batch).
+    const grp = await hit("POST", "/v1/groups", "/v1/groups", { name: "Crew", members: [{ to: "4151230021", name: "Ann" }, { to: "4151230022", name: "Bo" }] });
+    expect(grp.status).toBe(201);
+    await hit("GET", "/v1/groups", "/v1/groups");
+    await hit("GET", "/v1/groups/:ref", `/v1/groups/${grp.json.group.id}`);
+    await hit("POST", "/v1/groups/:ref/members", `/v1/groups/${grp.json.group.id}/members`, { members: [{ to: "4151230023" }] });
+    await hit("PATCH", "/v1/groups/:ref", `/v1/groups/${grp.json.group.id}`, { name: "Crew 2" });
+    await hit("POST", "/v1/groups/:ref/remove", `/v1/groups/${grp.json.group.id}/remove`, { handles: ["4151230023"] });
+    const gb = await hit("POST", "/v1/groups/:ref/batch", "/v1/groups/Crew%202/batch", { title: "Crew note", template: "hi" });
+    expect(gb.json.batch.status).toBe("review");
+
     // every route in the table was exercised
     expect([...hits].sort()).toEqual(ALLOWED_ROUTES);
 
@@ -136,6 +151,9 @@ describe("behaviour: exercise every route, then nothing is approved or sent", ()
       ["POST", `/v1/contact-changes/${cc.json.set_id}/undo`], ["POST", "/v1/contact-changes/undo"], ["POST", `/v1/contact-changes/${cc.json.set_id}/cancel`],
       ["POST", `/v1/contact-changes/${cc.json.set_id}/reject`], ["PATCH", `/v1/contact-changes/${cc.json.set_id}`], ["PUT", `/v1/contact-changes/${cc.json.set_id}/status`],
       ["DELETE", `/v1/contact-changes/${cc.json.set_id}`], ["POST", "/v1/contact-approvals"], ["POST", "/v1/contact-applies"],
+      // v5: a group can't be deleted, approved or sent to from here
+      ["DELETE", `/v1/groups/${grp.json.group.id}`], ["PUT", `/v1/groups/${grp.json.group.id}`], ["POST", `/v1/groups/${grp.json.group.id}/approve`],
+      ["POST", `/v1/groups/${grp.json.group.id}/send`], ["POST", `/v1/groups/${grp.json.group.id}/delete`],
     ];
     for (const [m, p] of forbidden) {
       const r = await call(app, m, p, { status: "approved", transport: "live" });
@@ -174,6 +192,8 @@ describe("behaviour: exercise every route, then nothing is approved or sent", ()
     expect(db.query("SELECT COUNT(*) AS n FROM contact_changes WHERE status IN ('approved','applied','undone','failed') OR transport IS NOT NULL OR before_vcard IS NOT NULL OR after_fingerprint IS NOT NULL OR result_macos_id IS NOT NULL").get()).toEqual({ n: 0 });
     expect(db.query("SELECT COUNT(*) AS n FROM contact_change_sets WHERE status IN ('approved','applying','done')").get()).toEqual({ n: 0 });
     expect((db.query("SELECT COUNT(*) AS n FROM contact_changes").get() as any).n).toBe(2);
+    // v5: the group is still there with its two people; the group routes touched nothing gated
+    expect(db.query("SELECT COUNT(*) AS n FROM contact_group_members").get()).toEqual({ n: 2 });
     expect(db.query("SELECT key, value FROM settings ORDER BY key").all()).toEqual(settingsBefore);
     expect(db.query("SELECT COUNT(*) AS n FROM audit_log WHERE action LIKE 'setting.%' OR actor NOT LIKE 'agent:%' AND actor <> 'system'").get()).toEqual({ n: 0 });
   });
