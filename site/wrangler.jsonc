@@ -1,0 +1,8 @@
+// The landing page at agent-outbox.halcyn.dev: static files only, its own Worker, separate from aviyadava.com's.
+// Deploy: cd site && npx wrangler@4 deploy
+{
+  "name": "agent-outbox-site",
+  "compatibility_date": "2026-11-16",
+  "assets": { "directory": "./public", "not_found_handling": "404-page" },
+  "routes": [{ "pattern": "agent-outbox.halcyn.dev", "custom_domain": true }]
+}

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Outbox: AI drafts your texts, you approve with Touch ID</title>
+<meta name="description" content="Let AI agents draft your iMessages. Nothing sends until you approve it with Touch ID. Local, open source, for Mac.">
+<meta property="og:title" content="Agent Outbox">
+<meta property="og:description" content="Let AI agents draft your texts. Nothing sends until you approve it with Touch ID.">
+<meta property="og:image" content="https://agent-outbox.halcyn.dev/dashboard.jpg">
+<meta property="og:url" content="https://agent-outbox.halcyn.dev/">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#2f5d50">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <header>
+    <img src="/icon.svg" width="40" height="40" alt="">
+    <h1>Agent Outbox</h1>
+  </header>
+
+  <p class="lede">Let AI agents draft your texts. Nothing sends until you approve it with Touch ID.</p>
+
+  <ol class="how">
+    <li><strong>Your agent drafts.</strong> Claude Code or any MCP client writes messages and personalised batches. It has no way to send.</li>
+    <li><strong>You approve.</strong> Read, edit or skip each one on your Mac, then approve with Touch ID.</li>
+    <li><strong>Your Mac sends.</strong> A small separate program checks your signature and sends through Messages.</li>
+  </ol>
+
+  <figure>
+    <img src="/dashboard.jpg" width="1230" height="1200" alt="The Agent Outbox dashboard showing a batch of drafted messages waiting for approval" loading="lazy" decoding="async">
+  </figure>
+
+  <section>
+    <h2>Install</h2>
+    <p>Paste this into Claude Code or another coding agent:</p>
+    <div class="copy">
+      <pre id="prompt">Set up Agent Outbox on this Mac: clone https://github.com/ay2609/agent-outbox (or pull it if I already have it), read its README and run ./install.sh. Never use sudo. When it finishes, give me the setup link it printed and stop: I create the passkeys with Touch ID myself. Don't open that link, don't edit anything in ~/Library/Application Support/agent-outbox, don't run the harden command and don't change Settings. Then tell me to start a new session so the agent-outbox MCP tools load. From then on, draft messages with the outbox_* tools for me to approve in the dashboard; you can't send, so don't try.</pre>
+      <button type="button" data-copy="prompt">Copy</button>
+    </div>
+    <p class="fine">Or by hand: <code>git clone https://github.com/ay2609/agent-outbox.git &amp;&amp; cd agent-outbox &amp;&amp; ./install.sh</code>. Needs macOS 14+, Bun and Xcode Command Line Tools.</p>
+  </section>
+
+  <p class="links"><a href="https://github.com/ay2609/agent-outbox">GitHub</a> · <a href="https://github.com/ay2609/agent-outbox#readme">README</a> · <a href="https://github.com/ay2609/agent-outbox/blob/main/SECURITY.md">Security</a></p>
+
+  <footer>Local only. Open source, MIT. Made by <a href="https://aviyadava.com">Avi Yadava</a>.</footer>
+</main>
+<script>
+document.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(document.getElementById(b.dataset.copy).textContent); b.textContent = "Copied"; }
+  catch { b.textContent = "Select and copy"; }
+  setTimeout(() => { b.textContent = "Copy"; }, 2000);
+}));
+</script>
+</body>
+</html>
