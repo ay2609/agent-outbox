@@ -4,8 +4,9 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { newId, nowIso } from "../db";
 import type {
-  Batch, BatchSource, BatchStatus, Contact, Draft, DraftStatus, ProposedContact, RevisionActor, Service, Settings, Warning,
+  Batch, BatchSource, BatchStatus, Contact, Draft, DraftStatus, ProposedContact, RevisionActor, Service, SettingKey, Settings, Warning,
 } from "./types";
+import { parsePacing } from "./pacing";
 
 export const sha256Hex = (s: string | Uint8Array): string => createHash("sha256").update(s).digest("hex");
 
@@ -53,9 +54,10 @@ export function getSettings(db: Database): Settings {
     kill_reason: (m.kill_reason === "owner" || m.kill_reason === "breaker") ? m.kill_reason : "",
     breaker_on_failure: m.breaker_on_failure !== "0",
     contacts_transport: m.contacts_transport === "live" ? "live" : "dry",
+    pacing: parsePacing(m),
   };
 }
-export function setSetting(db: Database, key: keyof Settings, value: string | number | boolean, actor: string): void {
+export function setSetting(db: Database, key: SettingKey, value: string | number | boolean, actor: string): void {
   const v = typeof value === "boolean" ? (value ? "1" : "0") : String(value);
   db.query("INSERT INTO settings(key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, v);
   audit(db, actor, "setting.set", key, { value: v });

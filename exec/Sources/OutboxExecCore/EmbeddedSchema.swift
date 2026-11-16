@@ -209,9 +209,13 @@ INSERT OR IGNORE INTO settings(key, value) VALUES
   ('transport','dry'),
   ('kill_switch','0'), ('kill_reason',''),
   ('breaker_on_failure','1');
--- v3: no pacing, daily cap or quiet hours. Approved messages send right away, 2 s apart (fixed in outbox-exec).
-DELETE FROM settings WHERE key IN ('pace_min_s','pace_max_s','burst_size_min','burst_size_max','burst_pause_min_s',
-  'burst_pause_max_s','daily_cap','quiet_start','quiet_end','timezone');
+-- v3 removed the old bursty pacing. These keys stay deleted (this runs at every open).
+DELETE FROM settings WHERE key IN ('burst_size_min','burst_size_max','burst_pause_min_s','burst_pause_max_s','timezone');
+-- Optional pacing ("Spread out messages"), owner-only (settings is a gated table). Off = approved messages send right away, 2 s apart
+-- (SendGap in outbox-exec). On = a random pause of pace_min_s..pace_max_s between sends, an optional daily limit (0 = none) and
+-- optional quiet hours ('' = none, else 'HH:MM', may wrap midnight) in the Mac's local time. Dry and live sends are both paced.
+INSERT OR IGNORE INTO settings(key, value) VALUES
+  ('pace_enabled','0'), ('pace_min_s','30'), ('pace_max_s','90'), ('daily_cap','0'), ('quiet_start',''), ('quiet_end','');
 
 CREATE TABLE IF NOT EXISTS audit_log (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,

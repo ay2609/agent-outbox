@@ -137,6 +137,9 @@ final class Harness {
     var scriptedDry: ScriptedTransport?
     var live = ScriptedTransport(name: "live")        // tripwire: counts live calls, never touches Messages
     var config: ExecConfig
+    /// Pacing seams: the "random" draw (0..<1) and the zone of quiet hours and "today" (the Mac's own zone in production).
+    var rand = 0.5
+    var zone = TimeZone(identifier: "America/New_York")!
     private(set) var exec: Executor!
 
     static let baseTime = Time.parse("2026-11-10T17:00:00Z")!   // 12:00 in America/New_York
@@ -160,6 +163,8 @@ final class Harness {
             if name == "live" { return h.live }
             return h.scriptedDry ?? DryTransport(logPath: cfg.dryLogPath, clock: clk)
         }
+        exec.random = { h.rand }
+        exec.timeZone = zone
         try exec.prepare()
     }
 

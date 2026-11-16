@@ -97,6 +97,7 @@ export function AiDraft() {
     <>
       <h1 className="page-title">AI draft</h1>
       <p className="muted">Paste one of these into Claude Code (or any agent with the agent-outbox tools). It drafts the messages; they appear in your Inbox and nothing sends until you approve with Touch ID.</p>
+      <p className="small" data-testid="ai-pacing-tip"><strong>Big batch?</strong> With "Spread out messages" on in Settings, approved messages go out slowly, a few a minute, so a long list can take hours. Your agent can see that setting and tell you how long it will take.</p>
       <p className="fine">The agent has no agent-outbox tools? It can use the <code>outbox</code> command line instead: <code>bun run cli --help</code> in the agent-outbox folder.</p>
       {SECTIONS.map((s) => (
         <section className="section" key={s.title}>

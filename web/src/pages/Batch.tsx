@@ -4,6 +4,7 @@ import { errText, patch, post } from "../api";
 import { useLoad } from "../hooks";
 import { passkeyError } from "../passkeys";
 import { href } from "../router";
+import { fmtSpan, fmtWhen, fmtWindow, nextSendLine } from "../pacing";
 import { Chip, Empty, ErrorNote, Sheet, Spinner, Switch, fmtDateTime, fmtShort, prettyHandle, timeAgo, useToast } from "../ui";
 
 type Draft = any;
@@ -140,6 +141,9 @@ export function BatchPage({ id, status }: { id: string; status: any }) {
         {Object.entries(counts).map(([k, n]) => <Chip key={k} tone={k === "failed" ? "bad" : k === "sent" ? "good" : "neutral"}>{n} {k}</Chip>)}
       </div>
       <p className="muted small">From {batch.created_by.replace(/^agent:/, "")} · {timeAgo(batch.created_at)} · {batch.source}</p>
+      {!killed && !cancelled && status?.pacing?.enabled && status?.exec?.alive && ((counts.approved ?? 0) + (counts.sending ?? 0)) > 0 && (
+        <p className="small" data-testid="next-send">{nextSendLine(status.pacing.hold)}</p>
+      )}
       {(batch.template || batch.instructions) && (
         <details className="details">
           <summary>{batch.template ? "Template" : "Instructions"}</summary>
@@ -426,6 +430,23 @@ function contactExact(pc: any, to: string): boolean {
   return to.includes("@") ? phones.length === 0 && emails.length === 1 && String(emails[0].email).toLowerCase() === to.toLowerCase() : emails.length === 0 && phones.length === 1 && phones[0].e164 === to;
 }
 
+/** What "Spread out messages" means for this approval: how long it takes and, if it can't all fit in 7 days, how many would. */
+function PlanNote({ plan }: { plan: any }) {
+  const span = Math.max(0, Date.parse(plan.expected_finish) - Date.now());
+  const over = plan.fits < plan.count;
+  return (
+    <div className="plan" data-testid="sheet-plan">
+      <p className="small"><strong>Sends over about {fmtSpan(span)}</strong> (done around {fmtWhen(plan.expected_finish)}), one message at a time with a pause between them.
+        {plan.queued_ahead > 0 && ` ${plural(plan.queued_ahead, "message")} already waiting go first.`}</p>
+      {over && (
+        <div className="note note-warn small" role="alert" data-testid="sheet-plan-over">
+          At this pace only {plan.fits} of these {plan.count} would go out within 7 days, the longest an approval can last. The other {plan.count - plan.fits} would expire unsent. Approve fewer, or loosen "Spread out messages" in Settings.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ApproveSheet({ batchId, drafts, transport, onClose }: {
   batchId: string; drafts: Draft[]; transport: string; onClose: () => void;
 }) {
@@ -477,6 +498,7 @@ function ApproveSheet({ batchId, drafts, transport, onClose }: {
   };
 
   const m = opt?.manifest;
+  const plan = opt?.plan;
   const liveNow = (m?.transport ?? transport) === "live";
   const pinOk = opt ? !!opt.pin_live_allowed : true;
   const badContact = !!m && m.items.some((it: any) => it.create_contact && !contactExact(it.create_contact, it.to));
@@ -520,14 +542,15 @@ function ApproveSheet({ batchId, drafts, transport, onClose }: {
               : <div className="live-banner live-banner-off" data-testid="live-banner" role="alert"><strong>Live is on, but the installed pin doesn't allow it.</strong> The sender will not really send these. Fix the pin in Settings.</div>
             : <div className="dry-banner" data-testid="dry-banner">Dry run: nothing will be sent. The sender only logs what it would send.</div>
       )}
-      {phase !== "done" && opt && liveNow && pinOk && <p className="small" data-testid="sheet-sends"><strong>Sends right away.</strong> The moment you approve, one message at a time.</p>}
+      {phase !== "done" && opt && !opt.plan?.enabled && liveNow && pinOk && <p className="small" data-testid="sheet-sends"><strong>Sends right away.</strong> The moment you approve, one message at a time.</p>}
+      {phase !== "done" && opt?.plan?.enabled && <PlanNote plan={opt.plan} />}
       {phase === "loading" && <Spinner />}
       {phase === "error" && <ErrorNote>{err}</ErrorNote>}
       {phase === "done" && (
         <div className="success" data-testid="approve-success">
           <div className="check" aria-hidden="true">✓</div>
           <h3>{result.count} message{result.count === 1 ? "" : "s"} approved</h3>
-          <p className="muted">{result.transport === "live" ? "They go out right away." : "Dry run: the sender logs them without sending."}</p>
+          <p className="muted">{plan?.enabled ? `They go out slowly${plan.latest_finish ? `, over about ${fmtSpan(Date.parse(plan.expected_finish) - Date.now())}` : ""}.` : result.transport === "live" ? "They go out right away." : "Dry run: the sender logs them without sending."}</p>
           <p className="fine">Approval valid until {fmtDateTime(result.not_after)}.</p>
         </div>
       )}
@@ -597,7 +620,7 @@ function ApproveSheet({ batchId, drafts, transport, onClose }: {
             })}
           </ol>
 
-          <p className="fine">Valid for 24 hours, until {fmtDateTime(opt.manifest.not_after)}. Edits after this make a message need approval again.</p>
+          <p className="fine">Valid for {plan?.enabled ? fmtWindow(plan.window_hours) : "24 hours"}, until {fmtDateTime(opt.manifest.not_after)}. Edits after this make a message need approval again.</p>
         </>
       )}
     </Sheet>

@@ -4,6 +4,7 @@ import { useControls } from "../controls";
 import { useLoad } from "../hooks";
 import { addPasskey, passkeyError, registerApprove, reauth, type Purpose } from "../passkeys";
 import { Chip, ErrorNote, Spinner, copyText, fmtDateTime, useToast } from "../ui";
+import { PRESETS, describePacing, presetOf, type Pacing, type Preset } from "../pacing";
 
 const PURPOSE_LABEL: Record<Purpose, string> = { login: "Sign-in", approve: "Approval" };
 
@@ -16,6 +17,15 @@ export function Settings({ status, reloadStatus, focus }: { status: any; reloadS
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [label, setLabel] = useState("");
+  // Spread out messages: Custom stays open while you type, even when the numbers happen to match a preset.
+  const [customOpen, setCustomOpen] = useState(false);
+  const [form, setForm] = useState({ min_s: "30", max_s: "90", daily_cap: "0", quiet: false, quiet_start: "21:00", quiet_end: "09:00" });
+  const pacingData: Pacing | undefined = s.data?.settings?.pacing;
+  useEffect(() => {
+    if (!pacingData) return;
+    setForm({ min_s: String(pacingData.min_s), max_s: String(pacingData.max_s), daily_cap: String(pacingData.daily_cap), quiet: !!pacingData.quiet_start,
+      quiet_start: pacingData.quiet_start || "21:00", quiet_end: pacingData.quiet_end || "09:00" });
+  }, [JSON.stringify(pacingData)]);
   // Advanced is folded away; "#/settings/harden" (the Simple mode badge) opens it.
   const [adv, setAdv] = useState(focus === "harden");
   // Follows the stored policy (the Live switch can change it too); an unsaved optimistic tick is left alone while it saves.
@@ -35,6 +45,8 @@ export function Settings({ status, reloadStatus, focus }: { status: any; reloadS
   }, [focus, !!s.data]);
   if (!s.data) return <><h1 className="page-title">Settings</h1>{s.error ? <ErrorNote>{s.error}</ErrorNote> : <Spinner />}</>;
   const cur = s.data.settings;
+  const pacing: Pacing = cur.pacing;
+  const preset: Preset = pacing.enabled && customOpen ? "custom" : presetOf(pacing);
 
   const run = async (name: string, f: () => Promise<void>) => {
     setBusy(name); setErr(null);
@@ -87,6 +99,23 @@ export function Settings({ status, reloadStatus, focus }: { status: any; reloadS
     s.set(() => r); await reloadStatus(); toast(t === "live" ? "Contact changes are live." : "Contact changes are back to dry run.");
   });
 
+  // "Spread out messages" only slows sending down, so no Touch ID.
+  const savePacing = (patchBody: Partial<Pacing>, msg: string) => run("pacing", async () => {
+    const r = await patch("/api/settings", { pacing: patchBody });
+    s.set(() => r); await reloadStatus(); toast(msg);
+  });
+  const pickPreset = (p: Preset) => {
+    if (p === "off") { setCustomOpen(false); return void savePacing({ enabled: false }, "Messages go out right away again."); }
+    if (p === "custom") { setCustomOpen(true); return pacing.enabled ? undefined : void savePacing({ enabled: true }, "Spreading out messages."); }
+    setCustomOpen(false);
+    void savePacing({ enabled: true, ...PRESETS[p] }, p === "gentle" ? "Gentle: messages are spread out." : "Careful: messages are spread out, with quiet hours.");
+  };
+  const saveCustom = () => {
+    const n = (v: string) => (v.trim() === "" ? NaN : Number(v));
+    void savePacing({ enabled: true, min_s: n(form.min_s), max_s: n(form.max_s), daily_cap: n(form.daily_cap),
+      quiet_start: form.quiet ? form.quiet_start : "", quiet_end: form.quiet ? form.quiet_end : "" }, "Saved.");
+  };
+
   const pin = status?.pin;
   const root = pin?.root;
   const eff = pin?.effective;   // the pin the sender uses right now: the root file if it exists, else the user pin
@@ -130,6 +159,33 @@ export function Settings({ status, reloadStatus, focus }: { status: any; reloadS
           {liveBlocked && <div className="note note-warn small" data-testid="live-state">{live ? "Live is on, but your hardened pin doesn't allow live sending, so nothing really sends." : "Live isn't available: your hardened pin doesn't allow live sending."} Open Advanced, tick "Allow live sending", then run the harden command again.</div>}
           {contactsStayDry && hardened && <p className="fine" data-testid="contacts-dry-line">Contact changes stay a dry run, because your hardened pin doesn't allow them. Advanced has the switch.</p>}
           {hardened && pin?.candidate?.installed === false && <div className="note note-warn small">Your keys or settings changed since you hardened this install. Open Advanced to run the harden command again.</div>}
+          <div className="pacing" data-testid="pacing">
+            <div className="card-row"><strong>Spread out messages</strong></div>
+            <div className="seg" role="radiogroup" aria-label="Spread out messages" data-testid="pacing-switch">
+              {(["off", "gentle", "careful", "custom"] as Preset[]).map((p) => (
+                <button key={p} role="radio" aria-checked={preset === p} className={preset === p ? "on" : ""} disabled={busy === "pacing"} onClick={() => pickPreset(p)} data-preset={p}>{p === "off" ? "Off" : p[0]!.toUpperCase() + p.slice(1)}</button>
+              ))}
+            </div>
+            <p className="fine" data-testid="pacing-help">Sends one at a time with a random pause, so your number doesn't look like a spammer's.{" "}
+              {pacing.enabled ? <span data-testid="pacing-summary">{describePacing(pacing)}</span> : "Off: approved messages go out right away."}</p>
+            {preset === "custom" && (
+              <div className="pacing-custom" data-testid="pacing-custom">
+                <div className="grid2">
+                  <label className="field"><span>Shortest pause (seconds)</span><input inputMode="numeric" value={form.min_s} onChange={(ev) => setForm({ ...form, min_s: ev.target.value })} data-testid="pace-min" /></label>
+                  <label className="field"><span>Longest pause (seconds)</span><input inputMode="numeric" value={form.max_s} onChange={(ev) => setForm({ ...form, max_s: ev.target.value })} data-testid="pace-max" /></label>
+                </div>
+                <label className="field"><span>Most messages per day (0 = no limit)</span><input inputMode="numeric" value={form.daily_cap} onChange={(ev) => setForm({ ...form, daily_cap: ev.target.value })} data-testid="pace-cap" /></label>
+                <label className="inline-row"><input type="checkbox" checked={form.quiet} onChange={(ev) => setForm({ ...form, quiet: ev.target.checked })} data-testid="pace-quiet" /><span>Quiet hours: nothing is sent between these times (your Mac's clock)</span></label>
+                {form.quiet && (
+                  <div className="grid2">
+                    <label className="field"><span>From</span><input type="time" value={form.quiet_start} onChange={(ev) => setForm({ ...form, quiet_start: ev.target.value })} data-testid="pace-quiet-start" /></label>
+                    <label className="field"><span>Until</span><input type="time" value={form.quiet_end} onChange={(ev) => setForm({ ...form, quiet_end: ev.target.value })} data-testid="pace-quiet-end" /></label>
+                  </div>
+                )}
+                <button className="btn btn-small" disabled={busy === "pacing"} onClick={saveCustom} data-testid="pace-save">Save</button>
+              </div>
+            )}
+          </div>
           <div className="card-row"><strong>Sender</strong>
             <Chip tone={e?.alive ? "good" : "bad"}>{e?.alive ? "running" : e ? "not running" : "not seen yet"}</Chip></div>
           {e?.last_error && <p className="small bad">Last error: {e.last_error}</p>}

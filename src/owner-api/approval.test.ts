@@ -328,11 +328,11 @@ describe("drafts, settings, status", () => {
     const { h } = await ready();
     expect((await h.call("GET", "/api/settings")).json.settings.transport).toBe("dry");
     expect((await h.call("PATCH", "/api/settings", { breaker_on_failure: false })).json.settings).toMatchObject({ breaker_on_failure: false });
-    // the removed pacing, cap and quiet-hours settings are unknown keys now
+    // pacing is one nested object ("pacing"); the raw row names, the removed timezone and the old burst settings are unknown keys
     for (const k of [{ daily_cap: 80 }, { pace_min_s: 60 }, { quiet_start: "22:00" }, { timezone: "UTC" }, { burst_size_max: 3 }]) {
       expect((await h.call("PATCH", "/api/settings", k)).status).toBe(400);
     }
-    expect(Object.keys((await h.call("GET", "/api/settings")).json.settings).sort()).toEqual(["breaker_on_failure", "contacts_transport", "kill_reason", "kill_switch", "transport"]);
+    expect(Object.keys((await h.call("GET", "/api/settings")).json.settings).sort()).toEqual(["breaker_on_failure", "contacts_transport", "kill_reason", "kill_switch", "pacing", "transport"]);
     expect((await h.call("PATCH", "/api/settings", { kill_switch: true })).status).toBe(400); // only via stop/resume
     // going live needs live_allowed in the INSTALLED pin...
     const noPin = await h.call("PATCH", "/api/settings", { transport: "live", reauth: await h.reauth() });
@@ -413,7 +413,7 @@ describe("drafts, settings, status", () => {
     expect(list[0]).toMatchObject({ id: batchId, total: 3, new_contacts: 1, counts: { review: 3 } });
     const d = (await h.call("GET", `/api/batches/${batchId}`)).json;
     expect(d.drafts.map((x: any) => x.id)).toEqual(draftIds);
-    expect(Object.keys(d.settings).sort()).toEqual(["breaker_on_failure", "contacts_transport", "kill_reason", "kill_switch", "transport"]);
+    expect(Object.keys(d.settings).sort()).toEqual(["breaker_on_failure", "contacts_transport", "kill_reason", "kill_switch", "pacing", "transport"]);
     expect(d.queue).toBeUndefined(); expect(d.sent_today).toBeUndefined();
     expect((await h.call("GET", "/api/batches?status=done")).json.batches).toHaveLength(0);
   });

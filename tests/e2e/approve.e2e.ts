@@ -909,6 +909,122 @@ try {
     ok(db.query<any, []>("SELECT COUNT(*) n FROM contacts WHERE id IN ('c-ann','c-ben','c-dana')").get()!.n === 3, "...without touching the address book");
     ok(db.query<any, []>("SELECT COUNT(*) n FROM audit_log WHERE action = 'group.delete' AND actor = 'owner'").get()!.n === 1, "...and the delete is audited");
   }
+
+  // 15. Spread out messages: turn on Careful, the approve sheet shows the estimate, the batch page shows the next-send line
+  {
+    const pace = () => getSettings(db).pacing;
+    const cookieHdr = async () => (await ctx.cookies()).map((c) => `${c.name}=${c.value}`).join("; ");
+    const pb = createBatch(db, { title: "Pacing batch", created_by: "agent:e2e", source: "mcp", status: "review" });
+    for (let i = 0; i < 3; i++) addDraft(db, pb, { handle: `+1202555022${i}`, recipient_name: `Pace ${i + 1}`, body: `Hi Pace ${i + 1}, paced message ${i + 1}.`, actor: "agent" });
+    setBatchStatus(db, pb, "review", "e2e");
+    // earlier sections left approved messages waiting (no sender runs here); they would queue ahead of this batch in the estimate
+    db.query("UPDATE drafts SET status = 'sent' WHERE status IN ('approved','sending')").run();
+
+    await page.goto(`${B}/#/settings`);
+    await page.reload();
+    await page.getByTestId("pacing").waitFor();
+    ok(!pace().enabled && (await page.getByTestId("pacing-switch").locator('[aria-checked="true"]').innerText()) === "Off", "Settings: Spread out messages is Off by default");
+    ok((await page.getByTestId("pacing").innerText()).includes("random pause, so your number doesn't look like a spammer's"), "...with one plain line saying why");
+    await page.locator('[data-preset="careful"]').click();
+    await page.locator('[data-preset="careful"][aria-checked="true"]').waitFor();
+    ok(JSON.stringify(pace()) === JSON.stringify({ enabled: true, min_s: 120, max_s: 300, daily_cap: 50, quiet_start: "21:00", quiet_end: "09:00" }), "Careful stores 2 to 5 min, 50 a day, quiet 21:00 to 09:00 (no Touch ID asked)");
+    ok((await page.getByTestId("pacing-summary").innerText()).includes("2 min to 5 min") && (await page.getByTestId("pacing-summary").innerText()).includes("up to 50 a day"), "the card describes it in plain words");
+    ok(db.query<any, []>("SELECT COUNT(*) n FROM audit_log WHERE action = 'setting.set' AND target = 'pace_enabled' AND actor = 'owner'").get()!.n === 1, "...and the change is audited");
+    await shot("settings-pacing.png");
+
+    // the sheet shows the estimate (Careful: quiet hours may move it, so only its shape is checked here)
+    await page.goto(`${B}/#/batch/${pb}`);
+    await page.reload();
+    await page.getByRole("button", { name: "Approve 3" }).click();
+    await page.getByTestId("sheet-plan").waitFor();
+    const careful = await page.getByTestId("sheet-plan").innerText();
+    ok(/Sends over about .+ \(done around .+\)/.test(careful) && !/right away/i.test(careful), "Careful: the approve sheet says how long it takes and when it is done");
+    ok((await page.getByTestId("sheet-sends").count()) === 0, "...and no 'Sends right away' claim");
+    ok(/Valid for 24 hours/.test(await page.locator(".sheet").innerText()), "a small paced batch keeps the 24 hour window");
+    await page.getByRole("button", { name: "Go back" }).click();
+
+    // Custom, no quiet hours: an exact estimate (2 pauses of 2 to 5 min, average 3 min 30 s = 7 min)
+    await page.goto(`${B}/#/settings`);
+    await page.reload();
+    await page.locator('[data-preset="custom"]').click();
+    await page.getByTestId("pacing-custom").waitFor();
+    await page.getByTestId("pace-quiet").uncheck();
+    await page.getByTestId("pace-cap").fill("0");
+    await page.getByTestId("pace-save").click();
+    await page.getByTestId("toast").filter({ hasText: "Saved." }).waitFor();
+    ok(JSON.stringify(pace()) === JSON.stringify({ enabled: true, min_s: 120, max_s: 300, daily_cap: 0, quiet_start: "", quiet_end: "" }), "Custom saves the fields (no quiet hours, no daily limit)");
+    await page.getByTestId("pace-min").fill("1");
+    await page.getByTestId("pace-save").click();
+    await page.getByText(/must be 2 to 3600 seconds/).waitFor({ timeout: 8000 }).catch(async () => { console.error("PAGE TEXT:", (await page.locator("main").innerText()).slice(0, 1500), page.url()); throw new Error("no validation message"); });
+    ok(pace().min_s === 120, "an invalid Custom value is refused with a plain message and nothing changes");
+    await page.getByTestId("pace-min").fill("120");
+
+    await page.goto(`${B}/#/batch/${pb}`);
+    await page.reload();
+    await page.getByRole("button", { name: "Approve 3" }).click();
+    await page.getByTestId("sheet-plan").waitFor();
+    ok((await page.getByTestId("sheet-plan").innerText()).includes("Sends over about 7 min"), "the estimate for 3 messages at 2 to 5 min is about 7 min");
+    await shot("approve-sheet-paced.png");
+    await page.getByRole("button", { name: "Approve with Touch ID" }).click();
+    await page.getByTestId("approve-success").waitFor({ timeout: 15000 });
+    ok((await page.getByTestId("approve-success").innerText()).includes("They go out slowly, over about 7 min"), "after approving, the sheet says they go out slowly");
+    await page.getByRole("button", { name: "Done" }).click();
+    const pa = db.query<any, [string]>("SELECT created_at, not_after FROM approvals WHERE batch_id = ?").get(pb)!;
+    ok(Math.round((Date.parse(pa.not_after) - Date.parse(pa.created_at)) / 3600_000) === 24, "its signed window is 24 hours");
+
+    // the batch page's next-send line: written by the executor into exec_state; shown only while it is alive and messages wait
+    const hb = new Date().toISOString();
+    db.query("INSERT OR REPLACE INTO exec_status(id, heartbeat_at, version, transport, pin_file_ok) VALUES (1, ?, 'e2e', 'dry', 1)").run(hb);
+    const setState = (k: string, v: string) => db.query("INSERT INTO exec_state(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(k, v);
+    const soon = new Date(Date.now() + 3 * 60_000).toISOString();
+    setState("pace_hold", "gap"); setState("pace_until", soon); setState("next_send_at", soon);
+    await page.goto(`${B}/#/batch/${pb}`);
+    await page.reload();
+    await page.getByTestId("next-send").waitFor();
+    ok(/^Next message around \d{1,2}:\d{2}/.test(await page.getByTestId("next-send").innerText()), "the batch page says when the next message goes");
+    await shot("batch-next-send.png");
+    const tomorrow9 = new Date(); tomorrow9.setDate(tomorrow9.getDate() + 1); tomorrow9.setHours(9, 0, 0, 0);
+    setState("pace_hold", "daily"); setState("pace_until", tomorrow9.toISOString());
+    await page.reload();
+    await page.getByTestId("next-send").waitFor();
+    ok(/^Daily limit reached, continues tomorrow at 9:00/.test(await page.getByTestId("next-send").innerText()), "daily limit: 'continues tomorrow at 9:00'");
+    setState("pace_hold", "quiet"); setState("pace_until", tomorrow9.toISOString());
+    await page.reload();
+    await page.getByTestId("next-send").waitFor();
+    ok(/^Quiet hours until tomorrow at 9:00/.test(await page.getByTestId("next-send").innerText()), "quiet hours: 'until 9:00'");
+    db.query("DELETE FROM exec_status").run();
+    await page.reload();
+    await page.getByRole("heading", { name: "Pacing batch" }).waitFor();
+    ok((await page.getByTestId("next-send").count()) === 0, "no line while the sender isn't running");
+    db.query("DELETE FROM exec_state WHERE key IN ('pace_hold','pace_until','next_send_at')").run();
+
+    // more than 7 days of work: the sheet says how many fit (the three paced messages above count as queued ahead, so pretend they went)
+    db.query("UPDATE drafts SET status = 'sent' WHERE status IN ('approved','sending')").run();
+    const big = createBatch(db, { title: "Huge batch", created_by: "agent:e2e", source: "mcp", status: "review" });
+    for (let i = 0; i < 200; i++) addDraft(db, big, { handle: `+1303555${String(1000 + i)}`, recipient_name: `Big ${i}`, body: `Big ${i}`, actor: "agent" });
+    setBatchStatus(db, big, "review", "e2e");
+    await (await fetch(`${B}/api/settings`, { method: "PATCH", headers: { cookie: await cookieHdr(), "content-type": "application/json", "x-outbox": "1" }, body: JSON.stringify({ pacing: { min_s: 3600, max_s: 3600 } }) })).text();
+    await page.goto(`${B}/#/batch/${big}`);
+    await page.reload();
+    await page.getByRole("button", { name: /Approve 200/ }).click();
+    await page.getByTestId("sheet-plan-over").waitFor();
+    const over = await page.getByTestId("sheet-plan-over").innerText();
+    ok(over.includes("only 168 of these 200") && over.includes("7 days") && over.includes("The other 32 would expire"), "over 7 days: the sheet says 168 of 200 fit and the rest would expire");
+    ok(/Valid for 7 days/.test(await page.locator(".sheet").innerText()), "...and the window is capped at 7 days");
+    await page.getByRole("button", { name: "Go back" }).click();
+
+    // the AI draft page tip
+    await page.goto(`${B}/#/ai`);
+    await page.reload();
+    ok((await page.getByTestId("ai-pacing-tip").innerText()).includes("Spread out messages"), "the AI draft page tips that big batches go slowly when pacing is on");
+
+    // turn it off again
+    await page.goto(`${B}/#/settings`);
+    await page.reload();
+    await page.locator('[data-preset="off"]').click();
+    await page.locator('[data-preset="off"][aria-checked="true"]').waitFor();
+    ok(!pace().enabled, "Off turns it off (the numbers are kept for next time)");
+  }
 } catch (e) {
   failed = true;
   console.error(String((e as Error).stack ?? e));

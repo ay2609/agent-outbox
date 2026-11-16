@@ -248,6 +248,21 @@ describe("contacts", () => {
   });
 });
 
+describe("pacing in /v1/status", () => {
+  test("read-only: off by default, then the owner's settings and what the executor reports", async () => {
+    expect((await call(app, "GET", "/v1/status")).json.pacing).toEqual({ enabled: false, min_s: 30, max_s: 90, daily_cap: 0, quiet_start: "", quiet_end: "", next_send_at: null, hold: null });
+    // the owner turns it on (only the owner's API can); the executor reports a daily-limit hold
+    for (const [k, v] of [["pace_enabled", "1"], ["pace_min_s", "120"], ["pace_max_s", "300"], ["daily_cap", "50"], ["quiet_start", "21:00"], ["quiet_end", "09:00"]] as [string, string][]) {
+      db.query("UPDATE settings SET value = ? WHERE key = ?").run(v, k);
+    }
+    const until = "2026-11-17T14:00:00.000Z";
+    for (const [k, v] of [["next_send_at", until], ["pace_hold", "daily"], ["pace_until", until]] as [string, string][]) db.query("INSERT INTO exec_state(key, value) VALUES (?, ?)").run(k, v);
+    expect((await call(app, "GET", "/v1/status")).json.pacing).toEqual({
+      enabled: true, min_s: 120, max_s: 300, daily_cap: 50, quiet_start: "21:00", quiet_end: "09:00", next_send_at: until, hold: { kind: "daily", until },
+    });
+  });
+});
+
 describe("imports", () => {
   test("ingest from text and base64, path; mapping merges; batch from import", async () => {
     const t = await call(app, "POST", "/v1/imports", { text: "Name,Phone,City\nAnn,4151230001,Oslo\nBob,4151230002,Rome\n", kind: "csv" }, H);

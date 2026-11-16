@@ -21,6 +21,7 @@ import { FileProblemError, MAX_UPLOAD_BYTES, PathRefusedError, checkImportPath, 
 import { availableVars, resolveColumn } from "../ingest/mapping";
 import { listVars, varKey } from "../personalize/template";
 import { ORIGIN } from "../core/paths";
+import { readPaceState } from "../core/pacing-db";
 import {
   addDraft, audit, createBatch, getBatch, getContact, getDrafts, getSettings, findContactsByHandle,
   rowToContact, setBatchStatus, updateDraftBody, type NewDraft,
@@ -350,6 +351,9 @@ export function createAgentApp(opts: AgentAppOptions = {}): Hono {
       ok: true,
       executor: hb ? { alive: age !== null && age < 120, heartbeat_age_s: age, transport: hb.transport, pin_file_ok: !!hb.pin_file_ok, last_error: hb.last_error } : { alive: false },
       transport: s.transport, kill_switch: s.kill_switch,
+      // Read-only: only the owner can change pacing. When enabled, approved messages go out slowly (a random pause between them,
+      // maybe a daily limit and quiet hours), so tell the user how long a big batch will take.
+      pacing: { ...s.pacing, ...readPaceState(db) },
       batches: byStatus,
       contacts: (db.query("SELECT COUNT(*) AS n FROM contacts").get() as any).n,
       dashboard_url: `${origin}/`,

@@ -17,6 +17,8 @@ import type { Draft, DraftStatus, Manifest, ManifestItem, ProposedContact, Warni
 import type { OwnerConfig } from "./config";
 import { b64u, fromB64u, isB64u, sha256Buf, sha256Hex } from "./b64";
 import { ApiError, badRequest, conflict, notFound } from "./errors";
+import { planSends, type Plan } from "../core/pacing";
+import { queuedAhead, readPaceState, sentSinceLocalMidnight } from "../core/pacing-db";
 import { FailureLimiter, listPasskeys, storeChallenge, takeChallenge, type PasskeyRow } from "./auth";
 
 /** Draft states an approval may cover. `skipped` counts as re-included when the owner picks it, and `approved` is
@@ -133,11 +135,13 @@ export interface ApproveOptionsResult {
   challenge_id: string;
   options: Awaited<ReturnType<typeof generateAuthenticationOptions>>;
   manifest: Manifest;
+  /** What pacing means for this approval: the estimate shown in the sheet. `enabled: false` = right away, one every 2 s. */
+  plan: Plan;
   /** Bodies for display. The browser re-hashes each and compares with manifest.items[].body_sha256 before showing the sheet. */
   drafts: { draft_id: string; body: string; warnings: Warning[]; number_in_contact: boolean | null }[];
 }
 
-/** Every approval is valid for a fixed 24 hours; there is no choice. */
+/** Every approval is valid for 24 hours (contact approvals always). A message approval's window grows with pacing: see planSends(). */
 export const APPROVAL_HOURS = 24;
 
 export async function approveOptions(cfg: OwnerConfig, db: Database, batchId: string, draftIds: string[],
@@ -173,8 +177,16 @@ export async function approveOptions(cfg: OwnerConfig, db: Database, batchId: st
   const passkeys = listPasskeys(db, "approve");
   if (passkeys.length === 0) throw conflict("no_passkeys", "Register an approval passkey first (Settings).");
 
-  const transport = getSettings(db).transport;
-  const { manifest, bytes } = buildManifest(cfg, batchId, picked, APPROVAL_HOURS, transport);
+  const settings = getSettings(db);
+  const transport = settings.transport;
+  // The signed not_after is max(24 h, estimated finish + 12 h), at most 7 days, so a paced batch can't expire before it is done.
+  const now = new Date();
+  const nextSend = readPaceState(db).next_send_at;
+  const plan = planSends({
+    now, pacing: settings.pacing, queued: queuedAhead(db), count: picked.length, sentToday: sentSinceLocalMidnight(db, now),
+    nextSendAt: nextSend ? new Date(nextSend) : null,
+  });
+  const { manifest, bytes } = buildManifest(cfg, batchId, picked, plan.window_hours, transport, newId(), now);
   const digest = challengeBytes(bytes);
   const options = await generateAuthenticationOptions({
     rpID: cfg.rpId, userVerification: "required", timeout: 120_000, challenge: digest,
@@ -183,9 +195,9 @@ export async function approveOptions(cfg: OwnerConfig, db: Database, batchId: st
   const stored = b64u(digest);
   if (options.challenge !== stored) throw new Error("challenge encoding mismatch"); // never expected; surfaces as a 500
   const challenge_id = storeChallenge(cfg, db, { purpose: "approve", challenge: stored, approval_id: manifest.approval_id, manifest: bytes, batch_id: batchId });
-  audit(db, "owner", "approval.options", batchId, { challenge_id, approval_id: manifest.approval_id, count: picked.length, transport });
+  audit(db, "owner", "approval.options", batchId, { challenge_id, approval_id: manifest.approval_id, count: picked.length, transport, window_hours: plan.window_hours, paced: plan.enabled });
   return {
-    challenge_id, options, manifest,
+    challenge_id, options, manifest, plan,
     drafts: picked.map((d) => ({ draft_id: d.id, body: d.body, warnings: d.warnings, number_in_contact: numberInContact(db, d) })),
   };
 }

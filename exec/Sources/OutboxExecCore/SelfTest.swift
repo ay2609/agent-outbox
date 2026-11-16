@@ -61,6 +61,7 @@ public enum SelfTest {
         registerV2Cases(test)
         registerContactCases(test)
         registerPinModeCases(test)
+        registerPacingCases(test)
 
         if let ex = try? AppleScriptSource.script(handle: "+15551234567", body: "say \"hi\" \\ now\n\" & do shell script \"touch /tmp/pwned\" & \"", service: "iMessage") {
             print("\nexample generated AppleScript (generated only, never executed):\n\(ex)")
@@ -396,8 +397,8 @@ public enum SelfTest {
             for i in 1..<starts.count { try expect(starts[i].timeIntervalSince(starts[i - 1]) >= 2, "attempts \(i - 1) and \(i) are less than 2 s apart: \(starts)") }
             try expect(starts[1].timeIntervalSince(starts[0]) == 2, "first gap should be exactly 2 s")
         }
-        test("the gap is a constant, not a setting: DB rows for the old pacing settings change nothing") { h in
-            for (k, v) in [("pace_min_s", "3600"), ("daily_cap", "0"), ("quiet_start", "00:00"), ("quiet_end", "23:59"), ("timezone", "Mars/Olympus")] {
+        test("with pacing off the gap is the constant 2 s: pacing values and the removed timezone row change nothing") { h in
+            for (k, v) in [("pace_min_s", "3600"), ("daily_cap", "1"), ("quiet_start", "00:00"), ("quiet_end", "23:59"), ("timezone", "Mars/Olympus")] {
                 try h.db.exec("INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [.text(k), .text(v)])
             }
             let b = try h.makeBatch()

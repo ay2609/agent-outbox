@@ -1,5 +1,7 @@
 // Shared domain types. Mirrors src/db/schema.sql; JSON columns are parsed into these shapes.
 
+import type { Pacing } from "./pacing";
+
 export type Service = "iMessage" | "SMS" | "auto";
 export type BatchStatus = "drafting" | "review" | "approved" | "sending" | "done" | "cancelled";
 export type BatchSource = "mcp" | "cli" | "dashboard" | "compose"; // "compose": old rows from the removed Ask Claude runner
@@ -137,7 +139,10 @@ export interface Settings {
   kill_reason: "" | "owner" | "breaker";
   breaker_on_failure: boolean;
   contacts_transport: "dry" | "live";   // v4: what new contacts manifests ask for (the executor's lane is also capped by the pin policy)
+  pacing: Pacing;                       // optional "Spread out messages" (owner-only; agents see it read-only in GET /v1/status)
 }
+/** The settings rows setSetting() may write. `pacing` is stored as the pace_* / daily_cap / quiet_* rows (src/core/pacing.ts). */
+export type SettingKey = Exclude<keyof Settings, "pacing"> | "pace_enabled" | "pace_min_s" | "pace_max_s" | "daily_cap" | "quiet_start" | "quiet_end";
 
 // ===== v4: native contact management =====
 export type ContactChangeKind = "create" | "update" | "undo";

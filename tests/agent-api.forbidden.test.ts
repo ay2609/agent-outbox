@@ -153,7 +153,7 @@ describe("behaviour: exercise every route, then nothing is approved or sent", ()
     const forbidden: [string, string][] = [
       ["POST", `/v1/batches/${batchId}/approve`], ["POST", `/v1/batches/${batchId}/send`], ["POST", `/v1/drafts/${draftId}/send`],
       ["POST", `/v1/drafts/${draftId}/approve`], ["POST", "/v1/approvals"], ["POST", "/v1/sends"], ["PUT", "/v1/settings/kill_switch"],
-      ["PATCH", "/v1/settings"], ["POST", "/v1/passkeys"], ["POST", "/v1/stop"], ["POST", "/v1/resume"], ["DELETE", `/v1/batches/${batchId}`],
+      ["PATCH", "/v1/settings"], ["PUT", "/v1/pacing"], ["PATCH", "/v1/pacing"], ["POST", "/v1/settings/pacing"], ["POST", "/v1/passkeys"], ["POST", "/v1/stop"], ["POST", "/v1/resume"], ["DELETE", `/v1/batches/${batchId}`],
       ["PUT", `/v1/batches/${batchId}/status`], ["POST", "/api/batches/x/approve/verify"],
       // v4: nothing to approve, apply, undo, cancel or edit a contact change set or one change
       ["POST", `/v1/contact-changes/${cc.json.set_id}/approve`], ["POST", `/v1/contact-changes/${cc.json.set_id}/approve/options`],
@@ -169,6 +169,12 @@ describe("behaviour: exercise every route, then nothing is approved or sent", ()
       const r = await call(app, m, p, { status: "approved", transport: "live" });
       expect([404, 405]).toContain(r.status);
     }
+
+    // pacing is the owner's: GET /v1/status shows it read-only and no body can change it (the settings rows are compared at the end)
+    const st = await call(app, "GET", "/v1/status");
+    expect(st.json.pacing).toMatchObject({ enabled: false, daily_cap: 0, hold: null });
+    await call(app, "GET", "/v1/status?pacing=1&pace_enabled=1");
+    await call(app, "POST", "/v1/drafts", { to: "4151230044", body: "x", pacing: { enabled: true }, pace_enabled: "1" });
 
     // smuggling a status, a kind or a signature into a proposal is refused (unknown keys), and creates nothing
     const setsBefore = (db.query("SELECT COUNT(*) AS n FROM contact_change_sets").get() as any).n;

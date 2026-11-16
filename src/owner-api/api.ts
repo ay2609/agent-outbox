@@ -11,7 +11,8 @@ import { z } from "zod";
 import { audit, getBatch, getContact, getDrafts, getSettings, rowToContact, rowToDraft, setBatchStatus, setSetting } from "../core/store";
 import { pickHandle } from "../core/contact-pick";
 import { paths } from "../core/paths";
-import type { Draft, ProposedContact, Service, Settings, Warning } from "../core/types";
+import type { Draft, ProposedContact, Service, SettingKey, Warning } from "../core/types";
+import { pacingProblem, type Pacing } from "../core/pacing";
 import { nowIso } from "../db";
 import { SESSION_COOKIE, type OwnerConfig } from "./config";
 import { ApiError, badRequest, conflict, notFound } from "./errors";
@@ -349,11 +350,19 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
     transport: z.enum(["dry", "live"]),
     breaker_on_failure: z.boolean(),
     contacts_transport: z.enum(["dry", "live"]),
+    // "Spread out messages": only slows sending down, so turning it on or loosening it needs no Touch ID. Values are checked as a whole below.
+    pacing: z.object({
+      enabled: z.boolean(), min_s: z.number(), max_s: z.number(), daily_cap: z.number(),
+      quiet_start: z.string().max(5), quiet_end: z.string().max(5),
+    }).partial().strict(),
   }).partial().strict().extend({ reauth: reauthSchema.optional() });
 
   app.patch("/api/settings", async (c) => {
-    const { reauth, ...patch } = await readJson(c, settingsSchema);
+    const { reauth, pacing: pacingPatch, ...patch } = await readJson(c, settingsSchema);
     const before = getSettings(db());
+    const nextPacing = pacingPatch ? { ...before.pacing, ...pacingPatch } : before.pacing;
+    const pacingBad = pacingPatch ? pacingProblem(nextPacing) : null;
+    if (pacingBad) throw badRequest(pacingBad);
     const goingLive = patch.transport === "live" && before.transport !== "live";
     const contactsLive = patch.contacts_transport === "live" && before.contacts_transport !== "live";
     // The executor only goes live if the effective pin has policy.live_allowed. Refuse early with the way forward.
@@ -372,7 +381,11 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
     tx(() => {
       const cur = getSettings(db());
       for (const [k, v] of Object.entries(patch)) {
-        if (v !== undefined && (cur as any)[k] !== v) setSetting(db(), k as keyof Settings, v as any, OWNER);
+        if (v !== undefined && (cur as any)[k] !== v) setSetting(db(), k as SettingKey, v as any, OWNER);
+      }
+      if (pacingPatch) {
+        const rows: [SettingKey, keyof Pacing][] = [["pace_enabled", "enabled"], ["pace_min_s", "min_s"], ["pace_max_s", "max_s"], ["daily_cap", "daily_cap"], ["quiet_start", "quiet_start"], ["quiet_end", "quiet_end"]];
+        for (const [key, f] of rows) if (cur.pacing[f] !== nextPacing[f]) setSetting(db(), key, nextPacing[f], OWNER);
       }
     });
     return c.json({ settings: getSettings(db()) });

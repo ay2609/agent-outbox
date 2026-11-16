@@ -57,7 +57,13 @@ The dashboard's **AI draft** tab has ready-made prompts to paste into your agent
 
 You start live. To try things without sending anything, open Settings and switch **Sending** to **Dry run**: approved messages are only written to `~/Library/Application Support/agent-outbox/logs/dry-sends.jsonl` and Contacts is not touched. Switching back to **Live** asks for Touch ID. Live also means approved contact changes are really written to your Contacts; every new contact, edit and undo still needs its own Touch ID approval first (and you can undo them). (An install from before this change keeps the setting it had.)
 
-Approved messages go out right away, 2 seconds apart. **Stop** halts everything and revokes unused approvals.
+Approved messages go out right away, 2 seconds apart (unless you turn on spreading, below). **Stop** halts everything and revokes unused approvals.
+
+## Spreading out messages
+
+If you send a lot at once, a burst can make a phone number or account look like spam. In Settings, **Spread out messages** (off by default) sends one message at a time with a random pause between them. Pick **Gentle** (30 to 90 seconds apart, up to 150 a day), **Careful** (2 to 5 minutes apart, up to 50 a day, nothing between 9 pm and 9 am), or **Custom** to set the pause, a daily limit (0 means none) and quiet hours yourself. Times use your Mac's clock. It also applies to dry runs, so a dry run shows the real schedule. Contact changes aren't spread out.
+
+The approve sheet says how long a batch will take ("Sends over about 2 h 10 min"), and the batch page says when the next message goes. An approval normally lasts 24 hours; a long paced batch gets a longer window (its estimated length plus 12 hours, at most 7 days). If a batch would take more than 7 days, the sheet says how many messages fit and the rest would expire unsent. Only you can change this setting: agents can see it (the status call shows it, read-only) but not change it.
 
 ## MCP tools
 

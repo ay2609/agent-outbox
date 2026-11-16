@@ -59,6 +59,11 @@ public final class Executor {
     public let config: ExecConfig
     public let state: ExecState
     let clock: () -> Date
+    /// Test seams for pacing: a value in 0..<1 (the random pause) and the time zone of quiet hours and "today" (the Mac's own).
+    var random: () -> Double = { Double.random(in: 0..<1) }
+    var timeZone: TimeZone = .current
+    /// What pace_hold / pace_until in exec_state say right now, so an unchanged hold isn't rewritten every few seconds.
+    private var publishedPace: String?
     let contacts: ContactsProvider
     private let makeTransport: (String) -> Transport
     private var liveTransport: Transport?
@@ -299,10 +304,45 @@ public final class Executor {
                    [.text(Time.iso(now.addingTimeInterval(-86_400)))])?.i("n") ?? 0
     }
 
-    /// Seconds to wait before the next send may start: the fixed gap after the most recent finished attempt (any transport, any result).
+    func lastFinishedSend() throws -> Date? {
+        try db.one("SELECT MAX(finished_at) AS f FROM sends WHERE finished_at IS NOT NULL")?.text("f").flatMap(Time.parse)
+    }
+
+    /// Seconds to wait before the next send may start while pacing is off: the fixed gap after the most recent finished attempt (any transport, any result).
     func gapRemaining(now: Date) throws -> Double {
-        let last = try db.one("SELECT MAX(finished_at) AS f FROM sends WHERE finished_at IS NOT NULL")?.text("f").flatMap(Time.parse)
-        return SendGap.remaining(now: now, lastFinished: last)
+        SendGap.remaining(now: now, lastFinished: try lastFinishedSend())
+    }
+
+    // MARK: pacing
+
+    /// Sends that started since local midnight, dry and live alike (every attempt that wasn't released unsent).
+    func sendsStartedToday(now: Date) throws -> Int {
+        try db.one("SELECT COUNT(*) AS n FROM sends WHERE started_at >= ?", [.text(Time.iso(Pacing.dayStart(now, timeZone)))])?.i("n") ?? 0
+    }
+
+    /// Why pacing holds the next send, or nil. Reads the persisted next_send_at, so it survives a restart. The earliest start is never
+    /// later than the last send plus the current longest pause: loosening the settings takes effect at once.
+    func paceHold(now: Date, pace: PaceSettings) throws -> PaceHold? {
+        var next = try state.get("next_send_at").flatMap(Time.parse)
+        if let n = next, let last = try lastFinishedSend() { next = min(n, last.addingTimeInterval(pace.maxS)) }
+        return Pacing.evaluate(now: now, pace: pace, nextSendAt: next, sentToday: try sendsStartedToday(now: now), tz: timeZone)
+    }
+
+    /// Tells the dashboard why approved messages are waiting (exec_state pace_hold / pace_until; "" = not holding).
+    func publishPace(_ hold: PaceHold?) {
+        let kind = hold?.kind.rawValue ?? "", until = hold.map { Time.iso($0.until) } ?? ""
+        let key = kind + "|" + until
+        if publishedPace == key { return }
+        do { try state.set("pace_hold", kind); try state.set("pace_until", until); publishedPace = key } catch { publishedPace = nil }
+    }
+
+    func holdMessage(_ h: PaceHold, pace: PaceSettings, sentToday: Int) -> String {
+        let at = Pacing.clockText(h.until, timeZone)
+        switch h.kind {
+        case .gap: return "pacing: next message at \(at)"
+        case .daily: return "pacing: daily limit reached (\(sentToday)/\(pace.dailyCap)), continues at \(at)"
+        case .quiet: return "pacing: quiet hours until \(at)"
+        }
     }
 
     // MARK: pin
@@ -443,11 +483,19 @@ public final class Executor {
             SELECT COUNT(*) AS n FROM drafts d JOIN batches b ON b.id = d.batch_id
             WHERE d.status IN ('approved','failed') AND b.status != 'cancelled'
             """)?.i("n") ?? 0
-        if waiting == 0 { return .idle }
+        if waiting == 0 { publishPace(nil); return .idle }
 
-        // the one timing rule: a fixed gap after the previous send
-        let wait = try gapRemaining(now: now)
-        if wait > 0 { return .held("2 s gap between sends (\(String(format: "%.1f", wait)) s left)") }
+        if settings.pace.enabled {
+            // optional pacing: a random pause, a daily limit and quiet hours (dry and live alike)
+            let hold = try paceHold(now: now, pace: settings.pace)
+            publishPace(hold)
+            if let h = hold { return .held(holdMessage(h, pace: settings.pace, sentToday: try sendsStartedToday(now: now))) }
+        } else {
+            // off: a fixed gap after the previous send
+            publishPace(nil)
+            let wait = try gapRemaining(now: now)
+            if wait > 0 { return .held("2 s gap between sends (\(String(format: "%.1f", wait)) s left)") }
+        }
 
         var out = try claimNext(now: now, pin: pin)
         if out.claim == nil, out.needsPreflight {
@@ -635,9 +683,13 @@ public final class Executor {
         case .unknown(let e): result = "unknown"; error = e; serviceUsed = nil; status = "unknown"
         }
 
+        // Any finished attempt starts the next random pause (a failed or unconfirmed one counts too). Drawn once, so a retried finish() keeps it.
+        let finishedAt = clock()
+        let nextSend = settings.pace.enabled ? Pacing.drawGap(settings.pace, random: random) : nil
         func finish() throws {
             try db.transaction {
                 let ts = Time.iso(clock())
+                try state.set("next_send_at", nextSend.map { Time.iso(finishedAt.addingTimeInterval($0)) } ?? "")
                 try db.exec("UPDATE sends SET finished_at = ?, result = ?, error = ?, service_used = ?, handle = ?, body_sha256 = ? WHERE id = ?",
                             [.text(ts), .text(result), .opt(error), .opt(serviceUsed), .text(d.handle), .text(Hex.sha256Hex(d.body)), .text(claim.sendId)])
                 try db.exec("UPDATE drafts SET status = ?, updated_at = ? WHERE id = ?", [.text(status), .text(ts), .text(d.id)])

@@ -3,6 +3,7 @@ import type { Database } from "bun:sqlite";
 import { lstatSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { getSettings } from "../core/store";
+import { readPaceState } from "../core/pacing-db";
 import type { PinFile, PinPolicy } from "../core/types";
 import type { OwnerConfig } from "./config";
 import { sha256Hex } from "./b64";
@@ -146,6 +147,8 @@ export function buildStatus(cfg: OwnerConfig, db: Database) {
     rp_id: cfg.rpId, origin: cfg.origin, port: cfg.port,
     transport: settings.transport, kill_switch: settings.kill_switch, kill_reason: settings.kill_reason,
     contacts_transport: settings.contacts_transport,
+    /** "Spread out messages": the settings, plus what the executor reports (when it will send next, or why it is holding approved messages). */
+    pacing: { ...settings.pacing, ...readPaceState(db) },
     /** v4: the effective pin's policy.contacts_live_allowed. When contacts_transport is live but this is false, the executor applies contact changes dry. */
     pin_contacts_live_allowed: effective.contacts_live_allowed,
     exec: exec ? { ...exec, pin_file_ok: !!exec.pin_file_ok, heartbeat_age_s: age, alive: age !== null && age < 30 } : null,

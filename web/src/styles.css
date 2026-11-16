@@ -211,3 +211,9 @@ blockquote { margin: 8px 0 4px; padding: 8px 12px; border-left: 3px solid var(--
 .advanced > summary { font-size: 15px; }
 .advanced[open] > summary { margin-bottom: 4px; }
 .advanced #harden, .advanced .section { margin-top: 18px; }
+
+/* Spread out messages */
+.pacing { margin: 14px 0 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.pacing-custom { margin-top: 4px; }
+.pacing-custom .btn { margin-top: 12px; }
+.plan { margin: 10px 0; }
