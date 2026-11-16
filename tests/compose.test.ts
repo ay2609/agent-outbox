@@ -10,6 +10,7 @@ import { createBatch } from "../src/core/store";
 import { memDb, tmpDir } from "./helpers";
 
 const ROOT = join(import.meta.dir, "..");
+const FAKE_CLAUDE = "/nonexistent/claude"; // the spawner is faked, so no real claude is needed (CI has none)
 const stream = (s: string) => new Response(s).body;
 
 describe("buildComposeCommand", () => {
@@ -108,7 +109,7 @@ describe("job lifecycle (fake spawner)", () => {
       createBatch(db, { title: "Dinner", created_by: `agent:${labelOf(argv)}`, source: "compose", status: "review" });
       return { stdout: stream(JSON.stringify({ type: "result", result: "Drafted 3 messages." })), stderr: stream(""), exited: Promise.resolve(0), kill() {} };
     };
-    const { job_id } = startCompose({ instructions: "dinner invites" }, { spawn, db: () => db, logDir: tmpDir(), projectRoot: ROOT });
+    const { job_id } = startCompose({ instructions: "dinner invites" }, { claudePath: FAKE_CLAUDE, spawn, db: () => db, logDir: tmpDir(), projectRoot: ROOT });
     expect(getComposeJob(job_id, { db: () => db })?.status).toBe("running");
     await Bun.sleep(30);
     const job = getComposeJob(job_id, { db: () => db })!;
@@ -130,7 +131,7 @@ describe("job lifecycle (fake spawner)", () => {
       createBatch(db, { title: "t", created_by: `agent:${labelOf(argv)}`, source: "compose", status: "review" });
       return { stdout: stream("{}"), stderr: stream(""), exited: Promise.resolve(0), kill() {} };
     };
-    const { job_id } = startCompose({ instructions: "x" }, { spawn, db: () => db, logDir: tmpDir(), scratchParent: parent, env: { PATH: "/usr/bin", HOME: "/Users/x", ANTHROPIC_API_KEY: "sk-secret", GITHUB_TOKEN: "gh" } });
+    const { job_id } = startCompose({ instructions: "x" }, { claudePath: FAKE_CLAUDE, spawn, db: () => db, logDir: tmpDir(), scratchParent: parent, env: { PATH: "/usr/bin", HOME: "/Users/x", ANTHROPIC_API_KEY: "sk-secret", GITHUB_TOKEN: "gh" } });
     await Bun.sleep(40);
     expect(getComposeJob(job_id, { db: () => db })?.status).toBe("done");
     expect(cwd.startsWith(parent)).toBe(true);
@@ -144,19 +145,19 @@ describe("job lifecycle (fake spawner)", () => {
     const db = memDb();
     const dir = tmpDir();
     const bad: Spawner = () => ({ stdout: stream(""), stderr: stream("login required"), exited: Promise.resolve(1), kill() {} });
-    const a = startCompose({ instructions: "x" }, { spawn: bad, db: () => db, logDir: dir });
+    const a = startCompose({ instructions: "x" }, { claudePath: FAKE_CLAUDE, spawn: bad, db: () => db, logDir: dir });
     await Bun.sleep(30);
     expect(getComposeJob(a.job_id)?.status).toBe("failed");
     expect(getComposeJob(a.job_id)?.error).toContain("login required");
 
     const nobatch: Spawner = () => ({ stdout: stream("{\"result\":\"done\"}"), stderr: stream(""), exited: Promise.resolve(0), kill() {} });
-    const b = startCompose({ instructions: "x" }, { spawn: nobatch, db: () => db, logDir: dir });
+    const b = startCompose({ instructions: "x" }, { claudePath: FAKE_CLAUDE, spawn: nobatch, db: () => db, logDir: dir });
     await Bun.sleep(30);
     expect(getComposeJob(b.job_id)?.status).toBe("failed");
     expect(getComposeJob(b.job_id)?.error).toContain("no batch was created");
 
     const boom: Spawner = () => { throw new Error("ENOENT claude"); };
-    const c = startCompose({ instructions: "x" }, { spawn: boom, db: () => db, logDir: dir });
+    const c = startCompose({ instructions: "x" }, { claudePath: FAKE_CLAUDE, spawn: boom, db: () => db, logDir: dir });
     await Bun.sleep(30);
     expect(getComposeJob(c.job_id)?.error).toBe("ENOENT claude");
   });
@@ -164,7 +165,7 @@ describe("job lifecycle (fake spawner)", () => {
   test("timeout kills the child", async () => {
     let killed = false; let release!: (n: number) => void;
     const spawn: Spawner = () => ({ stdout: stream(""), stderr: stream(""), exited: new Promise<number>((r) => { release = r; }), kill() { killed = true; release(143); } });
-    const { job_id } = startCompose({ instructions: "x" }, { spawn, db: () => memDb(), logDir: tmpDir(), timeoutMs: 20 });
+    const { job_id } = startCompose({ instructions: "x" }, { claudePath: FAKE_CLAUDE, spawn, db: () => memDb(), logDir: tmpDir(), timeoutMs: 20 });
     await Bun.sleep(80);
     expect(killed).toBe(true);
     expect(getComposeJob(job_id)?.status).toBe("failed");
@@ -174,7 +175,7 @@ describe("job lifecycle (fake spawner)", () => {
   test("validation and concurrency cap; unknown job is null", async () => {
     expect(() => startCompose({ instructions: "   " })).toThrow("instructions are required");
     const hang: Spawner = () => ({ stdout: stream(""), stderr: stream(""), exited: new Promise<number>(() => {}), kill() {} });
-    const o = { spawn: hang, db: () => memDb(), logDir: tmpDir(), timeoutMs: 60_000 };
+    const o = { claudePath: FAKE_CLAUDE, spawn: hang, db: () => memDb(), logDir: tmpDir(), timeoutMs: 60_000 };
     startCompose({ instructions: "a" }, o); startCompose({ instructions: "b" }, o);
     expect(() => startCompose({ instructions: "c" }, o)).toThrow("two compose jobs");
     expect(getComposeJob("nope")).toBeNull();
