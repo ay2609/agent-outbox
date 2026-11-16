@@ -26,6 +26,7 @@ import { loadB, tryLint } from "./integrations";
 import { assertionSchema, attestationSchema, readJson, readJsonOptional, reauthSchema } from "./schemas";
 import { buildStatus, pinContactsLiveAllowed, pinLiveAllowed, pinMode } from "./status";
 import { registerContactApi } from "./contact-api";
+import { registerGroupsApi } from "./groups-api";
 import { holdAutoCreates, restoreContactApprovals, revokeContactApprovals } from "./contact-approval";
 import { sha256Hex } from "./b64";
 
@@ -611,6 +612,9 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
 
   // ---------- contact changes (v4) ----------
   registerContactApi(app, cfg, limiterFor);
+
+  // ---------- saved groups (v5) ----------
+  registerGroupsApi(app, cfg);
 
   // ---------- activity ----------
   app.get("/api/activity", (c) => {

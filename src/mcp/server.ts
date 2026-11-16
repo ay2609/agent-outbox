@@ -242,6 +242,73 @@ export function createOutboxMcpServer(o: McpOptions = {}): McpServer {
     inputSchema: { set_id: z.string().optional(), status: z.enum(["drafting", "review", "approved", "applying", "done", "cancelled"]).optional(), limit: z.number().int().min(1).max(200).optional() }, annotations: ro,
   }, async ({ set_id, status, limit }) => run(() => set_id ? api.get(`/v1/contact-changes/${encodeURIComponent(set_id)}`) : api.get(`/v1/contact-changes${qs({ status, limit })}`))());
 
+  // ----- saved groups -----
+  const GROUPS = "A group is a saved list of people kept by the outbox itself (not a Contacts-app group). A group argument is its id or its exact name, any capitalisation.";
+  const memberArg = z.object({
+    to: z.string().optional().describe("Phone or email. Use this and/or contact_id."),
+    contact_id: z.string().optional().describe("Id from outbox_search_contacts."),
+    name: z.string().optional().describe("Display name for someone who isn't a contact."),
+    vars: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional().describe("Template fields for this person, e.g. {\"city\":\"Boston\"}."),
+  });
+  const peopleShape = {
+    members: z.array(memberArg).max(1000).optional().describe("People by phone/email and/or contact_id."),
+    contact_ids: z.array(z.string()).max(1000).optional().describe("Contact ids from outbox_search_contacts."),
+    from_import: z.object({ import_id: z.string(), rows: z.array(z.number().int()).optional().describe("Only these row indexes.") }).optional()
+      .describe("Everyone in an ingested import (invalid and duplicate rows are skipped and reported)."),
+  };
+
+  server.registerTool("outbox_list_groups", {
+    description: `List the user's saved groups (name, description, member count). Check here before creating one: "my book club" is probably a group already. ${GROUPS} Read-only.`,
+    inputSchema: {}, annotations: ro,
+  }, async () => run(() => api.get("/v1/groups"))());
+
+  server.registerTool("outbox_get_group", {
+    description: `Get a group and its members (handle, name, per-person fields, and the contact if there is one). ${GROUPS} Read-only.`,
+    inputSchema: { group: z.string().describe("Group id or name.") }, annotations: ro,
+  }, async ({ group }) => run(() => api.get(`/v1/groups/${encodeURIComponent(group)}`))());
+
+  server.registerTool("outbox_create_group", {
+    description: `Save people as a new named group so later sessions can use them. Add people with members, contact_ids and/or from_import (a spreadsheet you ingested). Refused with group_exists if the name is taken: use outbox_add_to_group then. People are deduped by number or address; bad entries are reported and the rest are added. ${GROUPS} It only saves a list: nothing is drafted or sent.`,
+    inputSchema: { name: z.string().describe("Group name, at most 80 characters, e.g. \"Book club\"."), description: z.string().optional(), ...peopleShape }, annotations: wr,
+  }, async (a) => run(() => api.post("/v1/groups", a))());
+
+  server.registerTool("outbox_add_to_group", {
+    description: `Add people to an existing group (same people options as outbox_create_group). People already in it are reported as "already" and left alone. ${GROUPS}`,
+    inputSchema: { group: z.string().describe("Group id or name."), ...peopleShape }, annotations: wr,
+  }, async ({ group, ...rest }) => run(() => api.post(`/v1/groups/${encodeURIComponent(group)}/members`, rest))());
+
+  server.registerTool("outbox_update_group", {
+    description: `Rename a group, change its description and/or remove people from it (by phone/email in remove_members, or remove_contact_ids). Everything you give is applied; a rename onto another group's name is refused. You cannot delete a group: the user does that in the dashboard. ${GROUPS}`,
+    inputSchema: {
+      group: z.string().describe("Group id or name."), name: z.string().optional().describe("New name."), description: z.string().optional(),
+      remove_members: z.array(z.string()).optional().describe("Phones or emails to remove."), remove_contact_ids: z.array(z.string()).optional(),
+    }, annotations: wr,
+  }, async ({ group, name, description, remove_members, remove_contact_ids }) => run(async () => {
+    const removing = !!(remove_members?.length || remove_contact_ids?.length);
+    if (!removing && name === undefined && description === undefined) throw new OutboxApiError(400, "validation_error", "give name, description, remove_members and/or remove_contact_ids");
+    let ref = encodeURIComponent(group);
+    let out: Json = {};
+    // Rename first: if that is refused (name taken) nothing has been removed yet. After it, the id is the stable reference.
+    if (name !== undefined || description !== undefined) {
+      out = await api.patch(`/v1/groups/${ref}`, { name, description });
+      ref = encodeURIComponent(out.group.id);
+    }
+    if (removing) out = { ...out, ...(await api.post(`/v1/groups/${ref}/remove`, { handles: remove_members, contact_ids: remove_contact_ids })) };
+    return out;
+  })());
+
+  server.registerTool("outbox_batch_from_group", {
+    description: `Draft a message to everyone in a group (or only some, with "only"). Best: write a personalised text for each person and pass "bodies" ({"<phone or email>": "text"}, keys as in outbox_get_group); or give a "template" merged from each person's fields. ${TEMPLATES} ${STYLE} Up to 500 people per call. All or nothing: if anyone can't be drafted, nothing is created and the error says who. Submitted for the user's review by default (submit=false keeps it as a drafting batch). ${GATE}`,
+    inputSchema: {
+      group: z.string().describe("Group id or name."), title: z.string().describe("Short title, e.g. \"Book club, Nov 20\"."),
+      bodies: z.record(z.string(), z.string()).optional().describe("Phone or email -> the finished message for that person. Wins over the template."),
+      template: z.string().optional().describe("Merge template for people without a body."),
+      only: z.array(z.string()).optional().describe("Only these members (phones or emails)."),
+      instructions: z.string().optional().describe("What the user asked for, kept for context."),
+      submit: z.boolean().optional().describe("Default true: move straight to the user for review."),
+    }, annotations: wr,
+  }, async ({ group, ...rest }) => run(() => api.post(`/v1/groups/${encodeURIComponent(group)}/batch`, rest))());
+
   server.registerTool("outbox_sync_contacts", {
     description: "Ask the outbox executor to re-export the Mac address book so new or changed contacts become searchable (takes up to about a minute). Use when a contact you expect isn't found. Read-only for the user's data.",
     inputSchema: {}, annotations: wr,

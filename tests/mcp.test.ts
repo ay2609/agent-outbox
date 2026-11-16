@@ -18,6 +18,7 @@ const EXPECTED_TOOLS = [
   "outbox_submit_batch", "outbox_sync_contacts",
   "outbox_get_import", "outbox_add_items", "outbox_update_drafts", "outbox_cancel_batch",
   "outbox_propose_contacts", "outbox_contacts_from_import", "outbox_get_contact_changes",
+  "outbox_list_groups", "outbox_get_group", "outbox_create_group", "outbox_add_to_group", "outbox_update_group", "outbox_batch_from_group",
 ];
 
 let db: Database; let server: ReturnType<typeof Bun.serve>; let sock: string;
@@ -42,7 +43,7 @@ beforeAll(() => {
 afterAll(() => { void server.stop(true); });
 
 describe("tool surface", () => {
-  test("exactly the 19 draft-only tools; none can send, approve or undo", async () => {
+  test("exactly the 25 draft-only tools; none can send, approve or undo", async () => {
     const c = await connect();
     const { tools } = await c.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([...EXPECTED_TOOLS].sort());
@@ -179,7 +180,7 @@ describe("real stdio launch (the command `claude mcp add` uses)", () => {
     const client = new Client({ name: "stdio-test", version: "0" });
     await client.connect(transport);
     try {
-      expect((await client.listTools()).tools).toHaveLength(19);
+      expect((await client.listTools()).tools).toHaveLength(25);
       const r: any = await client.callTool({ name: "outbox_create_draft", arguments: { to: "4151239999", body: "via stdio" } });
       expect(r.isError).toBeFalsy();
       expect(JSON.parse(r.content[0].text.slice(r.content[0].text.indexOf("{"))).batch.created_by).toBe("agent:stdio-test");
