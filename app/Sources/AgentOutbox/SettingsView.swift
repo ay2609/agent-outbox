@@ -112,7 +112,7 @@ struct SettingsView: View {
                     CommandBox(command: cmd, label: "Copy harden command")
                     Text("Paste it into Terminal. It asks for your Mac password. Afterwards `plutil` prints the installed keys; compare them with these:").font(.caption).foregroundStyle(.secondary)
                     ForEach(rows(pin.arr("expected_keys"), idKey: "credential_id")) { r in
-                        Text("\(r.j.str("label", "Touch ID key"))  \(String(r.id.prefix(10)))…").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                        Text("\(r.j.str("label", "Touch ID key"))  \(String(r.id.prefix(10)))…  \(r.j.str("fingerprint"))").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
                     }
                 } else {
                     Text("The command to harden appears here once the first key is set up.").font(.caption).foregroundStyle(.secondary)

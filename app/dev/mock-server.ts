@@ -51,7 +51,7 @@ const status = () => ({
   transport: state.transport, kill_switch: state.kill, kill_reason: state.kill ? "owner" : "", contacts_transport: state.transport,
   pacing: state.pace, exec: { alive: true, heartbeat_age_s: 4, version: "dev", transport: state.transport, pin_file_ok: true, last_error: process.env.MOCK_HOLD ?? null },
   pin: { mode: "simple", effective: { kind: "user", valid: true, problems: [] }, root: { present: false }, user: { present: true, valid: true },
-    expected_keys: state.keys.filter((k) => k.status === "active").map((k) => ({ credential_id: k.key_id, label: k.label, kind: "secure-enclave" })),
+    expected_keys: state.keys.filter((k) => k.status === "active").map((k) => ({ credential_id: k.key_id, label: k.label, kind: "secure-enclave", fingerprint: "AAAA-BBBB-CCCC-DDDD-EEEE" })),
     install_command: "echo 'abc123  /Users/you/Library/Application Support/agent-outbox/passkeys.json' | shasum -a 256 -c - && sudo install -d -o root -g wheel -m 755 '/Library/Application Support/agent-outbox' && sudo install -o root -g wheel -m 444 '/Users/you/Library/Application Support/agent-outbox/passkeys.json' '/Library/Application Support/agent-outbox/passkeys.json' && plutil -p '/Library/Application Support/agent-outbox/passkeys.json'" },
   counts: { batches_review: 2, drafts_review: 3, drafts_approved: 0, drafts_failed: 0, contact_sets_review: 1, contact_changes_review: 2 },
   native: { keys_active: state.keys.filter((k) => k.status === "active").length, approve_in_app: state.keys.some((k) => k.status === "active"), pin_needs_update: state.pinNeedsUpdate },

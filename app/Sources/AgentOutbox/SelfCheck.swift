@@ -208,6 +208,8 @@ enum SelfCheck {
               link("https://batch/b1") == nil && link("agent-outbox://settings") == nil && link("agent-outbox://batch/b1/approve") == nil
               && link("agent-outbox://batch/a%20b") == nil && link("agent-outbox://batch") == nil && link("agent-outbox://contacts/s1") == nil)
         check("hold reasons: old pin, browser keys, no key", HoldReason.plain("pin version 2 holds browser passkeys, which Agent Outbox no longer accepts")?.contains("Touch ID") == true
+              && HoldReason.plain("The pin file is version 2: it holds browser passkeys, which Agent Outbox no longer accepts.")?.contains("Touch ID") == true
+              && HoldReason.plain("v4 pin must have exactly the keys")?.contains("Touch ID") == true
               && HoldReason.plain("WebAuthn keys are no longer accepted")?.contains("passkey") == true
               && HoldReason.plain("credential_id is not in the pin file")?.contains("doesn't trust any approval key") == true
               && HoldReason.plain("something unrelated") == nil && HoldReason.plain("") == nil)
