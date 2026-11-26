@@ -266,7 +266,7 @@ struct ChangeCard: View {
                 Text(title(kind, name, before)).font(.headline)
                 if ch.str("status") != "review" { Chip(statusLabel(ch.str("status")), ch.str("status") == "applied" ? .good : (ch.str("status") == "failed" ? .bad : .neutral)) }
             }
-            ForEach(lines(p), id: \.self) { Text($0).font(.callout).foregroundStyle(.secondary) }
+            ForEach(lines(p, before: before), id: \.self) { Text($0).font(.callout).foregroundStyle(.secondary) }
             if !ch.str("note").isEmpty { Text(ch.str("note").prefix(1).uppercased() + ch.str("note").dropFirst()).font(.caption).foregroundStyle(.secondary) }
             if let e = ch["error"] as? String, !e.isEmpty { Text(e).font(.caption).foregroundStyle(.red) }
         }.padding(.vertical, 3)
@@ -280,8 +280,17 @@ struct ChangeCard: View {
         default: return "\(kind.capitalized) \(who)"
         }
     }
-    private func lines(_ p: J) -> [String] {
+    private func lines(_ p: J, before: J) -> [String] {
         var out: [String] = []
+        // An edit carries the fields it changes under "set"; show each as "Company: old to new" so nothing changes unseen.
+        if let set = p["set"] as? J {
+            let names = ["given_name": "First name", "family_name": "Last name", "nickname": "Nickname", "org": "Company"]
+            for k in ["given_name", "family_name", "nickname", "org"] {
+                guard let new = set[k] as? String else { continue }
+                let old = before.str(k)
+                out.append("\(names[k] ?? k): " + (old.isEmpty ? "" : "\(old) to ") + (new.isEmpty ? "(removed)" : new))
+            }
+        }
         let labels = ["nickname": "Nickname", "org": "Company", "phones": "Phone", "emails": "Email", "groups": "Groups"]
         let order = ["nickname", "org", "phones", "emails", "groups"]
         for (k, v) in p.sorted(by: { (order.firstIndex(of: $0.key) ?? 99, $0.key) < (order.firstIndex(of: $1.key) ?? 99, $1.key) }) {

@@ -184,16 +184,26 @@ public struct ApprovalPayload: Sendable, Equatable, Identifiable {
     /// A readable rendering of a change payload (display only: the hash check above is what ties it to the signature).
     static func displayLines(_ json: String) -> [String] {
         guard let d = json.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: d) else { return [json] }
+        func label(_ k: String) -> String {
+            let names = ["given_name": "First name", "family_name": "Last name", "nickname": "Nickname", "org": "Company", "phones": "Phone", "emails": "Email",
+                         "groups": "Groups", "set": "Change", "add_phones": "Add phone", "add_emails": "Add email", "add_groups": "Add to group", "notes": "Notes"]
+            return names[k] ?? k.replacingOccurrences(of: "_", with: " ").capitalized
+        }
         func render(_ v: Any) -> String {
             switch v {
             case let s as String: return s
             case let n as NSNumber: return n.stringValue
             case let a as [Any]: return a.map(render).joined(separator: ", ")
-            case let d as [String: Any]: return d.keys.sorted().map { "\($0) \(render(d[$0]!))" }.joined(separator: "; ")
+            case let d as [String: Any]:
+                if let p = d["e164"] as? String { return p }          // a phone: the number is what is signed and shown
+                if let e = d["email"] as? String { return e }
+                return d.keys.sorted().map { "\(label($0)): \(render(d[$0]!))" }.joined(separator: "; ")
             default: return "\(v)"
             }
         }
         guard let dict = o as? [String: Any] else { return [render(o)] }
-        return dict.keys.sorted().map { "\($0.replacingOccurrences(of: "_", with: " ")): \(render(dict[$0]!))" }
+        let order = ["given_name", "family_name", "nickname", "org", "phones", "emails", "groups", "set", "add_phones", "add_emails", "add_groups"]
+        let keys = dict.keys.sorted { (order.firstIndex(of: $0) ?? 99, $0) < (order.firstIndex(of: $1) ?? 99, $1) }
+        return keys.map { "\(label($0)): \(render(dict[$0]!))" }
     }
 }

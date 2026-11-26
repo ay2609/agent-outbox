@@ -4,7 +4,7 @@ import SwiftUI
 
 struct ActivityView: View {
     @EnvironmentObject var model: AppModel
-    @State private var tab = "sends"
+    @State private var tab = (AppEnv.isDev ? ProcessInfo.processInfo.environment["AGENT_OUTBOX_DEV_TAB"] : nil) ?? "sends"   // dev: AGENT_OUTBOX_DEV_TAB=audit for screenshots
     @State private var sends: [J] = []
     @State private var audit: [J] = []
     @State private var sendsBefore: String?
@@ -40,8 +40,8 @@ struct ActivityView: View {
                 Section {
                     ForEach(Array(audit.enumerated()), id: \.offset) { _, a in
                         VStack(alignment: .leading, spacing: 2) {
-                            HStack { Text(a.str("action")).font(.headline); Spacer(); Text(a.str("actor")).font(.caption).foregroundStyle(.secondary) }
-                            Text(when(a.str("at")) + (a.str("target").isEmpty ? "" : " · " + String(a.str("target").prefix(24)))).font(.caption).foregroundStyle(.secondary)
+                            HStack { Text(auditTitle(a.str("action"))).font(.headline); Spacer(); Text(a.str("actor")).font(.caption).foregroundStyle(.secondary) }
+                            Text(when(a.str("at"))).font(.caption).foregroundStyle(.secondary)
                             let d = a.obj("details")
                             if !d.isEmpty { Text(String(decoding: jsonData(d), as: UTF8.self).prefix(160)).font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary) }
                         }.padding(.vertical, 2)
@@ -78,6 +78,25 @@ struct ActivityView: View {
             loaded = true; error = nil
         } catch { self.error = error.localizedDescription }
     }
+}
+
+/// Plain words for the audit log's action ids; anything unknown is shown as its id with the punctuation softened.
+func auditTitle(_ action: String) -> String {
+    let known: [String: String] = [
+        "batch.create": "Batch drafted", "batch.status": "Batch status changed", "batch.cancel": "Batch cancelled",
+        "approval.create": "Batch approved", "approval.revoke": "Approval revoked",
+        "contact_approval.create": "Contact changes approved", "contact_approval.revoke": "Contact approval revoked", "contact_approval.restore": "Contact approval restored",
+        "contact_changes.propose": "Contact changes proposed", "contact_changes.from_import": "Contacts made from an import", "contact_changes.cancel": "Contact changes cancelled",
+        "contact_changes.reject": "Contact change rejected", "contact_changes.undo_request": "Contact change undo requested",
+        "contacts.sync": "Contacts synced", "contacts.sync_requested": "Contacts sync requested",
+        "draft.edit": "Message edited", "draft.skip": "Message skipped", "draft.skip_many": "Messages skipped", "draft.include": "Message included", "draft.include_many": "Messages included",
+        "group.create": "Group created", "group.add": "People added to a group", "group.remove": "People removed from a group", "group.rename": "Group renamed", "group.delete": "Group deleted",
+        "import.create": "File imported", "import.mapping": "Columns confirmed", "import.batch": "Batch made from an import", "import.reingest": "Import re-read",
+        "native_key.activate": "Touch ID key activated", "native_key.revoke": "Touch ID key revoked", "native_key.enroll_options": "Touch ID setup started",
+        "recovery.create": "Recovery opened", "recovery.cancel": "Recovery cancelled", "stop.undo": "Sending resumed",
+        "migration.v7": "Upgraded from the browser version", "setup.live_defaults": "First-run defaults set",
+    ]
+    return known[action] ?? action.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: ".", with: ": ").capitalized
 }
 
 // MARK: - AI drafts: prompts to paste into the user's own agent

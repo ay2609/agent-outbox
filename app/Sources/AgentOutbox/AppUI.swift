@@ -41,7 +41,7 @@ struct MainView: View {
             List(selection: Binding(get: { Optional(model.nav) }, set: { if let n = $0 { model.nav = n } })) {
                 ForEach(NavItem.allCases) { item in
                     NavigationLink(value: item) {
-                        Label(item.rawValue, systemImage: item.symbol)
+                        Label { Text(item.rawValue) } icon: { Image(systemName: item.symbol).resizable().scaledToFit().frame(width: 18, height: 18) }
                             .badge(item == .inbox ? model.pendingCount : 0)
                     }
                 }

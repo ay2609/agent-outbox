@@ -347,10 +347,10 @@ struct ContactDetailView: View {
             }
             let phones = c.arr("phones"), emails = c.arr("emails")
             if !phones.isEmpty {
-                Section("Phone") { ForEach(Array(phones.enumerated()), id: \.offset) { _, p in LabeledContent(p.str("label", "phone"), value: p.str("e164")).textSelection(.enabled) } }
+                Section("Phone") { ForEach(Array(phones.enumerated()).map { Row(["i": "p\($0.offset)", "v": $0.element], idKey: "i") }) { r in let p = (r.j["v"] as? J) ?? [:];  LabeledContent(p.str("label", "phone"), value: p.str("e164")).textSelection(.enabled) } }
             }
             if !emails.isEmpty {
-                Section("Email") { ForEach(Array(emails.enumerated()), id: \.offset) { _, e in LabeledContent(e.str("label", "email"), value: e.str("email")).textSelection(.enabled) } }
+                Section("Email") { ForEach(Array(emails.enumerated()).map { Row(["i": "e\($0.offset)", "v": $0.element], idKey: "i") }) { r in let e = (r.j["v"] as? J) ?? [:];  LabeledContent(e.str("label", "email"), value: e.str("email")).textSelection(.enabled) } }
             }
             if !c.strs("tags").isEmpty { Section("Tags") { HStack { ForEach(c.strs("tags"), id: \.self) { Chip($0) } } } }
             if !c.str("notes").isEmpty { Section("Notes") { Text(c.str("notes")).textSelection(.enabled) } }

@@ -25,7 +25,7 @@ struct TouchIDNeededCard: View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Touch ID is needed", systemImage: "touchid").font(.headline).foregroundStyle(.orange)
             Text(model.native.touchIDReason ?? "Touch ID isn't available on this Mac.").fixedSize(horizontal: false, vertical: true)
-            Text("Agent Outbox only sends what you approve with your fingerprint. It needs a Mac with Touch ID, or a Magic Keyboard with Touch ID. There is no password fallback, on purpose: it would let someone on a screen-sharing session approve messages. Agents can still draft, and you can read and edit drafts here, but nothing can be approved on this Mac.")
+            Text("Agents can still draft, and you can read, edit and cancel drafts here. Nothing can be approved on this Mac.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .padding(12).frame(maxWidth: .infinity, alignment: .leading)
@@ -42,7 +42,7 @@ struct RecoverStep: View {
             if changed {
                 Text("Touch ID changed on this Mac (a fingerprint was added or removed), so your old approval key stopped working. That is a safety feature. Set up approval again. Confirm it's you in Terminal first:")
             } else {
-                Text("Agent Outbox no longer uses the browser. Set up Touch ID here. Because this Mac was already set up, confirm it's you in Terminal first:")
+                Text("Agent Outbox now approves messages with Touch ID, in this app. Because this Mac was already set up, confirm it's you in Terminal first:")
             }
             Text("1. Open Terminal and paste this line, then press Return.").font(.callout.weight(.medium))
             CommandBox(command: AppEnv.recoverCommand, label: "Copy the command")
@@ -70,10 +70,11 @@ struct KeySetupCard: View {
                 RecoverStep(changed: n.touchIDChanged)
             } else if let proof {
                 if n.touchIDChanged { Text("Touch ID changed on this Mac, so your old key stopped working. Set up approval again.") }
+                if proof == "recovery_token" { Text("Confirmed in Terminal. Now set up Touch ID on this Mac.") }
                 Button("Set up Touch ID") { action.run { try await model.enrollThisMac() } }
                     .keyboardShortcut(.defaultAction).disabled(action.busy)
                 Text(proof == "recovery_token" ? "Recovery is open, so the app can set up a new key now. You will touch the sensor once."
-                     : proof == "setup_token" ? "First run: the app confirms it's you with a one-time file it can read. You will touch the sensor once."
+                     : proof == "setup_token" ? "You will touch the sensor once. Agent Outbox confirms it's you with a one-time file in its own folder."
                      : "Touch ID asks twice: once with your existing key, once for the new one.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
@@ -143,6 +144,8 @@ struct StaleKeysCard: View {
 /// (Put inside a List section: a safe-area inset on the whole detail column blanked the window.)
 struct BannerStack: View {
     @EnvironmentObject var model: AppModel
+    /// Settings shows the Touch ID card itself, so it passes false there instead of repeating the banner.
+    var showTouchID = true
     var body: some View {
         VStack(spacing: 8) {
             if model.setup.recoveryOpen {
@@ -170,7 +173,8 @@ struct BannerStack: View {
             if let hold = model.senderHold {
                 banner(.orange, "pause.circle", "The sender is holding approved messages", hold) { EmptyView() }
             }
-            if model.native.touchIDReason != nil && model.reachable && model.onboarded {
+            if !showTouchID {
+            } else if model.native.touchIDReason != nil && model.reachable && model.onboarded {
                 banner(.orange, "touchid", "Touch ID isn't available", (model.native.touchIDReason ?? "") + " Approving is off.") { EmptyView() }
             } else if model.needsKeySetup && model.gateDismissed {
                 banner(.orange, "touchid", "Set up Touch ID to approve", "Agents can draft, but nothing can be approved until Touch ID is set up.") {

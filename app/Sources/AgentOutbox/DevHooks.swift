@@ -5,6 +5,8 @@ import AppKit
 // real app without clicks. Nothing here runs in a normal install.
 //   AGENT_OUTBOX_DEV_SHEET=send|send-live|contacts   show the approval confirm sheet with a fake payload
 //   AGENT_OUTBOX_DEV_APPEARANCE=light|dark   force the appearance
+//   AGENT_OUTBOX_DEV_TOUCHID=1         pretend Touch ID is available (screens only; signing still fails here)
+//   AGENT_OUTBOX_DEV_TAB=audit         Activity tab; AGENT_OUTBOX_DEV_EDIT=<phone> open that message's editor
 //   AGENT_OUTBOX_DEV_SIZE=940x1000   resize the main window
 //   AGENT_OUTBOX_DEV_URL=agent-outbox://batch/b1   handle a deep link a few seconds after launch
 //   AGENT_OUTBOX_DEV_ACTION=stop|resume   press Stop all sending / Resume sending

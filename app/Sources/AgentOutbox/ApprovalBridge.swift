@@ -89,7 +89,8 @@ final class ApprovalBridge: ObservableObject {
 
     func nativeStatus() async -> BridgeNativeStatus {
         let s = await approver.status()
-        let ok = s.touchIDAvailable && s.secureEnclaveAvailable
+        let fake = AppEnv.isDev && AppEnv.env["AGENT_OUTBOX_DEV_TOUCHID"] == "1"   // dev only: pretend this Mac has Touch ID, to screenshot the screens that need it
+        let ok = fake || (s.touchIDAvailable && s.secureEnclaveAvailable)
         return BridgeNativeStatus(touchIDAvailable: ok, keysActive: s.keysActive, canApproveInApp: s.canApproveInApp,
                                   touchIDReason: ok ? nil : (s.touchIDReason ?? "This Mac has no Secure Enclave."),
                                   touchIDChanged: s.touchIDChanged || changedByError, hasLocalKey: s.localKeyId != nil)

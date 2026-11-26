@@ -295,7 +295,7 @@ struct DraftRow: View {
                 HStack(spacing: 6) {
                     Text(d.str("recipient_name", d.str("handle"))).font(.headline)
                     Text(d.str("handle")).font(.caption).foregroundStyle(.secondary)
-                    Chip(d.str("service", "auto"))
+                    if d.str("service", "auto") != "auto" { Chip(d.str("service")) }
                     if covered { Chip("Approved", .good) } else if status != "review" && status != "draft" { Chip(statusLabel(status), status == "failed" ? .bad : (status == "sent" ? .good : .neutral)) }
                     if d.bool("create_contact") { Chip("New contact", .info) }
                 }
@@ -332,7 +332,7 @@ struct DraftRow: View {
                 else if held { Text("Left out of this approval until you include it anyway.").font(.caption).foregroundStyle(.secondary) }
             }
             Spacer(minLength: 0)
-            VStack(alignment: .trailing, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
                 if editable && !editing {
                     Button("Edit") { text = d.str("body"); service = d.str("service", "auto"); createContact = d.bool("create_contact"); editing = true }
                         .buttonStyle(.link).font(.caption)
@@ -347,5 +347,10 @@ struct DraftRow: View {
         }
         .padding(.vertical, 4)
         .opacity(skipped ? 0.55 : 1)
+        .onAppear {   // dev only (screenshots): AGENT_OUTBOX_DEV_EDIT=<phone> opens that message's editor
+            if AppEnv.isDev, AppEnv.env["AGENT_OUTBOX_DEV_EDIT"] == d.str("handle"), editable, !editing {
+                text = d.str("body"); service = d.str("service", "auto"); createContact = d.bool("create_contact"); editing = true
+            }
+        }
     }
 }

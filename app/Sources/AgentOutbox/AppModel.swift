@@ -10,7 +10,7 @@ enum NavItem: String, CaseIterable, Identifiable {
         switch self {
         case .inbox: return "tray"
         case .contacts: return "person.crop.circle"
-        case .groups: return "person.3"
+        case .groups: return "person.2"
         case .changes: return "person.crop.circle.badge.questionmark"
         case .imports: return "square.and.arrow.down"
         case .activity: return "clock.arrow.circlepath"

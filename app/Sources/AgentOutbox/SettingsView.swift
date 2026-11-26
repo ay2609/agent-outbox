@@ -46,7 +46,7 @@ struct SettingsView: View {
         let keys = nativeKeys.data?.arr("keys") ?? []
         let activeCount = keys.filter { $0.str("status") == "active" }.count
         Form {
-            Section { BannerStack() }
+            if model.setup.recoveryOpen || model.migrationNotice != nil || model.pinNeedsUpdate || model.senderHold != nil || !model.staleKeys.isEmpty { Section { BannerStack(showTouchID: false) } }
             if !model.reachable || action.error != nil || settings.error != nil || action.note != nil {
                 Section { ServerBanner(); ErrorLine(text: action.error ?? settings.error); if let n = action.note { Text(n).foregroundStyle(.secondary) } }
             }
@@ -57,7 +57,7 @@ struct SettingsView: View {
                 })) {
                     Text("Dry run").tag("dry"); Text("Live").tag("live")
                 }.pickerStyle(.segmented).disabled(action.busy || (!model.isLive && !model.native.touchIDAvailable))
-                if !model.native.touchIDAvailable && !model.isLive { Text("Going live needs Touch ID. " + (model.native.touchIDReason ?? "")).font(.caption).foregroundStyle(.orange) }
+                if !model.native.touchIDAvailable && !model.isLive { Text("Going live needs Touch ID.").font(.caption).foregroundStyle(.orange) }
                 Text(model.isLive ? "Live: messages you approve with Touch ID are really sent." : "Dry run: approved messages are recorded but nothing is sent.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
@@ -95,9 +95,8 @@ struct SettingsView: View {
                         }
                     }
                 }
-                if model.keysActive == 0 || model.native.touchIDChanged || !model.native.hasLocalKey { KeySetupCard() }
-                if !model.native.touchIDAvailable && model.keysActive > 0 { TouchIDNeededCard() }
-            }
+                if model.keysActive == 0 || model.native.touchIDChanged || !model.native.hasLocalKey || !model.native.touchIDAvailable { KeySetupCard() }
+                            }
 
             Section("Protection") {
                 HStack {
