@@ -20,7 +20,6 @@ import { loadBDeps, type BDeps } from "../core/deps";
 import { FileProblemError, MAX_UPLOAD_BYTES, PathRefusedError, checkImportPath, expandHome } from "../core/upload";
 import { availableVars, resolveColumn } from "../ingest/mapping";
 import { listVars, varKey } from "../personalize/template";
-import { ORIGIN } from "../core/paths";
 import { readPaceState } from "../core/pacing-db";
 import {
   addDraft, audit, createBatch, getBatch, getContact, getDrafts, getSettings, findContactsByHandle,
@@ -31,7 +30,6 @@ import { GROUP_CONTACT_CHANGED_VAR, type BatchSource, type BatchStatus, type Con
 export interface AgentAppOptions {
   db?: () => Database;
   deps?: () => Promise<BDeps>;
-  origin?: string;
 }
 
 // ---------- errors ----------
@@ -189,11 +187,10 @@ interface ItemError { index: number; message: string }
 export function createAgentApp(opts: AgentAppOptions = {}): Hono {
   const getDatabase = opts.db ?? getDb;
   const getDeps = opts.deps ?? loadBDeps;
-  const origin = (opts.origin ?? ORIGIN).replace(/\/$/, "");
   const app = new Hono();
 
-  const dashboardUrl = (batchId: string) => `${origin}/#/batch/${batchId}`;
-  const importUrl = (importId: string) => `${origin}/#/imports/${importId}`;
+  const dashboardUrl = (batchId: string) => `agent-outbox://batch/${batchId}`;
+  const importUrl = (importId: string) => `agent-outbox://imports/${importId}`;
 
   /** Lint runs after the data is committed. If it throws, the batch still exists, so report it instead of failing the
    *  request (a 500 would make the agent retry and create the batch twice). */
@@ -356,7 +353,7 @@ export function createAgentApp(opts: AgentAppOptions = {}): Hono {
       pacing: { ...s.pacing, ...readPaceState(db) },
       batches: byStatus,
       contacts: (db.query("SELECT COUNT(*) AS n FROM contacts").get() as any).n,
-      dashboard_url: `${origin}/`,
+      dashboard_url: "agent-outbox://inbox",
     });
   });
 
@@ -391,7 +388,7 @@ export function createAgentApp(opts: AgentAppOptions = {}): Hono {
     }).immediate();
     const lintError = drafts.length ? safeLint(deps, db, batchId) : undefined;
     const view = batchView(db, batchId);
-    return { ...withLint(view, lintError), next_step: view.batch.status === "drafting" ? "Add items with POST /v1/batches/:id/items if needed, then submit with POST /v1/batches/:id/submit so the user can review it." : "Submitted. The user reviews and approves it in the dashboard." };
+    return { ...withLint(view, lintError), next_step: view.batch.status === "drafting" ? "Add items with POST /v1/batches/:id/items if needed, then submit with POST /v1/batches/:id/submit so the user can review it." : "Submitted. The user reviews and approves it in Agent Outbox." };
   }
 
   app.post("/v1/batches", async (c) => {
@@ -436,7 +433,7 @@ export function createAgentApp(opts: AgentAppOptions = {}): Hono {
     } else if (batch.status !== "review") {
       throw new ApiError(409, "not_submittable", `batch is ${batch.status}; only a drafting batch can be submitted`);
     }
-    return c.json({ ...withLint(batchView(db, id), lintError), message: "Waiting for the user to review and approve it in the dashboard." });
+    return c.json({ ...withLint(batchView(db, id), lintError), message: "Waiting for the user to review and approve it in Agent Outbox." });
   });
 
   app.get("/v1/batches", (c) => {
@@ -456,7 +453,7 @@ export function createAgentApp(opts: AgentAppOptions = {}): Hono {
   function applyBodyEdit(db: Database, id: string, rawBody: string): { batch_id: string; changed: boolean } {
     const cur = db.query("SELECT id, batch_id, status, body FROM drafts WHERE id = ?").get(id) as any;
     if (!cur) throw new ApiError(404, "draft_not_found", `draft ${id} not found`);
-    if (!AGENT_EDITABLE.includes(cur.status)) throw new ApiError(409, "draft_not_editable", `draft is ${cur.status}; the agent can only edit drafts that are not yet approved. Ask the user to edit it in the dashboard.`);
+    if (!AGENT_EDITABLE.includes(cur.status)) throw new ApiError(409, "draft_not_editable", `draft is ${cur.status}; the agent can only edit drafts that are not yet approved. Ask the user to edit it in Agent Outbox.`);
     const batch = getBatch(db, cur.batch_id);
     if (batch?.status === "cancelled") throw new ApiError(409, "batch_cancelled", "the batch was cancelled");
     const body = rawBody.trim();
@@ -521,10 +518,10 @@ export function createAgentApp(opts: AgentAppOptions = {}): Hono {
     const rejected = db.transaction(() => {
       const batch = getBatch(db, id);
       if (!batch) throw new ApiError(404, "batch_not_found", `batch ${id} not found`);
-      if (batch.created_by !== w.actor) throw new ApiError(403, "not_your_batch", `this batch was created by ${batch.created_by}; a session can only cancel its own batches. The user can cancel any batch in the dashboard.`);
-      if (batch.status !== "drafting" && batch.status !== "review") throw new ApiError(409, "not_cancellable", `batch is ${batch.status}; only a drafting or review batch can be cancelled here. Ask the user to stop it in the dashboard.`);
+      if (batch.created_by !== w.actor) throw new ApiError(403, "not_your_batch", `this batch was created by ${batch.created_by}; a session can only cancel its own batches. The user can cancel any batch in Agent Outbox.`);
+      if (batch.status !== "drafting" && batch.status !== "review") throw new ApiError(409, "not_cancellable", `batch is ${batch.status}; only a drafting or review batch can be cancelled here. Ask the user to stop it in Agent Outbox.`);
       const open = db.query("SELECT COUNT(*) AS n FROM drafts WHERE batch_id = ? AND status NOT IN ('draft','review','skipped','rejected')").get(id) as { n: number };
-      if (open.n > 0) throw new ApiError(409, "not_cancellable", `${open.n} draft(s) in this batch are already approved or sent; ask the user to stop it in the dashboard.`);
+      if (open.n > 0) throw new ApiError(409, "not_cancellable", `${open.n} draft(s) in this batch are already approved or sent; ask the user to stop it in Agent Outbox.`);
       const r = db.query("UPDATE drafts SET status = 'rejected', updated_at = ? WHERE batch_id = ? AND status IN ('draft','review','skipped')").run(nowIso(), id);
       setBatchStatus(db, id, "cancelled", w.actor);
       return r.changes;
@@ -781,7 +778,7 @@ export function createAgentApp(opts: AgentAppOptions = {}): Hono {
   // ----- contact changes (v4) -----
   // Draft-only like everything here: new contacts and edits alike wait in review for the user's Touch ID. No route here
   // approves, applies or undoes anything, and nothing here can queue a contact for automatic apply.
-  const contactSetUrl = (setId: string) => `${origin}/#/contacts/changes/${setId}`;
+  const contactSetUrl = (setId: string) => `agent-outbox://contacts/changes/${setId}`;
   const contactSource = (w: Who): ContactSetSource => (w.source === "cli" ? "cli" : "mcp");
   function proposeView(r: ProposeResult, extra: object = {}) {
     const lines = [
@@ -845,14 +842,14 @@ export function createAgentApp(opts: AgentAppOptions = {}): Hono {
     const db = getDatabase();
     const set = getContactSet(db, c.req.param("id"));
     if (!set) throw new ApiError(404, "contact_set_not_found", `contact change set ${c.req.param("id")} not found`);
-    return c.json(contactSetView(db, set, { origin }));
+    return c.json(contactSetView(db, set));
   });
 
   // ----- saved groups (v5) -----
   // Draft-only like everything here. Agents may create groups, change them and address a batch to one; deleting a group is
-  // the owner's (dashboard). A group only chooses recipients: the batch it makes is an ordinary one the user must approve.
+  // the owner's (the app). A group only chooses recipients: the batch it makes is an ordinary one the user must approve.
   type GroupSummary = ReturnType<typeof groupSummary>;
-  const groupUrl = (id: string) => `${origin}/#/contacts/groups/${id}`;
+  const groupUrl = (id: string) => `agent-outbox://groups/${id}`;
   const groupBody = (g: GroupSummary) => ({ ...g, dashboard_url: groupUrl(g.id) });
   const groupActor = (w: Who) => (w.source === "cli" ? "cli" : w.actor);
   const asApi = (e: unknown): never => {

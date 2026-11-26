@@ -3,7 +3,6 @@
 // Every read-then-write section is `db.transaction(fn).immediate()`: a deferred transaction that
 // reads and then writes hits SQLITE_BUSY_SNAPSHOT when another connection (the executor, the agent API) writes in between.
 import type { Context, Hono } from "hono";
-import { getCookie } from "hono/cookie";
 import type { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
@@ -14,29 +13,25 @@ import { paths } from "../core/paths";
 import type { Draft, ProposedContact, Service, SettingKey, Warning } from "../core/types";
 import { pacingProblem, type Pacing } from "../core/pacing";
 import { nowIso } from "../db";
-import { SESSION_COOKIE, type OwnerConfig } from "./config";
+import type { OwnerConfig } from "./config";
 import { ApiError, badRequest, conflict, notFound } from "./errors";
 import {
-  APPROVABLE, approveOptions, approveVerify, canonicalProposed, contactHandlesExact, coverageMap, numberInContact, revokeApprovals, undoStop,
+  APPROVABLE, approveOptions, canonicalProposed, contactHandlesExact, coverageMap, numberInContact, revokeApprovals, undoStop,
 } from "./approval";
-import {
-  type FailureLimiter, listPasskeys, nativeKeyCount, normalizePolicy, passkeyCount, registerVerify, registerOptions, sessionAgeMs, setPinPolicy, verifyLoginAssertion,
-  writePinFiles, getPinPolicy, pinText,
-} from "./auth";
+import { type FailureLimiter, nativeKeyCount, normalizePolicy, setPinPolicy, writePinFiles, getPinPolicy, pinText } from "./auth";
 import { loadB, tryLint } from "./integrations";
-import { assertionSchema, attestationSchema, readJson, readJsonOptional, reauthSchema } from "./schemas";
+import { readJson } from "./schemas";
 import { buildStatus, pinContactsLiveAllowed, pinLiveAllowed, pinMode } from "./status";
 import { registerContactApi } from "./contact-api";
 import { registerGroupsApi } from "./groups-api";
 import { restoreContactApprovals, revokeContactApprovals } from "./contact-approval";
 import { sha256Hex } from "./b64";
-import { isLinkSession, linkSessionWithoutProof, requireReauth, seReauthSchema } from "./native";
+import { requireReauth, seReauthSchema } from "./native";
 
 const OWNER = "owner";
 /** Statuses no owner edit may touch: the executor owns them. (`unknown` = sent but unconfirmed; never edit or resend.) */
 const LOCKED = ["sending", "sent", "unknown", "rejected"] as const;
 const LOCKED_SQL = `status NOT IN ('sending','sent','unknown','rejected')`;
-const SETUP_WINDOW_MS = 30 * 60_000;
 
 export type LimiterFor = (c: Context, route: string) => FailureLimiter;
 
@@ -47,31 +42,6 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
   // ---------- status ----------
   app.get("/api/status", (c) => c.json(buildStatus(cfg, db())));
 
-  // ---------- passkeys (listing; the first sign-in key is enrolled through /api/auth/register/*) ----------
-  app.get("/api/passkeys", (c) => c.json({
-    passkeys: listPasskeys(db()).map((p) => ({ credential_id: p.credential_id, label: p.label, purpose: p.purpose, created_at: p.created_at, counter: p.counter })),
-  }));
-  app.post("/api/passkeys/options", async (c) => {
-    const body = await readJsonOptional(c, z.object({ label: z.string().max(60).optional(), purpose: z.enum(["login", "approve"]), reauth: reauthSchema.optional(), se_reauth: seReauthSchema.optional() }));
-    const age = sessionAgeMs(db(), getCookie(c, SESSION_COOKIE));
-    // A Mac whose setup was done in the app has no sign-in passkey yet: a browser-link session younger than 30 minutes may register the first one.
-    if (body.purpose === "login" && passkeyCount(db(), "login") === 0 && nativeKeyCount(db()) > 0 && isLinkSession(db(), getCookie(c, SESSION_COOKIE), SETUP_WINDOW_MS)) {
-      return c.json(await registerOptions(cfg, db(), { label: body.label ?? "", purpose: "login", kind: "setup" }));
-    }
-    // Setup: the first approval key, right after the sign-in key created this session. Everything else needs a fresh assertion.
-    if (body.purpose === "approve" && passkeyCount(db(), "approve") === 0 && age !== null && age < SETUP_WINDOW_MS
-      && !linkSessionWithoutProof(db(), getCookie(c, SESSION_COOKIE))) {
-      return c.json(await registerOptions(cfg, db(), { label: body.label ?? "", purpose: "approve", kind: "setup" }));
-    }
-    await requireReauth(c, cfg, limiterFor, body, "passkey_add", "Confirm with your sign-in passkey to add another.");
-    return c.json(await registerOptions(cfg, db(), { label: body.label ?? "", purpose: body.purpose, kind: "additional" }));
-  });
-  app.post("/api/passkeys/verify", async (c) => {
-    const body = await readJson(c, z.object({ challenge_id: z.string().max(100), response: attestationSchema, label: z.string().max(60).optional() }));
-    const r = await registerVerify(cfg, db(), limiterFor(c, "register"), { challenge_id: body.challenge_id, response: body.response as any, sessionOk: true, label: body.label });
-    return c.json(r);
-  });
-
   // ---------- pin policy ----------
   // Always written to the user pin. Simple mode: takes effect at once, so turning live (sending or contacts) ON needs a fresh
   // sign-in assertion. Hardened mode: only the candidate changes; the root pin changes when the user re-runs the harden command.
@@ -79,12 +49,11 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
     live_allowed: z.boolean(),
     /** v4. Left out = keep what the stored policy already says. */
     contacts_live_allowed: z.boolean().optional(),
-    reauth: reauthSchema.optional(),
     se_reauth: seReauthSchema.optional(),
   }).strict();
   app.get("/api/pin-policy", (c) => c.json({ policy: getPinPolicy(db()), mode: pinMode(cfg) }));
   app.put("/api/pin-policy", async (c) => {
-    const { reauth, se_reauth, ...body } = await readJson(c, policySchema);
+    const { se_reauth, ...body } = await readJson(c, policySchema);
     const before = getPinPolicy(db());
     // contacts_live_allowed left out keeps a stored `true`; with nothing stored it stays absent (= false), as in older pins.
     const keep = before.contacts_live_allowed === true ? true : undefined;
@@ -92,7 +61,7 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
     if (!p) throw badRequest("Invalid policy.");
     const turningOn = (p.live_allowed && !before.live_allowed) || (p.contacts_live_allowed === true && before.contacts_live_allowed !== true);
     if (turningOn && pinMode(cfg) === "simple") {
-      await requireReauth(c, cfg, limiterFor, { reauth, se_reauth }, "policy_live", "In simple mode this takes effect at once, so it needs a sign-in confirmation (Touch ID).");
+      requireReauth(c, cfg, limiterFor, { se_reauth }, "policy_live", "In simple mode this takes effect at once, so it needs a Touch ID confirmation.");
     }
     tx(() => setPinPolicy(db(), p, OWNER));
     writePinFiles(cfg, db());
@@ -147,17 +116,12 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
     const body = await readJson(c, z.object({
       draft_ids: z.array(z.string().max(100)).min(1).max(500),
       include_anyway: z.array(z.string().max(100)).max(500).optional(),
-      signer: z.enum(["webauthn", "secure-enclave"]).optional(),
-    }));
-    const r = await approveOptions(cfg, db(), c.req.param("id"), body.draft_ids, body.include_anyway ?? [], body.signer ?? "webauthn");
+      signer: z.literal("secure-enclave").optional(),
+    }).strict());
+    const r = await approveOptions(cfg, db(), c.req.param("id"), body.draft_ids, body.include_anyway ?? []);
     return c.json({ ...r,
       /** Does the EFFECTIVE pin (root if installed, else the user pin) allow live? When transport is live but this is false, the executor will not really send. */
       pin_live_allowed: pinLiveAllowed(cfg) });
-  });
-  app.post("/api/batches/:id/approve/verify", async (c) => {
-    const body = await readJson(c, z.object({ challenge_id: z.string().max(100), response: assertionSchema }));
-    const r = await approveVerify(cfg, db(), limiterFor(c, "approve"), c.req.param("id"), body.challenge_id, body.response as any);
-    return c.json({ ok: true, ...r, batch: getBatch(db(), c.req.param("id")) });
   });
 
   app.post("/api/batches/:id/cancel", (c) => {
@@ -169,7 +133,7 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
       const rev = revokeApprovals(db(), { batchId: id }, OWNER, "batch cancelled");
       const t = nowIso();
       const n = db().query(`UPDATE drafts SET status = 'rejected', updated_at = ? WHERE batch_id = ? AND status IN ('draft','review','approved','failed','skipped')`).run(t, id).changes;
-      db().query("DELETE FROM webauthn_challenges WHERE batch_id = ?").run(id);
+      db().query("DELETE FROM owner_challenges WHERE kind IN ('send','contacts') AND target = ?").run(id);
       setBatchStatus(db(), id, "cancelled", OWNER);
       audit(db(), OWNER, "batch.cancel", id, { revoked: rev.approvals, rejected: n });
       return { revoked_approvals: rev.approvals, rejected_drafts: n };
@@ -312,7 +276,7 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
       const rev = revokeApprovals(db(), { all: true }, OWNER, "stop all sending");
       // v4: Stop also revokes every unconsumed contacts approval (its changes go back to review).
       const crev = revokeContactApprovals(db(), { all: true }, OWNER, "stop all sending");
-      db().query("DELETE FROM webauthn_challenges WHERE purpose = 'approve'").run();
+      db().query("DELETE FROM owner_challenges WHERE kind IN ('send','contacts')").run();
       const details = {
         revoked_approvals: rev.approvals, reverted_drafts: rev.drafts,
         approval_ids: rev.approval_ids, draft_ids: rev.draft_ids, revoked_at: rev.at,
@@ -361,10 +325,10 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
       enabled: z.boolean(), min_s: z.number(), max_s: z.number(), daily_cap: z.number(),
       quiet_start: z.string().max(5), quiet_end: z.string().max(5),
     }).partial().strict(),
-  }).partial().strict().extend({ reauth: reauthSchema.optional(), se_reauth: seReauthSchema.optional() });
+  }).partial().strict().extend({ se_reauth: seReauthSchema.optional() });
 
   app.patch("/api/settings", async (c) => {
-    const { reauth, se_reauth, pacing: pacingPatch, ...patch } = await readJson(c, settingsSchema);
+    const { se_reauth, pacing: pacingPatch, ...patch } = await readJson(c, settingsSchema);
     const before = getSettings(db());
     const nextPacing = pacingPatch ? { ...before.pacing, ...pacingPatch } : before.pacing;
     const pacingBad = pacingPatch ? pacingProblem(nextPacing) : null;
@@ -381,7 +345,7 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
       throw new ApiError(409, "pin_not_contacts_live_allowed", `The pin file doesn't allow live contact changes. In Settings, tick "Allow live contact changes"${way}.`);
     }
     if (goingLive || contactsLive) {
-      await requireReauth(c, cfg, limiterFor, { reauth, se_reauth }, "mode_live", "Going live needs a sign-in confirmation (Touch ID).");
+      requireReauth(c, cfg, limiterFor, { se_reauth }, "mode_live", "Going live needs a Touch ID confirmation.");
     }
     tx(() => {
       const cur = getSettings(db());
@@ -402,9 +366,9 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
   // Hardened mode: never touches the policy or the root pin; it only flips a transport the installed pin already allows.
   // Sending itself is unchanged: every message still needs a Touch ID approval of its exact text.
   app.post("/api/mode", async (c) => {
-    const { mode, reauth, se_reauth } = await readJson(c, z.object({ mode: z.enum(["live", "dry"]), reauth: reauthSchema.optional(), se_reauth: seReauthSchema.optional() }).strict());
-    // `approval_key` false: no approval key exists, so no pin file can exist and nothing can really send yet.
-    const finish = (extra: object) => c.json({ settings: getSettings(db()), status: buildStatus(cfg, db()).pin, approval_key: passkeyCount(db(), "approve") > 0, ...extra });
+    const { mode, se_reauth } = await readJson(c, z.object({ mode: z.enum(["live", "dry"]), se_reauth: seReauthSchema.optional() }).strict());
+    // `approval_key` false: no active approval key exists, so nothing can really send yet.
+    const finish = (extra: object) => c.json({ settings: getSettings(db()), status: buildStatus(cfg, db()).pin, approval_key: nativeKeyCount(db()) > 0, ...extra });
     if (mode === "dry") {
       tx(() => {
         const cur = getSettings(db());
@@ -426,7 +390,7 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
     const policyChange = !hardened && (!policy.live_allowed || policy.contacts_live_allowed !== true);
     const changes = policyChange || before.transport !== "live" || (contactsOk && before.contacts_transport !== "live");
     if (changes) {
-      await requireReauth(c, cfg, limiterFor, { reauth, se_reauth }, "mode_live", "Going live needs a sign-in confirmation (Touch ID).");
+      requireReauth(c, cfg, limiterFor, { se_reauth }, "mode_live", "Going live needs a Touch ID confirmation.");
       tx(() => {
         // Re-read inside the lock: the policy and settings may have changed while the assertion was being checked.
         if (!hardened) {
@@ -440,13 +404,13 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
       });
       if (!hardened) writePinFiles(cfg, db());
     }
-    // Simple mode: a missing or stale user pin (hand-edited, or left from before a port change) is rebuilt from the database on
-    // any Live tap. That only restores what the dashboard already holds, so it loosens nothing and needs no Touch ID.
+    // Simple mode: a missing or stale user pin (hand-edited) is rebuilt from the database on any Live tap, whatever the key count.
+    // That only restores what the server already holds, so it loosens nothing and needs no Touch ID.
     let pinRepaired = false;
-    if (!hardened && passkeyCount(db(), "approve") > 0) {
+    if (!hardened) {
       let onDisk: string | null = null;
       try { onDisk = readFileSync(cfg.userPinFile, "utf8"); } catch { /* not written yet */ }
-      if (onDisk !== pinText(cfg, db())) { writePinFiles(cfg, db()); pinRepaired = true; audit(db(), OWNER, "pin.repaired", null, { via: "mode" }); }
+      if (onDisk !== pinText(db())) { writePinFiles(cfg, db()); pinRepaired = true; audit(db(), OWNER, "pin.repaired", null, { via: "mode" }); }
     }
     return finish({ contacts: contactsOk ? "live" : "dry_pin", policy_changed: policyChange, pin_repaired: pinRepaired });
   });
@@ -463,29 +427,27 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
     });
   });
 
+  // JSON only: { filename (<= 200), data_b64 } (the file's bytes, <= 25 MB decoded) or { text, filename? }, plus sheet?, kind?, region?.
   app.post("/api/imports", async (c) => {
     const lib = await loadB();
-    const ct = c.req.header("content-type") ?? "";
-    let bytes: Uint8Array, filename: string, sheet: string | undefined, kind: string | undefined, reg: string | undefined;
-    if (ct.includes("multipart/form-data")) {
-      const form = await c.req.parseBody();
-      const f = form["file"];
-      if (!(f instanceof File)) throw badRequest("Attach a file in the 'file' field.");
-      if (f.size > cfg.maxUploadBytes) throw new ApiError(413, "too_large", "That file is over 25 MB.");
-      bytes = new Uint8Array(await f.arrayBuffer());
-      filename = f.name || "upload";
-      sheet = typeof form["sheet"] === "string" && form["sheet"] ? (form["sheet"] as string) : undefined;
-      kind = typeof form["kind"] === "string" && form["kind"] ? (form["kind"] as string) : undefined;
-      if (typeof form["region"] === "string" && form["region"]) {
-        const r = region.safeParse(form["region"]);
-        if (!r.success) throw badRequest("Region must be a two-letter country code, like US.");
-        reg = r.data;
-      }
+    const body = await readJson(c, z.object({
+      filename: z.string().max(200).optional(), data_b64: z.string().optional(), text: z.string().min(1).max(5_000_000).optional(),
+      sheet: z.string().optional(), kind: z.string().optional(), region: region.optional(),
+    }).strict().refine((v) => (v.data_b64 === undefined) !== (v.text === undefined), "Send either data_b64 (with filename) or text."));
+    let bytes: Uint8Array, filename: string, kind: string | undefined;
+    if (body.data_b64 !== undefined) {
+      if (!body.filename) throw badRequest("A file upload needs a filename.");
+      // 4 base64 characters decode to 3 bytes: refuse before decoding anything big.
+      if (Math.floor(body.data_b64.length * 3 / 4) > cfg.maxUploadBytes + 3) throw new ApiError(413, "too_large", "That file is over 25 MB.");
+      if (!/^[A-Za-z0-9+/_-]*={0,2}$/.test(body.data_b64)) throw badRequest("data_b64 must be base64.");
+      bytes = new Uint8Array(Buffer.from(body.data_b64, "base64"));
+      if (bytes.length > cfg.maxUploadBytes) throw new ApiError(413, "too_large", "That file is over 25 MB.");
+      filename = body.filename; kind = body.kind;
     } else {
-      const body = await readJson(c, z.object({ text: z.string().min(1).max(5_000_000), filename: z.string().max(200).optional(), sheet: z.string().optional(), kind: z.string().optional(), region: region.optional() }));
-      bytes = new TextEncoder().encode(body.text);
-      filename = body.filename ?? "pasted.txt"; sheet = body.sheet; kind = body.kind ?? "text"; reg = body.region;
+      bytes = new TextEncoder().encode(body.text!);
+      filename = body.filename ?? "pasted.txt"; kind = body.kind ?? "text";
     }
+    const sheet = body.sheet, reg = body.region;
     if (bytes.length === 0) throw badRequest("That file is empty.");
     let summary: any;
     try { summary = lib.ingestFile(db(), { bytes, filename, created_by: OWNER, sheet, kind, ...(reg ? { region: reg } : {}), ...(cfg.importsDir ? { importsDir: cfg.importsDir } : {}) }); }

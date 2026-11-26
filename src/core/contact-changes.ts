@@ -482,16 +482,16 @@ export function contactBefore(db: Database, ch: Pick<ContactChange, "target_cont
   };
 }
 
-/** One change as an API client sees it. The before-snapshot (`before_vcard`: a canonical JSON snapshot `{"v":1,...}` since 2026-11-10, a vCard in older rows) stays internal; the dashboard never parses it. `payload_json` only where asked (the user's
+/** One change as an API client sees it. The before-snapshot (`before_vcard`: a canonical JSON snapshot `{"v":1,...}` since 2026-11-10, a vCard in older rows) stays internal; the Agent Outbox app never parses it. `payload_json` only where asked (the user's
  *  confirm sheet hashes it). */
 export function contactChangeView(db: Database, ch: ContactChange, o: { payloadJson?: boolean } = {}) {
   const { before_vcard, payload_json, ...rest } = ch;
   return { ...rest, ...(o.payloadJson ? { payload_json } : {}), has_snapshot: before_vcard !== null, before: ch.kind === "create" ? null : contactBefore(db, ch) };
 }
-export function contactSetView(db: Database, set: ContactChangeSet, o: { origin: string }) {
+export function contactSetView(db: Database, set: ContactChangeSet) {
   const changes = getContactChanges(db, set.id).map((c) => contactChangeView(db, c));
   return {
     set, counts: contactSetCounts(db, set.id), changes,
-    dashboard_url: `${o.origin.replace(/\/$/, "")}/#/contacts/changes/${set.id}`,
+    dashboard_url: `agent-outbox://contacts/changes/${set.id}`,
   };
 }

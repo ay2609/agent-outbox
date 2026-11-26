@@ -1,32 +1,30 @@
-// The one-time first-run setup token. While no sign-in key exists, registering one needs this token, so a local process
-// that can reach localhost but can't read the user's files (e.g. a sandboxed agent) can't claim the first-run keys.
+// The one-time first-run setup token. While `settings.setup_done = '0'`, enrolling the first Secure Enclave key needs this token,
+// so a local process that can't read the user's files (e.g. a sandboxed agent) can't claim the first-run key.
 //
-// Lifecycle: the server calls start() once. If there is no sign-in key it loads <state>/setup-token (when well-formed and
-// private) or generates 32 random bytes (base64url) and writes it there (0600, atomic, never through a symlink). The value
-// stays in memory. The first sign-in key's registration calls clear(), which deletes the file and forgets the value. If a
-// sign-in key already exists at start, a leftover file is deleted. The token is never returned by any API.
+// Lifecycle: the server calls start() once. During first run it loads <state>/setup-token (when well-formed and private) or
+// generates 32 random bytes (base64url) and writes it there (0600, atomic, never through a symlink). The value stays in memory.
+// The first activation calls clear(), which deletes the file and forgets the value. When setup is already done at start, a leftover
+// file is deleted. The token is never returned by any API and never logged.
 import type { Database } from "bun:sqlite";
-import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, constants, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { paths } from "../core/paths";
 import { b64u } from "./b64";
 import { firstRun } from "./auth";
-
-/** 32 random bytes as unpadded base64url. */
-const WELL_FORMED = /^[A-Za-z0-9_-]{43}$/;
+import { readTokenFile } from "./recovery";
 
 export class SetupToken {
   private value: string | null = null;
   constructor(readonly path: string) {}
 
-  /** Loads or generates the token when no sign-in key exists yet (returns it); otherwise removes any leftover file (returns null). */
+  /** Loads or generates the token during first run (returns it); otherwise removes any leftover file (returns null). */
   start(db: Database): string | null {
     if (!firstRun(db)) { this.clear(); return null; }
-    this.value = this.read() ?? this.generate();
+    this.value = readTokenFile(this.path)?.token ?? this.generate();
     return this.value;
   }
-  /** True while a token is held, i.e. open registration is guarded and possible. */
+  /** True while a token is held, i.e. first-run enrolment is guarded and possible. */
   get active(): boolean { return this.value !== null; }
   /** Constant-time comparison (equal-length buffers; the length of a token is public). */
   matches(candidate: string | undefined): boolean {
@@ -40,19 +38,6 @@ export class SetupToken {
     try { unlinkSync(this.path); } catch { /* not there */ }
   }
 
-  /** The stored token, or null if the file is missing, malformed, not a regular file we own, or readable by others. */
-  private read(): string | null {
-    let fd: number;
-    try { fd = openSync(this.path, constants.O_RDONLY | constants.O_NOFOLLOW); } catch { return null; }
-    try {
-      const st = fstatSync(fd);
-      if (!st.isFile() || st.size > 256 || st.uid !== process.getuid!() || (st.mode & 0o077) !== 0) return null;
-      const buf = Buffer.alloc(st.size);
-      readSync(fd, buf, 0, st.size, 0);
-      const text = buf.toString("utf8").trim();
-      return WELL_FORMED.test(text) ? text : null;
-    } finally { closeSync(fd); }
-  }
   private generate(): string {
     const token = b64u(randomBytes(32));
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });

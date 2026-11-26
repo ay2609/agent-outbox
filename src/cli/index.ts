@@ -12,7 +12,7 @@ export interface CliIo {
   client?: AgentClient;
 }
 
-const HELP = `outbox: draft iMessages for the user to approve. Nothing here sends; the user approves in the dashboard.
+const HELP = `outbox: draft iMessages for the user to approve. Nothing here sends; the user approves in the Agent Outbox app.
 
   outbox draft (--to <phone|email> | --contact <id>) (--body <text> | --body-file <file|->) [--service iMessage|SMS|auto] [--notes <text>] [--title <text>]
   outbox batch create --title <t> [--template <t>] [--instructions <t>] [--items <file|->] [--submit]
@@ -45,7 +45,7 @@ const HELP = `outbox: draft iMessages for the user to approve. Nothing here send
 
 A contacts propose file is JSON: {"title": "...", "creates": [{"given_name","family_name","phones":[...],"emails":[...],"org"?,"nickname"?,"groups"?}], "updates": [{"contact_id","set"?:{"given_name"...},"add_phones"?,"add_emails"?,"add_groups"?}]}.
 
-A groups members file is a JSON array of {to?, contact_id?, name?, vars?}. A --bodies file is a JSON object {"<phone or email>": "message"}. Groups can't be deleted from here; the user does that in the dashboard.
+A groups members file is a JSON array of {to?, contact_id?, name?, vars?}. A --bodies file is a JSON object {"<phone or email>": "message"}. Groups can't be deleted from here; the user does that in Agent Outbox.
 
 Add --json to any command for machine-readable output. Items files are a JSON array of {to|contact_id, body?, vars?, recipient_name?, proposed_contact?, service?}.
 Merge templates: {{first_name}}, or {{first_name|there}} for a fallback.`;

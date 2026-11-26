@@ -13,11 +13,11 @@ export interface McpOptions {
   fetchImpl?: (url: string, init: RequestInit) => Promise<Response>;
 }
 
-const GATE = "Drafts are only sent after the user approves them in the dashboard (signed with a passkey and Touch ID). You cannot send or approve anything, and there is no tool for it.";
+const GATE = "Drafts are only sent after the user approves them in the Agent Outbox app (signed with Touch ID). You cannot send or approve anything, and there is no tool for it.";
 const STYLE = "Write the way a person texts: short, natural, specific to the recipient. Personalise each message (a real detail, not just the name); don't paste one generic blast. No placeholders left in the text, no emojis unless the user uses them, no links in a first message to someone who hasn't heard from the user, and don't invent facts about the recipient.";
 const TEMPLATES = "Template syntax: {{first_name}} inserts a field; {{first_name|there}} uses the text after | when the field is empty. Standard fields: first_name, last_name, full_name, name, org, tags, plus one field per spreadsheet column (lowercased, spaces and punctuation turned into underscores, e.g. column \"Pickup Date\" is {{pickup_date}}); contacts also bring city and birthday when known. A template that uses a field the import doesn't have is refused (with the list of available fields) unless allow_unknown_vars is set.";
 
-const CONTACTS_GATE = "Nothing is ever added to or changed in the user's Contacts automatically: every new contact AND every edit (changing a name, adding a number, email or group) waits for the user's Touch ID approval in the dashboard, and you only draft it. A person who is already in Contacts becomes an edit instead of a duplicate; a new contact with only a first or only a last name, one whose name looks like one already in Contacts, or one that joins a Contacts group that already exists (other than \"Outbox imports\") carries a note saying what to check. The user can undo any change after it is applied. You cannot approve, apply or undo anything, and there is no tool for it. Removing a number, deleting a contact and merging contacts are not possible.";
+const CONTACTS_GATE = "Nothing is ever added to or changed in the user's Contacts automatically: every new contact AND every edit (changing a name, adding a number, email or group) waits for the user's Touch ID approval in Agent Outbox, and you only draft it. A person who is already in Contacts becomes an edit instead of a duplicate; a new contact with only a first or only a last name, one whose name looks like one already in Contacts, or one that joins a Contacts group that already exists (other than \"Outbox imports\") carries a note saying what to check. The user can undo any change after it is applied. You cannot approve, apply or undo anything, and there is no tool for it. Removing a number, deleting a contact and merging contacts are not possible.";
 const NAME_RULES = "Names and group names are at most 100 characters, with no control or invisible characters (emoji are fine); emails are at most 254 characters. Give a new contact BOTH a first and a last name where you can: with only one, its note asks the user to check it. A new contact needs a first or last name and at least one valid phone number (with country code, e.g. +14155550123) or email, at most 5 phones, 5 emails and 5 groups; it is also put in the group \"Outbox imports\".";
 
 const itemShape = z.object({
@@ -40,12 +40,12 @@ const text = (t: string, isError = false): Out => ({ content: [{ type: "text", t
 
 function headline(r: Json): string {
   if (r.set_id && r.counts && r.dashboard_url) {
-    return `Contact change set ${r.set_id}: ${r.counts.review ?? 0} waiting for the user's Touch ID approval, ${r.counts.rejected ?? 0} not needed. Review link: ${r.dashboard_url}`;
+    return `Contact change set ${r.set_id}: ${r.counts.review ?? 0} waiting for the user's Touch ID approval, ${r.counts.rejected ?? 0} not needed. Open in Agent Outbox: ${r.dashboard_url}`;
   }
   if (r.batch && r.drafts) {
     const b = r.batch; const n = r.drafts.length; const w = (r.warnings ?? []).length;
     const state = b.status === "review" ? "waiting for the user to review and approve it" : `status ${b.status}`;
-    return `Batch "${b.title}" (${b.id}): ${n} draft${n === 1 ? "" : "s"}, ${w} warning${w === 1 ? "" : "s"}, ${state}. Review link: ${r.dashboard_url}${r.lint_error ? `\nNOTE: ${r.lint_error}` : ""}`;
+    return `Batch "${b.title}" (${b.id}): ${n} draft${n === 1 ? "" : "s"}, ${w} warning${w === 1 ? "" : "s"}, ${state}. Open in Agent Outbox: ${r.dashboard_url}${r.lint_error ? `\nNOTE: ${r.lint_error}` : ""}`;
   }
   return "";
 }
@@ -102,7 +102,7 @@ export function createOutboxMcpServer(o: McpOptions = {}): McpServer {
       body: z.string().describe("The exact message text."),
       service: z.enum(["iMessage", "SMS", "auto"]).optional(),
       notes: z.string().optional().describe("Private note for the user, not sent."),
-      title: z.string().optional().describe("Batch title shown in the dashboard."),
+      title: z.string().optional().describe("Batch title shown in Agent Outbox."),
     }, annotations: wr,
   }, async (a) => run(() => api.post("/v1/drafts", a))());
 
@@ -172,7 +172,7 @@ export function createOutboxMcpServer(o: McpOptions = {}): McpServer {
   }, async ({ import_id, ...rest }) => run(() => api.post(`/v1/imports/${encodeURIComponent(import_id)}/batch`, rest))());
 
   server.registerTool("outbox_update_draft", {
-    description: `Change the text of one draft by id. Only works while the draft is not yet approved; a revision is kept and the lint warnings are recomputed. If the user already approved or the message is sending or sent, this is refused (ask the user to change it in the dashboard). ${STYLE}`,
+    description: `Change the text of one draft by id. Only works while the draft is not yet approved; a revision is kept and the lint warnings are recomputed. If the user already approved or the message is sending or sent, this is refused (ask the user to change it in Agent Outbox). ${STYLE}`,
     inputSchema: { draft_id: z.string(), body: z.string().describe("The new full message text.") }, annotations: wr,
   }, async ({ draft_id, body }) => run(() => api.patch(`/v1/drafts/${encodeURIComponent(draft_id)}`, { body }))());
 
@@ -187,7 +187,7 @@ export function createOutboxMcpServer(o: McpOptions = {}): McpServer {
   }, async ({ id, items }) => run(() => api.post(`/v1/batches/${encodeURIComponent(id)}/items`, { items }))());
 
   server.registerTool("outbox_cancel_batch", {
-    description: `Cancel a batch YOU created, while it is still drafting or waiting for review: the batch becomes cancelled and its drafts rejected, so none can be sent. Use it to retract a mistake or a superseded batch. Refused if the batch is someone else's, or already approved or sent (then ask the user to stop it in the dashboard). This can only stop messages, never send them.`,
+    description: `Cancel a batch YOU created, while it is still drafting or waiting for review: the batch becomes cancelled and its drafts rejected, so none can be sent. Use it to retract a mistake or a superseded batch. Refused if the batch is someone else's, or already approved or sent (then ask the user to stop it in Agent Outbox). This can only stop messages, never send them.`,
     inputSchema: { id: z.string().describe("Batch id.") }, annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   }, async ({ id }) => run(() => api.post(`/v1/batches/${encodeURIComponent(id)}/cancel`))());
 
@@ -203,7 +203,7 @@ export function createOutboxMcpServer(o: McpOptions = {}): McpServer {
   }, async ({ id }) => run(() => api.get(`/v1/batches/${encodeURIComponent(id)}`))());
 
   server.registerTool("outbox_submit_batch", {
-    description: `Hand a drafting batch to the user: moves it from drafting to review so it appears in their dashboard inbox. Do this once the drafts are final and warnings are dealt with. This does NOT send anything. ${GATE} Tell the user the dashboard link from the result.`,
+    description: `Hand a drafting batch to the user: moves it from drafting to review so it appears in their Agent Outbox inbox. Do this once the drafts are final and warnings are dealt with. This does NOT send anything. ${GATE} Tell the user the Open in Agent Outbox link from the result.`,
     inputSchema: { id: z.string() }, annotations: wr,
   }, async ({ id }) => run(() => api.post(`/v1/batches/${encodeURIComponent(id)}/submit`))());
 
@@ -278,7 +278,7 @@ export function createOutboxMcpServer(o: McpOptions = {}): McpServer {
   }, async ({ group, ...rest }) => run(() => api.post(`/v1/groups/${encodeURIComponent(group)}/members`, rest))());
 
   server.registerTool("outbox_update_group", {
-    description: `Rename a group, change its description and/or remove people from it (by phone/email in remove_members, or remove_contact_ids). Everything you give is applied; a rename onto another group's name is refused. You cannot delete a group: the user does that in the dashboard. ${GROUPS}`,
+    description: `Rename a group, change its description and/or remove people from it (by phone/email in remove_members, or remove_contact_ids). Everything you give is applied; a rename onto another group's name is refused. You cannot delete a group: the user does that in Agent Outbox. ${GROUPS}`,
     inputSchema: {
       group: z.string().describe("Group id or name."), name: z.string().optional().describe("New name."), description: z.string().optional(),
       remove_members: z.array(z.string()).optional().describe("Phones or emails to remove."), remove_contact_ids: z.array(z.string()).optional(),

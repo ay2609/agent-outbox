@@ -90,7 +90,7 @@ export interface Draft {
 }
 
 /** Approval manifest. The server serialises it ONCE with JSON.stringify (no whitespace) and stores those exact
- *  bytes; sha256(bytes) is the WebAuthn challenge. Nobody re-serialises it for verification. */
+ *  bytes; sha256(bytes) is what the Secure Enclave signs. Nobody re-serialises it for verification. */
 export interface ManifestItem {
   draft_id: string;
   to: string;            // handle
@@ -113,17 +113,17 @@ export interface Manifest {
   items: ManifestItem[];
 }
 
-/** Pin file format: the root pin (/Library/Application Support/agent-outbox/passkeys.json, hardened mode) and the user pin (<state>/passkeys.json, simple mode).
- *  `keys` holds ONLY approval-purpose passkeys (never the sign-in passkey), so a harvested login assertion can't
- *  satisfy the executor. `policy` holds floors the executor enforces over whatever the DB settings say. */
+/** Pin file v4 (the only version accepted): the root pin (/Library/Application Support/agent-outbox/passkeys.json, hardened mode) and the
+ *  user pin (<state>/passkeys.json, simple mode). `keys` holds ONLY active Secure Enclave keys and may be empty. Top-level keys are exactly
+ *  v, keys, policy (no rp_id, no origin). `policy` holds floors the executor enforces over whatever the DB settings say. */
 export interface PinFile {
-  /** 2 = approval passkeys only (no `kind`); 3 = every key carries a `kind` (written only while a Secure Enclave key is active). */
-  v: 2 | 3;
-  rp_id: string;
-  origin: string;
-  keys: { kind?: "webauthn" | "secure-enclave"; credential_id: string; x963: string; label: string }[]; // base64url, approve passkeys + active native keys
-  policy: PinPolicy;
+  v: 4;
+  keys: { kind: "secure-enclave"; credential_id: string; x963: string; label: string }[]; // base64url
+  policy: { live_allowed: boolean; contacts_live_allowed: boolean };
 }
+/** Fixed values the server writes into every manifest's rp_id / origin (they used to follow the dashboard's port). The executor checks them. */
+export const MANIFEST_RP_ID = "agent-outbox";
+export const MANIFEST_ORIGIN = "agent-outbox:app";
 /** v3 (2026-11-10: "approve → send, nothing else"): the only policy is whether live sending is allowed.
  *  Older pin files may carry extra pacing fields; readers ignore them. */
 export interface PinPolicy {
@@ -132,7 +132,6 @@ export interface PinPolicy {
   contacts_live_allowed?: boolean;
 }
 export const DEFAULT_PIN_POLICY: PinPolicy = { live_allowed: false, contacts_live_allowed: false };
-export type PasskeyPurpose = "login" | "approve";
 
 export interface Settings {
   transport: "dry" | "live";
@@ -202,8 +201,8 @@ export interface ContactChange {
   created_at: string; applied_at: string | null; undo_of: string | null;
 }
 
-/** Contacts approval manifest. Serialised ONCE with JSON.stringify; sha256(bytes) is the WebAuthn challenge, signed with an
- *  APPROVE passkey. `kind: "contacts"` keeps it apart from send manifests: the executor's send path rejects any manifest
+/** Contacts approval manifest. Serialised ONCE with JSON.stringify; sha256(bytes) is what the Secure Enclave signs. It is signed by an
+ *  active key. `kind: "contacts"` keeps it apart from send manifests: the executor's send path rejects any manifest
  *  with a `kind`, and the contacts path requires kind == "contacts". */
 export interface ContactManifestItem {
   change_id: string;

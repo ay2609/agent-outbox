@@ -1,4 +1,4 @@
-// /api/status: executor heartbeat, pin mode and pin-file validity, counts.
+// /api/status: executor heartbeat, pin mode and pin-file validity, setup state, counts.
 import type { Database } from "bun:sqlite";
 import { lstatSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
@@ -7,31 +7,33 @@ import { readPaceState } from "../core/pacing-db";
 import type { PinFile, PinPolicy } from "../core/types";
 import type { OwnerConfig } from "./config";
 import { sha256Hex } from "./b64";
-import { getPinPolicy, installCommand, listNativeKeys, listPasskeys, normalizePolicy, pinText, userPinSha256 } from "./auth";
+import { firstRun, getPinPolicy, installCommand, listNativeKeys, nativeKeyCount, pinText, userPinSha256 } from "./auth";
+import { RecoveryToken } from "./recovery";
+import { fingerprint } from "./keys";
 
 export type PinKind = "root" | "user";
 export type PinMode = "simple" | "hardened";
 
 export interface PinStatus {
-  /** "root": the hardened-mode file; "user": the simple-mode file the dashboard writes. */
+  /** "root": the hardened-mode file; "user": the simple-mode file the server writes. */
   kind: PinKind;
   path: string;
   present: boolean;
-  /** present AND trusted owner (uid 0 for root, this user for the user pin) AND not group/world-writable (file and parent dir) AND parseable AND matching this server's rp/origin and exactly the approve passkeys */
+  /** present AND trusted owner (uid 0 for root, this user for the user pin) AND not group/world-writable (file and parent dir) AND a well-formed v4 pin listing exactly the active keys */
   valid: boolean;
   owner_uid: number | null;
   mode: string | null;
   dir_ok: boolean | null;
   version: number | null;
   keys: number;
-  /** Every approve passkey is in the pin file with the same public key. */
-  matches_passkeys: boolean;
-  /** Pinned keys that aren't among the approve passkeys (credential id not known, or a sign-in key). */
+  /** Every active key is in the pin file with the same public key. (True for an empty pin when there are no active keys.) */
+  matches_keys: boolean;
+  /** Pinned keys that aren't among the active keys (unknown, or revoked). */
   unexpected_keys: { credential_id: string; label: string }[];
-  /** The pin's policy, or null when the file is missing, unreadable or a v1 file (v1 = default policy, never live). */
+  /** The pin's policy, or null when the file is missing, unreadable or not a v4 pin. */
   policy: PinPolicy | null;
   live_allowed: boolean;
-  /** v4: the pin's policy.contacts_live_allowed (missing counts as false). */
+  /** The pin's policy.contacts_live_allowed. */
   contacts_live_allowed: boolean;
   problems: string[];
 }
@@ -65,21 +67,30 @@ export function readEffectivePin(cfg: OwnerConfig): { kind: PinKind; pin: PinFil
   const pin = readPinFile(cfg.userPinFile);
   return pin ? { kind: "user", pin } : null;
 }
+/** A pin's policy when it has both booleans (the v4 shape), else null. */
+function strictPolicy(p: unknown): { live_allowed: boolean; contacts_live_allowed: boolean } | null {
+  if (!p || typeof p !== "object") return null;
+  const r = p as Record<string, unknown>;
+  return typeof r.live_allowed === "boolean" && typeof r.contacts_live_allowed === "boolean"
+    ? { live_allowed: r.live_allowed, contacts_live_allowed: r.contacts_live_allowed } : null;
+}
 /** Does the EFFECTIVE pin allow live sending? (The sender additionally verifies root ownership in hardened mode.) */
 export function pinLiveAllowed(cfg: OwnerConfig): boolean {
   const e = readEffectivePin(cfg);
-  return !!e && (e.pin.v === 2 || e.pin.v === 3) && normalizePolicy(e.pin.policy)?.live_allowed === true;
+  return !!e && e.pin.v === 4 && strictPolicy(e.pin.policy)?.live_allowed === true;
 }
-/** v4: does the EFFECTIVE pin allow live contact changes (approved creates, edits and undos)? */
+/** Does the EFFECTIVE pin allow live contact changes (approved creates, edits and undos)? */
 export function pinContactsLiveAllowed(cfg: OwnerConfig): boolean {
   const e = readEffectivePin(cfg);
-  return !!e && (e.pin.v === 2 || e.pin.v === 3) && normalizePolicy(e.pin.policy)?.contacts_live_allowed === true;
+  return !!e && e.pin.v === 4 && strictPolicy(e.pin.policy)?.contacts_live_allowed === true;
 }
 
-/** The same ownership rules the sender applies to this pin file before it will use it in live mode. */
+const OLD_PIN = (v: unknown) => `The pin file is version ${v}: it holds browser passkeys, which Agent Outbox no longer accepts. Set up Touch ID in the app (hardened: then run the harden command again).`;
+
+/** The same ownership and shape rules the sender applies to this pin file before it will use it. */
 export function pinStatus(cfg: OwnerConfig, db: Database, kind: PinKind): PinStatus {
   const path = pinPath(cfg, kind);
-  const s: PinStatus = { kind, path, present: false, valid: false, owner_uid: null, mode: null, dir_ok: null, version: null, keys: 0, matches_passkeys: false, unexpected_keys: [], policy: null, live_allowed: false, contacts_live_allowed: false, problems: [] };
+  const s: PinStatus = { kind, path, present: false, valid: false, owner_uid: null, mode: null, dir_ok: null, version: null, keys: 0, matches_keys: false, unexpected_keys: [], policy: null, live_allowed: false, contacts_live_allowed: false, problems: [] };
   // lstat, as the sender does: a symlink (even a dangling one) counts as present, and is refused.
   let st;
   try { st = lstatSync(path); } catch { s.problems.push(kind === "root" ? "Not installed." : "Not written yet."); return s; }
@@ -97,32 +108,42 @@ export function pinStatus(cfg: OwnerConfig, db: Database, kind: PinKind): PinSta
     if (!s.dir_ok) s.problems.push(`The parent directory isn't owned by ${who} and closed to group/other writes.`);
   } catch { s.dir_ok = false; s.problems.push("The parent directory can't be read."); }
   const fix = kind === "root" ? "Run the harden command again." : "Change a setting or add a key and it is rewritten.";
-  let pin: PinFile | null = null;
-  try { pin = JSON.parse(readFileSync(path, "utf8")) as PinFile; } catch { s.problems.push("The file isn't valid JSON."); }
-  if (pin) {
-    s.version = typeof pin.v === "number" ? pin.v : null;
-    s.keys = pin.keys?.length ?? 0;
-    if (pin.v !== 2 && pin.v !== 3) s.problems.push(`The pin file is version ${pin.v}, not 2 or 3. ${fix}`);
+  let pin: any = null;
+  let parsed = false;
+  try { pin = JSON.parse(readFileSync(path, "utf8")); parsed = true; } catch { s.problems.push("The file isn't valid JSON."); }
+  if (parsed) {
+    if (!pin || typeof pin !== "object" || Array.isArray(pin)) { s.problems.push("The pin file isn't a JSON object."); }
     else {
-      s.policy = normalizePolicy(pin.policy);
-      if (!s.policy) s.problems.push(`The pin file has no valid policy; the sender will refuse it. ${fix}`);
-      s.live_allowed = s.policy?.live_allowed === true;
-      s.contacts_live_allowed = s.policy?.contacts_live_allowed === true;
+      s.version = typeof pin.v === "number" ? pin.v : null;
+      s.keys = Array.isArray(pin.keys) ? pin.keys.length : 0;
+      if (pin.v === 1 || pin.v === 2 || pin.v === 3) s.problems.push(OLD_PIN(pin.v));
+      else if (pin.v !== 4) s.problems.push(`The pin file is version ${pin.v}, not 4. ${fix}`);
+      else {
+        const extra = Object.keys(pin).filter((k) => !["v", "keys", "policy"].includes(k));
+        if (extra.length) s.problems.push(`The pin file has unexpected top-level keys (${extra.join(", ")}); the sender refuses it. ${fix}`);
+        const pol = strictPolicy(pin.policy);
+        if (!pol) s.problems.push(`The pin file has no valid policy; the sender will refuse it. ${fix}`);
+        s.policy = pol;
+        s.live_allowed = pol?.live_allowed === true;
+        s.contacts_live_allowed = pol?.contacts_live_allowed === true;
+        const keys: any[] = Array.isArray(pin.keys) ? pin.keys : [];
+        if (!Array.isArray(pin.keys)) s.problems.push("The pin file has no key list.");
+        const active = listNativeKeys(db, "active");
+        const have = new Map<string, string>();
+        for (const k of keys) {
+          const exact = k && typeof k === "object" && Object.keys(k).sort().join(",") === "credential_id,kind,label,x963";
+          if (!exact) { s.problems.push("A pinned key has the wrong fields."); continue; }
+          if (k.kind === "webauthn") s.problems.push("WebAuthn keys are no longer accepted."); else if (k.kind !== "secure-enclave") s.problems.push(`A pinned key has kind ${String(k.kind)}.`);
+          have.set(k.credential_id, k.x963);
+        }
+        const known = new Map(active.map((k) => [k.key_id, k.public_key_x963_b64]));
+        s.matches_keys = active.every((k) => have.get(k.key_id) === k.public_key_x963_b64);
+        s.unexpected_keys = keys.filter((k) => known.get(k?.credential_id) !== k?.x963).map((k) => ({ credential_id: String(k?.credential_id ?? ""), label: String(k?.label ?? "") }));
+        if (s.unexpected_keys.length) s.problems.push(`Unexpected key in pinned file: ${s.unexpected_keys.map((k) => `${k.label || "(no label)"} ${k.credential_id.slice(0, 10)}…`).join(", ")}. It isn't one of your active approval keys, and the sender would accept approvals signed by it.`);
+        if (keys.length !== active.length) s.problems.push(`The pin lists ${keys.length} key${keys.length === 1 ? "" : "s"}, but you have ${active.length} active approval key${active.length === 1 ? "" : "s"}.`);
+        if (!s.matches_keys) s.problems.push(`The file doesn't list every active approval key. ${fix}`);
+      }
     }
-    if (pin.rp_id !== cfg.rpId) s.problems.push(`rp_id is ${pin.rp_id}, this server uses ${cfg.rpId}.`);
-    if (pin.origin !== cfg.origin) s.problems.push(`origin is ${pin.origin}, this server uses ${cfg.origin}.`);
-    const have = new Map((pin.keys ?? []).map((k) => [k.credential_id, k.x963]));
-    // Approval passkeys plus active Secure Enclave keys (v3): the pin lists exactly these.
-    const approve: { credential_id: string; public_key_x963_b64: string }[] = [
-      ...listPasskeys(db, "approve"),
-      ...listNativeKeys(db, "active").map((k) => ({ credential_id: k.key_id, public_key_x963_b64: k.public_key_x963_b64 })),
-    ];
-    const known = new Map(approve.map((p) => [p.credential_id, p.public_key_x963_b64]));
-    s.matches_passkeys = approve.length > 0 && approve.every((p) => have.get(p.credential_id) === p.public_key_x963_b64);
-    s.unexpected_keys = (pin.keys ?? []).filter((k) => known.get(k.credential_id) !== k.x963).map((k) => ({ credential_id: k.credential_id, label: k.label ?? "" }));
-    if (s.unexpected_keys.length) s.problems.push(`Unexpected key in pinned file: ${s.unexpected_keys.map((k) => `${k.label || "(no label)"} ${k.credential_id.slice(0, 10)}…`).join(", ")}. It isn't one of your approval keys, and the sender would accept approvals signed by it.`);
-    if (s.keys !== approve.length) s.problems.push(`Unexpected key in pinned file: it lists ${s.keys} key${s.keys === 1 ? "" : "s"}, but you have ${approve.length} approval key${approve.length === 1 ? "" : "s"}.`);
-    if (!s.matches_passkeys) s.problems.push(approve.length === 0 ? "No approval passkey is registered." : `The file doesn't list every approval key. ${fix}`);
   }
   s.valid = s.problems.length === 0;
   return s;
@@ -132,8 +153,8 @@ export const rootPinStatus = (cfg: OwnerConfig, db: Database): PinStatus => pinS
 /** Key ids (credential_id) of the Secure Enclave keys in the EFFECTIVE pin, or an empty set when there is no usable pin. */
 export function effectiveNativeKeyIds(cfg: OwnerConfig): Set<string> {
   const e = readEffectivePin(cfg);
-  if (!e || e.pin.v !== 3) return new Set();
-  return new Set((e.pin.keys ?? []).filter((k) => k.kind === "secure-enclave").map((k) => k.credential_id));
+  if (!e || e.pin.v !== 4 || !Array.isArray(e.pin.keys)) return new Set();
+  return new Set(e.pin.keys.filter((k) => k && k.kind === "secure-enclave").map((k) => k.credential_id));
 }
 
 export function buildStatus(cfg: OwnerConfig, db: Database) {
@@ -146,17 +167,15 @@ export function buildStatus(cfg: OwnerConfig, db: Database) {
   const root = pinStatus(cfg, db, "root");
   const user = pinStatus(cfg, db, "user");
   const effective = mode === "hardened" ? root : user;
-  const approveKeys = listPasskeys(db, "approve");
-  const nativeCount = listNativeKeys(db, "active").length;
-  const userSha = userPinSha256(cfg);
-  // Hardened: is the installed root file byte-identical to the pin the dashboard builds from its keys and policy (what the
-  // harden command installs)? Compared with the database, not the user pin file, which anything running as the user can edit.
-  const wantSha = approveKeys.length > 0 || nativeCount > 0 ? sha256Hex(Buffer.from(pinText(cfg, db), "utf8")) : null;
-  let rootCurrent: boolean | null = null;
-  if (root.present) { try { rootCurrent = wantSha !== null && wantSha === sha256Hex(readFileSync(cfg.rootPinFile)); } catch { rootCurrent = null; } }
-  // Native (Secure Enclave) approval: may the app sign now? Simple mode: the user pin holds the key. Hardened mode: only the root pin
-  // counts, so a freshly enrolled key needs the harden command run again (until then the app opens the browser approval instead).
   const activeNative = listNativeKeys(db, "active");
+  const userSha = userPinSha256(cfg);
+  // Hardened: is the installed root file byte-identical to the pin built from the keys and policy (what the harden command installs)?
+  // Compared with the database, not the user pin file, which anything running as the user can edit.
+  const wantSha = sha256Hex(Buffer.from(pinText(db), "utf8"));
+  let rootCurrent: boolean | null = null;
+  if (root.present) { try { rootCurrent = wantSha === sha256Hex(readFileSync(cfg.rootPinFile)); } catch { rootCurrent = null; } }
+  // Native approval: may the app sign now? Simple mode: the user pin holds the key. Hardened mode: only the root pin counts, so a freshly
+  // enrolled key needs the harden command run again. A revoked key still in the root pin needs it too.
   const pinned = effectiveNativeKeyIds(cfg);
   const revokedStillPinned = listNativeKeys(db, "revoked").some((k) => pinned.has(k.key_id));
   const native = {
@@ -164,15 +183,18 @@ export function buildStatus(cfg: OwnerConfig, db: Database) {
     approve_in_app: activeNative.some((k) => pinned.has(k.key_id)),
     pin_needs_update: mode === "hardened" && (activeNative.some((k) => !pinned.has(k.key_id)) || revokedStillPinned),
   };
+  // Which owner proof could enrol a key right now (same order as enroll/options).
+  const recoveryExpires = new RecoveryToken(cfg.recoveryTokenFile).expiresAt();
+  const proof = recoveryExpires ? "recovery_token" : firstRun(db) && cfg.setupToken.active ? "setup_token" : nativeKeyCount(db) > 0 ? "se_reauth" : null;
   return {
     server_time: new Date().toISOString(),
     native,
-    rp_id: cfg.rpId, origin: cfg.origin, port: cfg.port,
+    setup: { done: !firstRun(db), proof_available: proof, recovery_expires_at: recoveryExpires },
     transport: settings.transport, kill_switch: settings.kill_switch, kill_reason: settings.kill_reason,
     contacts_transport: settings.contacts_transport,
     /** "Spread out messages": the settings, plus what the executor reports (when it will send next, or why it is holding approved messages). */
     pacing: { ...settings.pacing, ...readPaceState(db) },
-    /** v4: the effective pin's policy.contacts_live_allowed. When contacts_transport is live but this is false, the executor applies contact changes dry. */
+    /** The effective pin's policy.contacts_live_allowed. When contacts_transport is live but this is false, the executor applies contact changes dry. */
     pin_contacts_live_allowed: effective.contacts_live_allowed,
     exec: exec ? { ...exec, pin_file_ok: !!exec.pin_file_ok, heartbeat_age_s: age, alive: age !== null && age < 30 } : null,
     pin: {
@@ -184,17 +206,12 @@ export function buildStatus(cfg: OwnerConfig, db: Database) {
       user,
       /** The user pin is also the candidate for hardening: `installed` = the root file is identical to it (null when there is no root file). */
       candidate: { path: cfg.userPinFile, present: user.present, sha256: userSha, installed: rootCurrent },
-      /** One sha256-checked command that installs the user pin as the root pin; prints the installed credential ids and labels. Null until the user pin exists. */
+      /** One sha256-checked command that installs the user pin as the root pin; prints what is installed. Non-null whenever the user pin file exists. */
       install_command: installCommand(cfg, db),
-      /** What the installed pin should show, for comparing with the command's output. */
-      expected_keys: [
-        ...approveKeys.map((p) => ({ credential_id: p.credential_id, label: p.label })),
-        ...listNativeKeys(db, "active").map((k) => ({ credential_id: k.key_id, label: k.label, kind: "secure-enclave" as const })),
-      ],
+      /** What the installed pin should show, for comparing with the command's output: active Secure Enclave keys only. */
+      expected_keys: activeNative.map((k) => ({ credential_id: k.key_id, label: k.label, kind: "secure-enclave" as const, fingerprint: fingerprint(Buffer.from(k.public_key_x963_b64, "base64url")) })),
       policy: getPinPolicy(db),
     },
-    passkeys: listPasskeys(db).length,
-    passkey_purposes: { login: listPasskeys(db, "login").length, approve: approveKeys.length },
     counts: {
       batches_review: count("SELECT COUNT(*) AS n FROM batches WHERE status = 'review'"),
       drafts_review: count("SELECT COUNT(*) AS n FROM drafts WHERE status = 'review'"),

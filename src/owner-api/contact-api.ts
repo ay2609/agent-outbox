@@ -12,10 +12,10 @@ import type { OwnerConfig } from "./config";
 import { badRequest, notFound } from "./errors";
 import { type FailureLimiter } from "./auth";
 import {
-  cancelContactSet, contactApproveOptions, contactApproveVerify, coveringContactApproval, createUndoSets, liveContactApprovals, parseContactManifest,
+  cancelContactSet, contactApproveOptions, coveringContactApproval, createUndoSets, liveContactApprovals, parseContactManifest,
   rejectContactChanges, undoBlockReason,
 } from "./contact-approval";
-import { assertionSchema, readJson } from "./schemas";
+import { readJson } from "./schemas";
 import { pinContactsLiveAllowed } from "./status";
 
 const OWNER = "owner";
@@ -69,15 +69,10 @@ export function registerContactApi(app: Hono, cfg: OwnerConfig, limiterFor: Limi
   app.post("/api/contact-changes/:id/cancel", (c) => c.json({ ok: true, ...cancelContactSet(db(), c.req.param("id"), OWNER) }));
 
   app.post("/api/contact-changes/:id/approve/options", async (c) => {
-    const body = await readJson(c, z.object({ change_ids: ids, signer: z.enum(["webauthn", "secure-enclave"]).optional() }));
-    const r = await contactApproveOptions(cfg, db(), c.req.param("id"), body.change_ids, body.signer ?? "webauthn");
+    const body = await readJson(c, z.object({ change_ids: ids, signer: z.literal("secure-enclave").optional() }).strict());
+    const r = await contactApproveOptions(cfg, db(), c.req.param("id"), body.change_ids);
     // When transport is live but the installed pin lacks contacts_live_allowed, the executor applies dry; the sheet says so.
     return c.json({ ...r, pin_contacts_live_allowed: pinContactsLiveAllowed(cfg) });
-  });
-  app.post("/api/contact-changes/:id/approve/verify", async (c) => {
-    const body = await readJson(c, z.object({ challenge_id: z.string().max(100), response: assertionSchema }));
-    const r = await contactApproveVerify(cfg, db(), limiterFor(c, "approve"), c.req.param("id"), body.challenge_id, body.response as any);
-    return c.json({ ok: true, ...r, set: getContactSet(db(), c.req.param("id")) });
   });
 
   // Undo: makes a new set of kind='undo' changes in review. It is approved like any other (Touch ID).

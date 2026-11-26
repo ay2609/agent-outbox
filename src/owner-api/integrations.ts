@@ -1,5 +1,5 @@
 // Late-bound access to the ingest / personalisation / lint modules at their fixed paths.
-// Loaded with dynamic import() so the passkey and approval core loads and tests without them.
+// Loaded with dynamic import() so the approval core loads and tests without them.
 import type { Database } from "bun:sqlite";
 import { ApiError } from "./errors";
 

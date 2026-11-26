@@ -2,58 +2,25 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_PORT, ROOT_PIN_FILE, configFilePath, defaultStateDir, loadConfig, resolveStateDir } from "./config";
+import { ROOT_PIN_FILE, configFilePath, defaultStateDir, legacySettings, resolveStateDir } from "./config";
 
 const dir = () => mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "outbox-config-"));
-const load = (d: string, env: Record<string, string | undefined> = {}) => {
-  const warnings: string[] = [];
-  return { cfg: loadConfig(d, env, (m) => warnings.push(m)), warnings };
-};
 
-describe("config.json", () => {
-  test("no file: defaults (port 7477)", () => {
-    const { cfg, warnings } = load(dir());
-    expect(cfg).toEqual({ port: 7477 });
-    expect(DEFAULT_PORT).toBe(7477);
-    expect(warnings).toEqual([]);
+describe("retired settings", () => {
+  test("nothing present: nothing reported", () => {
+    expect(legacySettings(dir(), {})).toEqual([]);
   });
-  test("reads port; unknown keys are ignored, including the old compose and claude_path", () => {
+  test("a port in config.json and the old env variables are reported, other keys are not", () => {
     const d = dir();
-    writeFileSync(configFilePath(d), JSON.stringify({ port: 7600, compose: "off", claude_path: "/opt/claude/bin/claude", theme: "dark", extra: { a: 1 } }));
-    const { cfg, warnings } = load(d);
-    expect(cfg).toEqual({ port: 7600 });
-    expect(warnings).toEqual([]);
+    writeFileSync(configFilePath(d), JSON.stringify({ port: 7600, compose: "off" }));
+    expect(legacySettings(d, { OUTBOX_PORT: "7788", OUTBOX_RP_ID: "x", OUTBOX_ORIGIN: "" })).toEqual(["port", "OUTBOX_PORT", "OUTBOX_RP_ID"]);
   });
-  test("every key is optional", () => {
-    const d = dir();
-    writeFileSync(configFilePath(d), JSON.stringify({ compose: "off" }));
-    expect(load(d).cfg).toEqual({ port: 7477 });
-  });
-  test("OUTBOX_PORT beats config.json; a bad OUTBOX_PORT is ignored with a warning", () => {
-    const d = dir();
-    writeFileSync(configFilePath(d), JSON.stringify({ port: 7600 }));
-    expect(load(d, { OUTBOX_PORT: "7788" }).cfg.port).toBe(7788);
-    const bad = load(d, { OUTBOX_PORT: "http" });
-    expect(bad.cfg.port).toBe(7600);
-    expect(bad.warnings.join(" ")).toContain("OUTBOX_PORT");
-  });
-  test("bad JSON: a warning and the defaults, never a throw", () => {
+  test("bad JSON or a non-object file never throws", () => {
     const d = dir();
     writeFileSync(configFilePath(d), "{ port: nope");
-    const { cfg, warnings } = load(d);
-    expect(cfg).toEqual({ port: 7477 });
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("isn't valid JSON");
-  });
-  test("wrong shapes and bad values fall back with a warning", () => {
-    const d = dir();
-    writeFileSync(configFilePath(d), JSON.stringify({ port: 99999 }));
-    const { cfg, warnings } = load(d);
-    expect(cfg).toEqual({ port: 7477 });
-    expect(warnings).toHaveLength(1);
-    const arr = dir();
-    writeFileSync(configFilePath(arr), "[1,2]");
-    expect(load(arr).warnings).toHaveLength(1);
+    expect(legacySettings(d, {})).toEqual([]);
+    writeFileSync(configFilePath(d), "[1,2]");
+    expect(legacySettings(d, {})).toEqual([]);
   });
 });
 

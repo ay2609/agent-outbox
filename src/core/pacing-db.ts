@@ -1,4 +1,4 @@
-// Database reads behind the pacing estimate and the dashboard's "next message" line. Read-only: outbox-exec owns these rows.
+// Database reads behind the pacing estimate and the Agent Outbox app's "next message" line. Read-only: outbox-exec owns these rows.
 import type { Database } from "bun:sqlite";
 
 export interface PaceHold {
