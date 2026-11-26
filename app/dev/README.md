@@ -20,4 +20,10 @@ Environment the app honours:
 | `AGENT_OUTBOX_DEV=1` | never register login items (also implied when the app is not run from a real `.app`) |
 | `AGENT_OUTBOX_SKIP_ONBOARDING=1` / `AGENT_OUTBOX_FORCE_ONBOARDING=1` | skip / show the first-run window |
 | `AGENT_OUTBOX_SKIP_MIGRATION=1` | ignore old developer-install LaunchAgents |
+| `AGENT_OUTBOX_DEV_OPEN_LOG=<file>` | dev runs never open a browser: URLs the app would open are appended to this file (check the Approve link there) |
+| `AGENT_OUTBOX_DEV_APPEARANCE=light\|dark`, `AGENT_OUTBOX_DEV_SIZE=940x1100` | force the appearance / window size for screenshots |
+| `AGENT_OUTBOX_DEV_SHEET=send\|send-live\|contacts\|contacts-live` | show the approval confirm sheet for a made-up approval (no Touch ID) |
+| `AGENT_OUTBOX_DEV_MENU=1` | pop open the menu bar menu after launch (capture it with `screencapture -l <layer-101 window id>`) |
+| `AGENT_OUTBOX_DEV_OPEN_BROWSER=/batch/<id>`, `AGENT_OUTBOX_DEV_ACTION=stop\|resume` | do what Approve / Stop all sending / Resume sending do, without a click |
+| `AGENT_OUTBOX_START_STEP=0..4`, `AGENT_OUTBOX_LAUNCHAGENTS_DIR=<dir>` | first-run step to open; folder of fake old LaunchAgent plists for the migration screen (dev runs never call launchctl or `claude mcp add`) |
 | `AGENT_OUTBOX_START_NAV=settings`, `AGENT_OUTBOX_START_PATH=batch:b1` | open a section / a batch (`set:<id>`, `group:<id>`) at launch, for screenshots |

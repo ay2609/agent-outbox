@@ -13,7 +13,7 @@ enum SelfCheck {
 
     static func run() -> Int32 {
         print("Agent Outbox self-check")
-        parser(); preflight(); socketClient(); supervisor(); migration(); claude()
+        parser(); preflight(); socketClient(); supervisor(); migration(); setupToken(); claude()
         print("\n\(passed) passed, \(failed) failed")
         return failed == 0 ? 0 : 1
     }
@@ -187,6 +187,19 @@ enum SelfCheck {
         FileManager.default.createFile(atPath: root + "/io.github.ay2609.agent-outbox.plist", contents: Data("<plist/>".utf8))
         let failing = Migration.perform(agentsDir: root, uid: 501) { _, _ in (5, "Boot-out failed: 5") }
         check("a failing bootout keeps the plist and reports", failing.removed.isEmpty && failing.problems.count == 1 && FileManager.default.fileExists(atPath: root + "/io.github.ay2609.agent-outbox.plist"))
+    }
+
+    static func setupToken() {
+        print("first-run setup token (temp folder)")
+        let root = tempDir(); defer { try? FileManager.default.removeItem(atPath: root) }
+        let tok = String(repeating: "aB3-_", count: 8) + "xyz"   // 43 characters
+        check("no file, no token", AppModel.firstRunSetupToken(stateDir: root) == nil)
+        FileManager.default.createFile(atPath: root + "/setup-token", contents: Data((tok + "\n").utf8), attributes: [.posixPermissions: 0o600])
+        check("a private, well-formed token file is read", AppModel.firstRunSetupToken(stateDir: root) == tok)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: root + "/setup-token")
+        check("a token others can read is refused", AppModel.firstRunSetupToken(stateDir: root) == nil)
+        FileManager.default.createFile(atPath: root + "/setup-token", contents: Data("short".utf8), attributes: [.posixPermissions: 0o600])
+        check("a malformed token is refused", AppModel.firstRunSetupToken(stateDir: root) == nil)
     }
 
     static func claude() {

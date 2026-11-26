@@ -21,7 +21,7 @@ export function NativeEnroll({ id }: { id: string }) {
   };
 
   if (q.loading && !q.data) return <Spinner />;
-  if (q.error || !q.data) return <><h1 className="page-title">Touch ID in the app</h1><ErrorNote>{q.error ?? "That setup is unknown or expired. Start again in the Agent Outbox app."}</ErrorNote></>;
+  if (q.error || !q.data) return <><h1 className="page-title">Touch ID in the app</h1><ErrorNote>{(q.error ?? "That setup is unknown or expired.") + " Start again in the Agent Outbox app."}</ErrorNote></>;
   const s = q.data;
   return (
     <>

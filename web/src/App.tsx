@@ -84,7 +84,7 @@ function Gate({ auth, step, onDone, onSkip, viaLink }: { auth: AuthState; step: 
           )}
           <p className="note note-info small">{WHY_TWO}</p>
           <label className="field"><span>Name this key</span><input value={label} onChange={(e) => setLabel(e.target.value)} maxLength={60} /></label>
-          {needLink && <p className="note note-info small" data-testid="setup-link-note">Open the setup link printed by the installer, or run <code>./install.sh --setup-link</code> in the agent-outbox folder.</p>}
+          {needLink && <p className="note note-info small" data-testid="setup-link-note">Open the setup link: in the Agent Outbox app press &ldquo;Set up in your browser&rdquo;, or run <code>./install.sh --setup-link</code> in the agent-outbox folder.</p>}
           <button className="btn btn-primary btn-wide" disabled={busy || needLink}
             onClick={() => run(() => (step === 1 ? (viaLink ? registerLoginViaLink(label) : registerLogin(label)) : registerApprove(label)))}>
             {busy ? "Waiting for Touch ID…" : step === 1 ? "Create sign-in key" : "Create approval key"}

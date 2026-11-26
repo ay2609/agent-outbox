@@ -89,7 +89,7 @@ struct MenuBarContent: View {
         Divider()
         Button("Open Agent Outbox") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
             .keyboardShortcut("o")
-        Button("Open in browser") { Task { await model.openBrowser() } }
+        Button("Open dashboard in browser") { Task { await model.openBrowser() } }
         Divider()
         if model.killSwitch {
             Button("Resume sending") { Task { await model.resume() } }

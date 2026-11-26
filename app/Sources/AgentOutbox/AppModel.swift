@@ -133,6 +133,7 @@ final class AppModel: ObservableObject {
     var origin: String { status.str("origin", AppEnv.origin) }
     /// Where Approve leads, in one line, when it isn't the in-app Touch ID sheet (nil when it is).
     var approvalHint: String? {
+        if killSwitch { return "Sending is stopped, so nothing can be approved. Press Resume sending first." }
         if approveInApp { return nil }
         return native.touchIDAvailable ? "Set up Touch ID in Settings to approve here. Until then Approve opens your browser."
                                        : "Touch ID isn't available in the app on this Mac, so Approve opens your browser."
@@ -155,7 +156,19 @@ final class AppModel: ObservableObject {
     func openBrowser(then hash: String? = nil) async {
         var url = origin + (hash.map { "/#" + $0 } ?? "")
         if let r = try? await post("/api/app/browser-link"), !r.str("url").isEmpty { url = r.str("url") + (hash.map { "&next=" + $0 } ?? "") }
+        else if let t = Self.firstRunSetupToken() { url = origin + "/#/setup?token=" + t }   // first run, no key yet: the page where the first passkey is made
         if let u = URL(string: url) { openExternal(u) }
+    }
+
+    /// The one-time first-run setup token the server keeps in the state folder (a private file of this user's; the installer prints the
+    /// same link). Without it a Mac with no Touch ID could never reach the first-key page from the app. Nil once setup is done.
+    nonisolated static func firstRunSetupToken(stateDir: String = AppEnv.stateDir) -> String? {
+        let path = stateDir + "/setup-token"
+        guard let a = try? FileManager.default.attributesOfItem(atPath: path), a[.type] as? FileAttributeType == .typeRegular,
+              (a[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(), ((a[.posixPermissions] as? NSNumber)?.intValue ?? 0o777) & 0o077 == 0,
+              let d = FileManager.default.contents(atPath: path), d.count <= 256 else { return nil }
+        let t = String(decoding: d, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.count == 43 && t.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") } ? t : nil
     }
 
     func showMainWindow() {

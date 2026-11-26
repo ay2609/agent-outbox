@@ -94,7 +94,7 @@ try {
   // No link: the page says how to get one and the button is disabled.
   await page.goto(`${B}/`);
   await page.getByTestId("setup-link-note").waitFor();
-  ok((await page.getByTestId("setup-link-note").innerText()).includes("Open the setup link printed by the installer, or run ./install.sh --setup-link in the agent-outbox folder."), "without a setup link the setup page shows the note");
+  ok((await page.getByTestId("setup-link-note").innerText()).includes("Open the setup link: in the Agent Outbox app press \u201CSet up in your browser\u201D, or run ./install.sh --setup-link in the agent-outbox folder."), "without a setup link the setup page shows the note");
   ok(await page.getByRole("button", { name: "Create sign-in key" }).isDisabled(), "...and the Create sign-in key button is disabled");
   await shot("setup-no-link.png");
   // A wrong token: stripped from the address bar, sent, and refused with a plain message.
