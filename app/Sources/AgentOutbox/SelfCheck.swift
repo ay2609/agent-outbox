@@ -13,7 +13,7 @@ enum SelfCheck {
 
     static func run() -> Int32 {
         print("Agent Outbox self-check")
-        parser(); preflight(); socketClient(); supervisor(); migration(); setupAndLinks(); claude()
+        parser(); preflight(); socketClient(); supervisor(); migration(); setupAndLinks(); claude(); batchGrouping()
         print("\n\(passed) passed, \(failed) failed")
         return failed == 0 ? 0 : 1
     }
@@ -215,6 +215,25 @@ enum SelfCheck {
               && HoldReason.plain("WebAuthn keys are no longer accepted")?.contains("passkey") == true
               && HoldReason.plain("credential_id is not in the pin file")?.contains("doesn't trust any approval key") == true
               && HoldReason.plain("something unrelated") == nil && HoldReason.plain("") == nil)
+    }
+
+    // MARK: batch grouping (pure)
+    static func batchGrouping() {
+        print("batch review grouping")
+        func d(_ id: String, _ pos: Int, _ handle: String, _ extra: J = [:]) -> J { ["id": id, "position": pos, "handle": handle, "recipient_name": "", "status": "review", "body": "hi"].merging(extra) { _, n in n } }
+        let g = groupDrafts([d("a", 0, "+12025550101"), d("b", 1, "+12025550101", ["recipient_name": "Ann"]), d("c", 2, "+12025550102"), d("e", 4, "+12025550101"), d("f", 3, "+12025550102")])
+        check("consecutive same-handle drafts form one group, in order", g.count == 3 && g[0].drafts.map { $0.id } == ["a", "b"] && g[1].drafts.map { $0.id } == ["c", "f"], "\(g.map { $0.drafts.map { $0.id } })")
+        check("a non-consecutive repeat of a handle starts a new group", g[2].handle == "+12025550101" && g[2].drafts.map { $0.id } == ["e"])
+        check("group takes the first non-empty recipient name", g[0].name == "Ann")
+        check("groups sort by position, not input order", groupDrafts([d("y", 5, "+1"), d("x", 1, "+1")]).first?.drafts.first?.id == "x")
+        check("people = distinct handles", peopleCount([d("a", 0, "+1"), d("b", 1, "+1"), d("c", 2, "+2")]) == 2)
+        let w1: J = ["warnings": [["code": "link_in_first_message", "message": "m1"], ["code": "new_contact", "message": "n"]]]
+        let w2: J = ["warnings": [["code": "link_in_first_message", "message": "m2"]]]
+        let mw = mergedWarnings([w1, w2])
+        check("warnings merge by code, new_contact is not a warning", mw.count == 1 && mw[0].messages == ["m1", "m2"])
+        check("held and unsendable rules", isHeldDraft(["warnings": [["code": "unresolved_var", "message": ""]]]) && !isHeldDraft(w1)
+              && isUnsendableDraft(["warnings": [["code": "empty_body", "message": ""]]]) && wantsApproval(d("a", 0, "+1")) && !wantsApproval(d("a", 0, "+1", ["status": "skipped"])))
+        check("pretty handle", prettyHandle("+12025550101") == "+1 (202) 555-0101" && prettyHandle("a@b.c") == "a@b.c")
     }
 
     static func claude() {

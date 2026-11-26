@@ -133,37 +133,38 @@ struct SetRow: View {
     }
 }
 
-// MARK: - Batch review
 
-/// Warnings that hold a message back until "include anyway" (mirrors HELD_WARNINGS / UNSENDABLE_WARNINGS in src/owner-api/approval.ts).
-private let heldCodes: Set<String> = ["unresolved_var", "duplicate_recipient"]
-private let unsendableCodes: Set<String> = ["empty_body", "invalid_handle"]
+// MARK: - Batch review
 
 struct BatchView: View {
     @EnvironmentObject var model: AppModel
     let id: String
     @StateObject private var loader = Loader()
     @StateObject private var action = Action()
-    @State private var selected: Set<String> = []
-    @State private var seeded = false
     @State private var anyway = false
+    @State private var filter: BatchFilter = .all
     @State private var confirmCancel = false
-
-    private func codes(_ d: J) -> Set<String> { Set(d.arr("warnings").map { $0.str("code") }) }
-    private func isHeld(_ d: J) -> Bool { !codes(d).isDisjoint(with: heldCodes) }
-    private func isUnsendable(_ d: J) -> Bool { !codes(d).isDisjoint(with: unsendableCodes) }
-    /// Waiting for approval and not inside a live approval.
-    private func wantsApproval(_ d: J) -> Bool {
-        (d["covered_by"] == nil || d["covered_by"] is NSNull) && ["review", "failed", "approved"].contains(d.str("status"))
-    }
 
     var body: some View {
         let batch = loader.data?.obj("batch") ?? [:]
         let drafts = loader.data?.arr("drafts") ?? []
-        let held = drafts.filter { wantsApproval($0) && isHeld($0) && !isUnsendable($0) }
-        let ids = drafts.filter { selected.contains($0.id) && !isUnsendable($0) && (!isHeld($0) || anyway) }.map { $0.id }
-        let heldIds = anyway ? held.filter { selected.contains($0.id) }.map { $0.id } : []
+        let approvals = loader.data?.arr("approvals") ?? []
+        let groups = groupDrafts(drafts)
+        // Same rules as the old browser page: everything driven by the drafts, not by batch.status.
+        let approvable = drafts.filter(isApprovable)
+        let noText = drafts.filter { wantsApproval($0) && !isApprovable($0) }.count   // empty or invalid number: can't be sent
+        let held = approvable.filter(isHeldDraft)
+        // Held messages are OUT unless the one "include anyway" switch is on; includeAnyway lists exactly those.
+        let chosen = approvable.filter { !isHeldDraft($0) || anyway }
+        let ids = chosen.map { $0.id }
+        let heldIds = anyway ? held.map { $0.id } : []
+        // Leaving out one message of a chain would send half of it, so a group with any warned message goes out whole.
+        let warnedIds = groups.filter { g in g.drafts.contains { d in approvable.contains { $0.id == d.id } && !shownWarnings(d).isEmpty } }
+            .flatMap { $0.drafts.filter { isTogglable($0) && $0.str("status") != "skipped" }.map { $0.id } }
         let closed = ["cancelled", "done"].contains(batch.str("status"))
+        let cancelled = batch.str("status") == "cancelled"
+        let shown = groups.filter { g in g.drafts.contains { filter.matches($0) } }
+        let counts = Dictionary(grouping: drafts, by: { $0.str("status") }).mapValues { $0.count }
 
         VStack(spacing: 0) {
             List {
@@ -171,7 +172,10 @@ struct BatchView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 6) {
                             Chip(model.isLive ? "Live: approved messages are really sent" : "Dry run: nothing is sent", model.isLive ? .warn : .neutral)
-                            if !batch.isEmpty { Chip(statusLabel(batch.str("status"))) }
+                            if !batch.isEmpty { Chip(statusLabel(cancelled ? "cancelled" : approvable.isEmpty ? batch.str("status") : "review")) }
+                            ForEach(counts.keys.sorted(), id: \.self) { k in
+                                Chip("\(counts[k] ?? 0) \(k)", k == "failed" ? .bad : (k == "sent" ? .good : .neutral))
+                            }
                         }
                         Text("Drafted by \(batch.str("created_by").replacingOccurrences(of: "agent:", with: "")), \(timeAgo(batch.str("created_at")))")
                             .font(.caption).foregroundStyle(.secondary)
@@ -188,13 +192,37 @@ struct BatchView: View {
                         }
                     }
                 }
-                Section("\(plural(drafts.count, "message"))") {
-                    ForEach(rows(drafts)) { r in
-                        DraftRow(d: r.j, wants: wantsApproval(r.j), unsendable: isUnsendable(r.j), held: isHeld(r.j),
-                                 heldOut: isHeld(r.j) && !anyway,
-                                 selected: Binding(get: { selected.contains(r.id) && !(isHeld(r.j) && !anyway) }, set: { on in if on { selected.insert(r.id) } else { selected.remove(r.id) } }),
-                                 onSkip: { toggleSkip(r.j) }, onChanged: { Task { await reload(); await model.refresh() } })
+                Section {
+                    if drafts.count > 1 {
+                        Picker("Filter", selection: $filter) {
+                            ForEach(BatchFilter.allCases) { f in
+                                Text("\(f.title) \(groups.filter { g in g.drafts.contains { f.matches($0) } }.count)").tag(f)
+                            }
+                        }
+                        .pickerStyle(.segmented).labelsHidden()
+                        .listRowSeparator(.hidden)
                     }
+                    if !warnedIds.isEmpty && !cancelled {
+                        Button { excludeWarned(warnedIds) } label: { Label("Exclude all with warnings (\(warnedIds.count))", systemImage: "exclamationmark.triangle") }
+                            .controlSize(.small).disabled(action.busy)
+                            .help("Leaves out every message in a group that has a warning, whole groups at a time.")
+                    }
+                    if !drafts.isEmpty && shown.isEmpty {
+                        Text("Nothing in this filter.").foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical, 16)
+                    }
+                    ForEach(shown) { g in
+                        if g.drafts.count == 1 {
+                            DraftRow(d: g.drafts[0], held: isHeldDraft(g.drafts[0]), heldOut: isHeldDraft(g.drafts[0]) && !anyway,
+                                     onToggle: { on in toggleGroup(g, on) }, onChanged: changed)
+                                .padding(10).background(cardShape)
+                        } else {
+                            GroupCard(g: g, anyway: anyway, onToggle: { on in toggleGroup(g, on) }, onChanged: changed)
+                        }
+                    }
+                    .listRowSeparator(.hidden)
+                } header: { Text(plural(drafts.count, "message")) }
+                if !approvals.isEmpty {
+                    Section("Approvals") { ForEach(rows(approvals)) { a in ApprovalRow(a: a.j) } }
                 }
             }
             Divider()
@@ -202,16 +230,27 @@ struct BatchView: View {
                 if action.note == nil, action.error == nil, !closed, let h = model.approvalHint {
                     Label(h, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
+                if !closed && !held.isEmpty && !anyway {
+                    Text("\(plural(held.count, "message")) with unfilled fields or exact duplicates will be held back unless you include \(held.count == 1 ? "it" : "them").")
+                        .font(.caption).foregroundStyle(.red)
+                }
+                if !closed && noText > 0 {
+                    Text("\(plural(noText, "message")) can't be sent (empty or invalid number).").font(.caption).foregroundStyle(.red)
+                }
                 HStack {
-                ErrorLine(text: action.error)
-                if let n = action.note { Text(n).font(.callout).foregroundStyle(.secondary) }
-                Spacer()
-                if !closed {
-                    Button("Cancel batch", role: .destructive) { confirmCancel = true }.disabled(action.busy)
-                    Button("Approve \(ids.count) with Touch ID…") { approve(ids, heldIds) }
+                    ErrorLine(text: action.error)
+                    if let n = action.note { Text(n).font(.callout).foregroundStyle(.secondary) }
+                    Spacer()
+                    if !closed {
+                        Button("Cancel batch", role: .destructive) { confirmCancel = true }.disabled(action.busy)
+                        Button { approve(ids, heldIds) } label: {
+                            Label(ids.isEmpty ? "Nothing to approve" : "Approve \(plural(ids.count, "message")) to \(plural(peopleCount(chosen), "person", "people"))",
+                                  systemImage: "touchid")
+                        }
                         .keyboardShortcut(.defaultAction)
                         .disabled(ids.isEmpty || action.busy || model.killSwitch || !model.approveInApp)
-                }
+                        .help("Asks for Touch ID. You are signing exactly this list.")
+                    }
                 }
             }.padding(12)
         }
@@ -223,23 +262,27 @@ struct BatchView: View {
         } message: { Text("Its messages are rejected and any approval is revoked.") }
     }
 
-    private func reload() async {
-        await loader.load(model, "/api/batches/\(id)")
-        guard let d = loader.data else { return }
-        let drafts = d.arr("drafts")
-        if !seeded {
-            seeded = true
-            selected = Set(drafts.filter { wantsApproval($0) }.map { $0.id })
-        } else {
-            // Keep the owner's choices; drop ids that are no longer approvable.
-            selected = selected.filter { id in drafts.contains { $0.id == id && wantsApproval($0) } }
+    private var cardShape: some View {
+        RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.3)))
+    }
+    private func changed() { Task { await reload(); await model.refresh() } }
+    private func reload() async { await loader.load(model, "/api/batches/\(id)") }
+
+    /// One action for a whole group (or one message): on = include every skipped message, off = skip every included one.
+    /// Same per-message routes as before (/api/drafts/:id/include and /skip).
+    private func toggleGroup(_ g: DraftGroup, _ on: Bool) {
+        let targets = g.drafts.filter { isTogglable($0) && (on ? $0.str("status") == "skipped" : $0.str("status") != "skipped") }
+        guard !targets.isEmpty else { return }
+        action.run {
+            for d in targets { _ = try await model.post("/api/drafts/\(d.id)/\(on ? "include" : "skip")") }
+            await reload()
         }
     }
-
-    private func toggleSkip(_ d: J) {
+    private func excludeWarned(_ ids: [String]) {
         action.run {
-            if d.str("status") == "skipped" { _ = try await model.post("/api/drafts/\(d.id)/include"); selected.insert(d.id) }
-            else { _ = try await model.post("/api/drafts/\(d.id)/skip"); selected.remove(d.id) }
+            for did in ids { _ = try await model.post("/api/drafts/\(did)/skip") }
+            action.note = "\(plural(ids.count, "message")) with warnings left out."
             await reload()
         }
     }
@@ -256,15 +299,114 @@ struct BatchView: View {
     }
 }
 
+/// One existing approval of the batch: how many messages, when signed, live or dry, still valid.
+struct ApprovalRow: View {
+    let a: J
+    var body: some View {
+        let n = a.int("items")
+        let until = parseISO(a.str("not_after"))
+        HStack(spacing: 6) {
+            Text("\(plural(n, "message")), signed \(timeAgo(a.str("created_at")))").font(.callout)
+            Chip(a.str("transport") == "live" ? "live" : "dry run", a.str("transport") == "live" ? .warn : .neutral)
+            if !a.str("revoked_at").isEmpty { Chip("revoked") }
+            else if let u = until, u < Date() { Chip("expired") }
+            else if let u = until { Chip("valid until \(u.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute()))", .good) }
+            Spacer()
+        }
+    }
+}
+
+/// Chips for a set of drafts' warnings plus the contact facts, shared by the group header and a single row.
+struct WarningChips: View {
+    let drafts: [J]
+    var body: some View {
+        let first = drafts.first { $0["contact"] is J } ?? drafts[0]
+        let contact = first.obj("contact")
+        let hasNew = drafts.contains { $0["proposed_contact"] is J }
+        HStack(spacing: 5) {
+            if !contact.isEmpty { Chip("Contact: \(contact.str("display_name", "(no name)"))", .info) }
+            if !contact.isEmpty && first["number_in_contact"] as? Bool == false {
+                Chip("Number not in contact", .bad).help("This contact's numbers: \(contact.strs("handles").map(prettyHandle).joined(separator: ", "))")
+            }
+            if hasNew { Chip("New contact", .info) }
+            ForEach(mergedWarnings(drafts), id: \.code) { w in
+                Chip(labelFor(warning: w.code), heldCodes.contains(w.code) || unsendableCodes.contains(w.code) ? .bad : .warn).help(w.messages.joined(separator: "\n"))
+            }
+        }
+    }
+}
+
+struct IncludeSwitch: View {
+    @Binding var isOn: Bool
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("Include").font(.caption).foregroundStyle(.secondary)
+            Toggle("Include", isOn: $isOn).labelsHidden().toggleStyle(.switch).controlSize(.small)
+        }
+    }
+}
+
+/// One recipient with several messages: one bordered box, one Include switch, merged warnings, then the messages in order.
+struct GroupCard: View {
+    let g: DraftGroup
+    let anyway: Bool
+    let onToggle: (Bool) -> Void
+    var onChanged: () -> Void = {}
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        let togglable = g.drafts.filter(isTogglable)
+        let left = togglable.filter { $0.str("status") == "skipped" }.count
+        let checked = !togglable.isEmpty && left == 0
+        let mixed = left > 0 && left < togglable.count
+        let warnings = mergedWarnings(g.drafts)
+        let contactId = g.drafts.map { $0.str("contact_id") }.first { !$0.isEmpty } ?? ""
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 1) {
+                    if !g.name.isEmpty { Text(g.name).font(.headline) }
+                    Text(prettyHandle(g.handle)).font(g.name.isEmpty ? .headline : .subheadline).foregroundStyle(g.name.isEmpty ? .primary : .secondary)
+                    Text(plural(g.drafts.count, "message")).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if !contactId.isEmpty { NavigationLink(value: ContactRef(id: contactId)) { Text("Contact") }.buttonStyle(.link).font(.caption) }
+                if !togglable.isEmpty {
+                    IncludeSwitch(isOn: Binding(get: { checked }, set: { onToggle($0) }))
+                        .help("Include all \(g.drafts.count) messages to \(g.name.isEmpty ? prettyHandle(g.handle) : g.name), or leave them all out.")
+                }
+            }
+            if mixed { Text("Some messages are left out.").font(.caption).foregroundStyle(.secondary) }
+            WarningChips(drafts: g.drafts)
+            ForEach(warnings, id: \.code) { w in
+                ForEach(w.messages, id: \.self) { m in Label(m, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange) }
+            }
+            VStack(spacing: 0) {
+                ForEach(Array(g.drafts.enumerated()), id: \.element.id) { i, d in
+                    if i > 0 { Divider().padding(.vertical, 8) }
+                    DraftRow(d: d, held: isHeldDraft(d), heldOut: isHeldDraft(d) && !anyway, grouped: true, index: i + 1, total: g.drafts.count,
+                             onToggle: { _ in }, onChanged: onChanged)
+                }
+            }
+            .padding(.leading, 10)
+            .overlay(alignment: .leading) { Rectangle().fill(Color.secondary.opacity(0.3)).frame(width: 2) }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.3))))
+        .opacity(!togglable.isEmpty && left == togglable.count ? 0.6 : 1)
+    }
+}
+
 struct DraftRow: View {
     let d: J
-    let wants: Bool
-    let unsendable: Bool
     let held: Bool
-    /// Held back and not included: its box is empty and can't be ticked until "include anyway" is on.
+    /// Held back and not included: left out of the approval until "include anyway" is on.
     var heldOut = false
-    @Binding var selected: Bool
-    let onSkip: () -> Void
+    /// Inside a recipient group: no recipient line, no warnings (they are in the group header), numbered "1 of 2".
+    var grouped = false
+    var index = 1
+    var total = 1
+    let onToggle: (Bool) -> Void
     var onChanged: () -> Void = {}
     @EnvironmentObject var model: AppModel
     @StateObject private var action = Action()
@@ -286,66 +428,74 @@ struct DraftRow: View {
 
     var body: some View {
         let status = d.str("status")
-        let covered = !(d["covered_by"] == nil || d["covered_by"] is NSNull)
         let skipped = status == "skipped"
-        HStack(alignment: .top, spacing: 10) {
-            if wants && !unsendable { Toggle("", isOn: $selected).labelsHidden().toggleStyle(.checkbox).disabled(heldOut) }
-            else { Color.clear.frame(width: 16) }
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 6) {
-                    Text(d.str("recipient_name", d.str("handle"))).font(.headline)
-                    Text(d.str("handle")).font(.caption).foregroundStyle(.secondary)
-                    if d.str("service", "auto") != "auto" { Chip(d.str("service")) }
-                    if covered { Chip("Approved", .good) } else if status != "review" && status != "draft" { Chip(statusLabel(status), status == "failed" ? .bad : (status == "sent" ? .good : .neutral)) }
-                    if d.bool("create_contact") { Chip("New contact", .info) }
-                }
-                if editing {
-                    TextEditor(text: $text).font(.body).frame(minHeight: 90).padding(4)
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.4)))
-                    HStack {
-                        Picker("Send as", selection: $service) { Text("Automatic").tag("auto"); Text("iMessage").tag("iMessage"); Text("SMS").tag("SMS") }
-                            .pickerStyle(.menu).fixedSize()
-                        if d["proposed_contact"] is J { Toggle("Offer to add as a contact", isOn: $createContact).toggleStyle(.checkbox) }
-                        Spacer()
-                        Button("Cancel") { editing = false; action.error = nil }
-                        Button("Save") { save() }.keyboardShortcut(.defaultAction).disabled(action.busy || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                    if status == "approved" { Text("Saving changes drops this message back to review: its approval no longer matches.").font(.caption).foregroundStyle(.secondary) }
-                    ErrorLine(text: action.error)
+        let unsendable = isUnsendableDraft(d)
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if grouped {
+                    Text("\(index) of \(total)").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 } else {
-                    Text(d.str("body")).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                }
-                ForEach(Array(d.arr("warnings").enumerated()), id: \.offset) { _, w in
-                    Label(w.str("message"), systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
-                }
-                let cands = d.arr("candidates")
-                if !cands.isEmpty && editable && !editing {
-                    Text("This could be one of your contacts:").font(.caption).foregroundStyle(.secondary)
-                    ForEach(rows(cands, idKey: "contact_id")) { c in
-                        Button("Use \(c.j.str("display_name"))\(c.j.str("org").isEmpty ? "" : " (\(c.j.str("org")))")") {
-                            action.run { _ = try await model.call("PATCH", "/api/drafts/\(d.id)", ["contact_id": c.id]); onChanged() }
-                        }.buttonStyle(.link).font(.caption).disabled(action.busy)
+                    VStack(alignment: .leading, spacing: 1) {
+                        if !d.str("recipient_name").isEmpty { Text(d.str("recipient_name")).font(.headline) }
+                        Text(prettyHandle(d.str("handle"))).font(d.str("recipient_name").isEmpty ? .headline : .subheadline)
+                            .foregroundStyle(d.str("recipient_name").isEmpty ? .primary : .secondary)
                     }
-                    ErrorLine(text: action.error)
                 }
-                if unsendable { Text("Can't be sent as it is.").font(.caption).foregroundStyle(.red) }
-                else if held { Text("Left out of this approval until you include it anyway.").font(.caption).foregroundStyle(.secondary) }
+                if d.str("service", "auto") != "auto" { Chip(d.str("service")) }
+                if isCovered(d) { Chip("Approved", .good) }
+                else if status == "approved" { Chip("Approval ended", .warn).help("Its approval ran out or was cancelled. Approve it again.") }
+                else if status != "review" && status != "draft" { Chip(statusLabel(status), status == "failed" ? .bad : (status == "sent" ? .good : .neutral)) }
+                if d.bool("create_contact") { Chip("New contact", .info) }
+                Spacer(minLength: 0)
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    if editable && !editing {
+                        Button("Edit") { text = d.str("body"); service = d.str("service", "auto"); createContact = d.bool("create_contact"); editing = true }
+                            .buttonStyle(.link).font(.caption)
+                    }
+                    if !grouped, !d.str("contact_id").isEmpty {
+                        NavigationLink(value: ContactRef(id: d.str("contact_id"))) { Text("Contact") }.buttonStyle(.link).font(.caption)
+                    }
+                    if !grouped && isTogglable(d) {
+                        IncludeSwitch(isOn: Binding(get: { !skipped }, set: { onToggle($0) }))
+                            .help("Include this message in the approval, or leave it out.")
+                    }
+                }
             }
-            Spacer(minLength: 0)
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                if editable && !editing {
-                    Button("Edit") { text = d.str("body"); service = d.str("service", "auto"); createContact = d.bool("create_contact"); editing = true }
-                        .buttonStyle(.link).font(.caption)
+            if !grouped { WarningChips(drafts: [d]) }
+            if editing {
+                TextEditor(text: $text).font(.body).frame(minHeight: 90).padding(4)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.4)))
+                HStack {
+                    Picker("Send as", selection: $service) { Text("Automatic").tag("auto"); Text("iMessage").tag("iMessage"); Text("SMS").tag("SMS") }
+                        .pickerStyle(.menu).fixedSize()
+                    if d["proposed_contact"] is J { Toggle("Offer to add as a contact", isOn: $createContact).toggleStyle(.checkbox) }
+                    Spacer()
+                    Button("Cancel") { editing = false; action.error = nil }
+                    Button("Save") { save() }.keyboardShortcut(.defaultAction).disabled(action.busy || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                if ["draft", "review", "failed", "skipped"].contains(status) {
-                    Button(skipped ? "Include" : "Skip", action: onSkip).buttonStyle(.link).font(.caption)
-                }
-                if !d.str("contact_id").isEmpty {
-                    NavigationLink(value: ContactRef(id: d.str("contact_id"))) { Text("Contact") }.buttonStyle(.link).font(.caption)
+                if status == "approved" { Text("Saving changes drops this message back to review: its approval no longer matches.").font(.caption).foregroundStyle(.secondary) }
+                ErrorLine(text: action.error)
+            } else {
+                Text(d.str("body")).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if !grouped {
+                ForEach(Array(shownWarnings(d).enumerated()), id: \.offset) { _, w in
+                    Label(w.message, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
                 }
             }
+            let cands = d.arr("candidates")
+            if !cands.isEmpty && editable && !editing {
+                Text("This could be one of your contacts:").font(.caption).foregroundStyle(.secondary)
+                ForEach(rows(cands, idKey: "contact_id")) { c in
+                    Button("Use \(c.j.str("display_name"))\(c.j.str("org").isEmpty ? "" : " (\(c.j.str("org")))")") {
+                        action.run { _ = try await model.call("PATCH", "/api/drafts/\(d.id)", ["contact_id": c.id]); onChanged() }
+                    }.buttonStyle(.link).font(.caption).disabled(action.busy)
+                }
+                ErrorLine(text: action.error)
+            }
+            if unsendable { Text("Can't be sent as it is.").font(.caption).foregroundStyle(.red) }
+            else if held && heldOut && wantsApproval(d) { Text("Left out of this approval until you include it anyway.").font(.caption).foregroundStyle(.secondary) }
         }
-        .padding(.vertical, 4)
         .opacity(skipped ? 0.55 : 1)
         .onAppear {   // dev only (screenshots): AGENT_OUTBOX_DEV_EDIT=<phone> opens that message's editor
             if AppEnv.isDev, AppEnv.env["AGENT_OUTBOX_DEV_EDIT"] == d.str("handle"), editable, !editing {
