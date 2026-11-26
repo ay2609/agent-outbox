@@ -52,7 +52,7 @@ export function resolveConfig(over: Partial<OwnerConfig> = {}): OwnerConfig {
     stateDir: paths.state,
     userPinFile: paths.userPinFile,
     rootPinFile: paths.rootPinFile,
-    webDist: join(here, "..", "..", "web", "dist"),
+    webDist: process.env.OUTBOX_WEB_DIST ?? join(here, "..", "..", "web", "dist"), // OUTBOX_WEB_DIST: set by bin.ts inside the app bundle
     setupToken: defaultSetupToken,
     loginMaxFailures: 8,
     loginWindowMs: 10 * 60_000,

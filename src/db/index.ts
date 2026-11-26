@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { paths, ensureStateDirs } from "../core/paths";
+// Embedded at build time so the compiled binary has no loose files (`bun build --compile` inlines text imports).
+import schemaSql from "./schema.sql" with { type: "text" };
 
 export const SCHEMA_VERSION = 1;
 let db: Database | null = null;
@@ -21,7 +21,7 @@ export function openDb(path: string = paths.db, opts: OpenOptions = {}): Databas
   d.exec("PRAGMA busy_timeout = 5000;");
   // "Fresh" = the schema has never run here. Decided before schema.sql creates schema_version.
   const fresh = !d.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'").get();
-  d.exec(readFileSync(join(import.meta.dir, "schema.sql"), "utf8"));
+  d.exec(schemaSql);
   const v = d.query<{ version: number }, []>("SELECT version FROM schema_version").get();
   if (!v) d.query("INSERT INTO schema_version(version) VALUES (?)").run(SCHEMA_VERSION);
   if (fresh && opts.liveDefaults) seedLiveDefaults(d);
