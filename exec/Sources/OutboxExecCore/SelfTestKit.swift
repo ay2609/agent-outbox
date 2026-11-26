@@ -105,24 +105,48 @@ struct ApprovalOpts {
     var manifestRpId: String?
     var rawManifest: String?
     var manifestShaColumn: String?
-    var rpIdForAuth: String?
-    var origin: String?
-    var crossOrigin = false
-    var flags: UInt8 = 0x05
-    var type = "webauthn.get"
-    var signer: P256.Signing.PrivateKey?
-    var credentialId: Data?
-    var signOver: Data?
+    var manifestOrigin: String?
+    var omitOrigin = false
+    var signer: P256.Signing.PrivateKey?         // nil: the harness key
+    var credentialId: Data?                      // nil: sha256(x963) of the signer
+    var signOver: Data?                          // sign these bytes instead of M(tag, sha256(manifest))
     var corruptSignature = false
-    var challenge: Data?
     var notAfter: Date?
     var revoked = false
     var pad = false
     var transport = "dry"          // signed into the manifest
     var manifestV = 2
     var omitTransport = false
-    /// Sign like the Secure Enclave app instead of a WebAuthn authenticator (SelfTestNative.swift).
-    var se: SEOpts?
+    var tag: String?                             // nil: the tag the approval kind calls for
+    var message = SigMessage.proper
+    var authB64 = ""                             // WebAuthn fields: must stay empty
+    var cdjB64 = ""
+}
+
+/// What a test signs. `.proper` is the app's M(tag, sha256(manifest)); the others are wrong on purpose.
+enum SigMessage { case proper, rawManifest, digestOnly }
+
+extension ApprovalOpts {
+    /// The signature bytes for `manifest`, plus the credential id the row carries.
+    func sign(manifest: String, defaultTag: String, harnessKey: P256.Signing.PrivateKey) throws -> (cred: Data, sig: Data) {
+        let k = signer ?? harnessKey
+        let bytes = Data(manifest.utf8)
+        let digest = Hex.sha256(bytes)
+        let signed: Data
+        switch message {
+        case .proper: signed = SESig.message(tag: tag ?? defaultTag, digest: digest)
+        case .rawManifest: signed = bytes
+        case .digestOnly: signed = digest
+        }
+        var sig = try k.signature(for: signOver ?? signed).derRepresentation
+        if corruptSignature { sig = Data((0..<70).map { _ in UInt8.random(in: 0...255) }) }
+        return (credentialId ?? Data(SHA256.hash(data: k.publicKey.x963Representation)), sig)
+    }
+
+    func enc(_ d: Data) -> String {
+        let u = B64.encodeURL(d)
+        return pad ? u + String(repeating: "=", count: (4 - u.count % 4) % 4) : u
+    }
 }
 
 /// One isolated universe: a temp OUTBOX_HOME with its own DB, key, pin file and fake clock.
@@ -131,9 +155,10 @@ final class Harness {
     let schema: String
     let db: Database
     let key = P256.Signing.PrivateKey()
-    let credId = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
-    let rpId = "outbox.selftest.example"
-    var origin: String { "https://" + rpId }
+    /// The pinned id of `key`: sha256(x963), exactly what the app's Secure Enclave key ids are.
+    var credId: Data { Data(SHA256.hash(data: key.publicKey.x963Representation)) }
+    let rpId = PinFileLoader.v4RpId
+    var origin: String { PinFileLoader.v4Origin }
     let clock: TestClock
     let contacts = FakeContacts()
     var scriptedDry: ScriptedTransport?
@@ -172,22 +197,25 @@ final class Harness {
         try exec.prepare()
     }
 
-    /// Writes a pin file. Default: v2 with the default policy (live_allowed false). `policy` overrides fields; `rawPolicy` replaces
-    /// the policy object outright (to build invalid ones); `version` 1 writes a legacy file without a policy.
-    func writePin(to path: String, mode: mode_t, rp: String? = nil, key k: P256.Signing.PrivateKey? = nil,
-                  version: Int = 2, policy: [String: Any] = [:], rawPolicy: Any? = nil, omitPolicy: Bool = false) throws {
-        let pk = (k ?? key).publicKey.x963Representation
-        var obj: [String: Any] = ["v": version, "rp_id": rp ?? rpId, "origin": "https://" + (rp ?? rpId),
-                                  "keys": [["credential_id": B64.encodeURL(credId), "x963": B64.encodeURL(pk), "label": "selftest key"]]]
-        if version >= 2 && !omitPolicy {
-            // the default pin still carries the old v2 pacing fields, like the installed root pin: they must be ignored
-            var pol: [String: Any] = ["live_allowed": false, "min_pace_s": 20, "min_burst_pause_s": 120, "max_burst_size": 10, "max_daily_cap": 100, "require_quiet_hours": true]
+    /// Writes a v4 pin file holding `key` (default: the harness key) with the default policy (both booleans false). `policy` overrides
+    /// fields; `rawPolicy` replaces the policy object outright (to build invalid ones); `omitPolicy` drops it.
+    func writePin(to path: String, mode: mode_t, key k: P256.Signing.PrivateKey? = nil, noKeys: Bool = false,
+                  policy: [String: Any] = [:], rawPolicy: Any? = nil, omitPolicy: Bool = false) throws {
+        var obj: [String: Any] = ["v": 4, "keys": noKeys ? [] : [Self.pinKey(k ?? key)]]
+        if !omitPolicy {
+            var pol: [String: Any] = ["live_allowed": false, "contacts_live_allowed": false]
             for (k, v) in policy { pol[k] = v }
             obj["policy"] = rawPolicy ?? pol
         }
         try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
         try JSON.data(obj)!.write(to: URL(fileURLWithPath: path))
         chmod(path, mode)
+    }
+
+    /// A v4 pin key entry for `k`, exactly as the TS writer emits it.
+    static func pinKey(_ k: P256.Signing.PrivateKey, label: String = "selftest key") -> [String: Any] {
+        let x = k.publicKey.x963Representation
+        return ["kind": "secure-enclave", "credential_id": B64.encodeURL(Data(SHA256.hash(data: x))), "x963": B64.encodeURL(x), "label": label]
     }
 
     /// Simple mode: rewrites the user pin (our uid, 0600, no root pin anywhere) with a live policy, for the tripwire transport.
@@ -229,7 +257,7 @@ final class Harness {
         return ItemSpec(draftId: id, to: handle, service: service, body: body)
     }
 
-    /// Fabricates a WebAuthn assertion over the manifest, exactly as an authenticator would, and stores the approval.
+    /// Fabricates a Secure Enclave signature over the manifest, exactly as the app does (software P-256 key), and stores the approval.
     @discardableResult
     func approve(batch: String, items: [ItemSpec], _ o: ApprovalOpts = ApprovalOpts()) throws -> String {
         let notAfter = o.notAfter ?? clock.now.addingTimeInterval(86_400)
@@ -238,26 +266,13 @@ final class Harness {
              "create_contact": i.createContact.map { $0 as Any } ?? NSNull()]
         }
         var m: [String: Any] = ["v": o.manifestV, "transport": o.transport, "approval_id": o.approvalId, "batch_id": o.manifestBatchId ?? batch,
-                                "created_at": Time.iso(clock.now), "not_after": Time.iso(notAfter), "rp_id": o.manifestRpId ?? rpId, "items": itemObjs]
+                                "created_at": Time.iso(clock.now), "not_after": Time.iso(notAfter), "rp_id": o.manifestRpId ?? rpId, "origin": o.manifestOrigin ?? origin, "items": itemObjs]
+        if o.omitOrigin { m.removeValue(forKey: "origin") }
         if o.omitTransport { m.removeValue(forKey: "transport") }
         let manifest = o.rawManifest ?? JSON.string(m)
         let digest = Hex.sha256(Data(manifest.utf8))
-        let cd: [String: Any] = ["type": o.type, "challenge": B64.encodeURL(o.challenge ?? digest), "origin": o.origin ?? origin, "crossOrigin": o.crossOrigin]
-        let cdj = JSON.data(cd)!
-        var auth = Hex.sha256(Data((o.rpIdForAuth ?? rpId).utf8))
-        auth.append(o.flags)
-        auth.append(contentsOf: [0, 0, 0, 0])                       // counter 0, like iCloud passkeys
-        var signed = auth
-        signed.append(Hex.sha256(cdj))
-        var sig = try (o.signer ?? key).signature(for: o.signOver ?? signed).derRepresentation
-        if o.corruptSignature { sig = Data((0..<70).map { _ in UInt8.random(in: 0...255) }) }
-        func enc(_ d: Data) -> String {
-            let u = B64.encodeURL(d)
-            if !o.pad { return u }
-            return u + String(repeating: "=", count: (4 - u.count % 4) % 4)
-        }
-        var fields = (cred: B64.encodeURL(o.credentialId ?? credId), auth: enc(auth), cdj: enc(cdj), sig: enc(sig))
-        if let se = o.se { fields = se.fields(manifest: manifest, defaultTag: "send") }
+        let (cred, sigD) = try o.sign(manifest: manifest, defaultTag: "send", harnessKey: key)
+        let fields = (cred: B64.encodeURL(cred), auth: o.authB64, cdj: o.cdjB64, sig: o.enc(sigD))
         try db.exec("""
             INSERT INTO approvals(id, batch_id, manifest, manifest_sha256, credential_id, authenticator_data_b64, client_data_json_b64, signature_b64, not_after, created_at, revoked_at)
             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

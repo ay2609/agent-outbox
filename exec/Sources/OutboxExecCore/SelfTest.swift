@@ -133,15 +133,15 @@ public enum SelfTest {
             try h.db.exec("UPDATE drafts SET service = 'SMS' WHERE id = ?", [.text(d.draftId)])
             try expectRefused(h, draft: d, reason: "service changed")
         }
-        test("wrong origin is refused") { h in
-            var o = ApprovalOpts(); o.origin = "https://evil.example"
+        test("manifest origin differing from the v4 constant is refused") { h in
+            var o = ApprovalOpts(); o.manifestOrigin = "https://evil.example"
             let (_, d, _) = try single(h, o)
-            try expectRefused(h, draft: d, reason: "origin")
+            try expectRefused(h, draft: d, reason: "manifest.origin")
         }
-        test("wrong rp_id is refused") { h in
-            var o = ApprovalOpts(); o.rpIdForAuth = "evil.example"
+        test("manifest without an origin is refused") { h in
+            var o = ApprovalOpts(); o.omitOrigin = true
             let (_, d, _) = try single(h, o)
-            try expectRefused(h, draft: d, reason: "rpIdHash")
+            try expectRefused(h, draft: d, reason: "manifest.origin")
         }
         test("manifest rp_id differing from the pin is refused") { h in
             var o = ApprovalOpts(); o.manifestRpId = "evil.example"
@@ -154,7 +154,7 @@ public enum SelfTest {
             try expectRefused(h, draft: d, reason: "not in the pin file")
         }
         test("pinned credential id but another key's signature is refused") { h in
-            var o = ApprovalOpts(); o.signer = P256.Signing.PrivateKey()   // credentialId stays the pinned one
+            var o = ApprovalOpts(); o.signer = P256.Signing.PrivateKey(); o.credentialId = h.credId   // the pinned id, another key's signature
             let (_, d, _) = try single(h, o)
             try expectRefused(h, draft: d, reason: "does not verify")
         }
@@ -246,36 +246,11 @@ public enum SelfTest {
             let (_, d, _) = try single(h, o)
             try expectRefused(h, draft: d, reason: "signature")
         }
-        test("UV flag missing is refused") { h in
-            var o = ApprovalOpts(); o.flags = 0x01
-            let (_, d, _) = try single(h, o)
-            try expectRefused(h, draft: d, reason: "UV")
-        }
-        test("UP flag missing is refused") { h in
-            var o = ApprovalOpts(); o.flags = 0x04
-            let (_, d, _) = try single(h, o)
-            try expectRefused(h, draft: d, reason: "UP")
-        }
     }
 
     // MARK: more verifier cases
 
     static func registerPolicyCases(_ test: Reg) {
-        test("clientData type webauthn.create is refused") { h in
-            var o = ApprovalOpts(); o.type = "webauthn.create"
-            let (_, d, _) = try single(h, o)
-            try expectRefused(h, draft: d, reason: "webauthn.get")
-        }
-        test("challenge that is not sha256(manifest) is refused") { h in
-            var o = ApprovalOpts(); o.challenge = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
-            let (_, d, _) = try single(h, o)
-            try expectRefused(h, draft: d, reason: "challenge")
-        }
-        test("crossOrigin=true is refused") { h in
-            var o = ApprovalOpts(); o.crossOrigin = true
-            let (_, d, _) = try single(h, o)
-            try expectRefused(h, draft: d, reason: "crossOrigin")
-        }
         test("padded base64url fields are accepted") { h in
             var o = ApprovalOpts(); o.pad = true
             let (_, d, _) = try single(h, o)
@@ -291,7 +266,7 @@ public enum SelfTest {
             let (_, d, a) = try single(h)
             let m = try h.db.one("SELECT manifest FROM approvals WHERE id = ?", [.text(a)])!.str("manifest") + " "
             try h.db.exec("UPDATE approvals SET manifest = ?, manifest_sha256 = ? WHERE id = ?", [.text(m), .text(Hex.sha256Hex(m)), .text(a)])
-            try expectRefused(h, draft: d, reason: "challenge")
+            try expectRefused(h, draft: d, reason: "does not verify")
         }
         test("manifest that is not JSON (but correctly signed) is refused") { h in
             var o = ApprovalOpts(); o.rawManifest = "this is not json"
@@ -732,7 +707,7 @@ public enum SelfTest {
         }
 
         // 2. pin policy
-        test("policy missing or invalid in a v2 pin fails closed: hold with last_error, nothing sent") { h in
+        test("policy missing or invalid in a v4 pin fails closed: hold with last_error, nothing sent") { h in
             let (_, d, _) = try single(h)
             let variants: [(String, () throws -> Void)] = [
                 ("no policy", { try h.writePin(to: h.config.userPinPath, mode: 0o600, omitPolicy: true) }),
@@ -751,30 +726,19 @@ public enum SelfTest {
             }
             try? FileManager.default.removeItem(atPath: h.config.userPinPath)
             try h.writePin(to: h.config.userPinPath, mode: 0o600)
-            try expect(try h.tick() == .processed(draftId: d.draftId, result: "sent"), "a valid v2 pin works again")
+            try expect(try h.tick() == .processed(draftId: d.draftId, result: "sent"), "a valid v4 pin works again")
         }
-        test("a pin whose policy has the old pacing fields still loads; extra fields are ignored") { h in
-            // like the installed root pin: v2 with live_allowed plus the retired fields (any value, even junk)
-            for (label, extra) in [("old numeric fields", ["min_pace_s": 20, "min_burst_pause_s": 120, "max_burst_size": 10, "max_daily_cap": 100, "require_quiet_hours": true] as [String: Any]),
-                                   ("junk values", ["min_pace_s": "fast", "max_daily_cap": -5, "require_quiet_hours": "maybe", "future_field": [1, 2]] as [String: Any]),
-                                   ("no extra fields", [:])] {
-                for allowed in [false, true] {
-                    var pol = extra; pol["live_allowed"] = allowed
-                    try? FileManager.default.removeItem(atPath: h.config.userPinPath)
-                    try h.writePin(to: h.config.userPinPath, mode: 0o600, rawPolicy: pol)
-                    let pf = try PinFileLoader.load(path: h.config.userPinPath, mode: .simple)
-                    try expect(pf.version == 2 && pf.policy == PinPolicy(liveAllowed: allowed), "\(label): policy not read as live_allowed=\(allowed)")
-                }
-            }
-            try? FileManager.default.removeItem(atPath: h.config.userPinPath)
-            try h.writePin(to: h.config.userPinPath, mode: 0o600)
+        test("a policy with extra fields (the old pacing fields, junk) is refused: hold, nothing sent") { h in
             let (_, d, _) = try single(h)
-            try expect(try h.tick() == .processed(draftId: d.draftId, result: "sent"), "a pin with the old fields must still send dry")
-        }
-        test("a root pin with the old fields and live_allowed true sends live (no reinstall needed)") { h in
-            try h.goLive(policy: ["min_pace_s": 20, "max_daily_cap": 100, "require_quiet_hours": true])
-            let (_, d, _) = try single(h, liveOpts())
-            try expect(try h.tick() == .processed(draftId: d.draftId, result: "sent") && h.live.calls.count == 1, "live send with a legacy-field root pin")
+            for (label, extra) in [("old numeric fields", ["min_pace_s": 20, "min_burst_pause_s": 120, "max_burst_size": 10, "max_daily_cap": 100, "require_quiet_hours": true] as [String: Any]),
+                                   ("junk values", ["future_field": [1, 2]] as [String: Any])] {
+                var pol = extra; pol["live_allowed"] = false; pol["contacts_live_allowed"] = false
+                try? FileManager.default.removeItem(atPath: h.config.userPinPath)
+                try h.writePin(to: h.config.userPinPath, mode: 0o600, rawPolicy: pol)
+                let r = try h.tick()
+                try expect(isHeld(r) && h.dryLines().isEmpty && h.lastError().contains("exactly live_allowed and contacts_live_allowed"), "\(label): \(r) / '\(h.lastError())'")
+            }
+            _ = d
         }
         test("a missing live_allowed fails closed for live: nothing is sent on any lane") { h in
             let root = h.dir + "/rootpin/passkeys.json"
@@ -791,20 +755,22 @@ public enum SelfTest {
             try expect(isHeld(try h.tick()) || h.draftStatus(d.draftId) == "review", "live_allowed=false must not send live")
             try expect(h.live.calls.isEmpty, "live transport touched")
         }
-        test("v1 pin file: accepted for dry with the default policy, never for live") { h in
-            try? FileManager.default.removeItem(atPath: h.config.userPinPath)
-            try h.writePin(to: h.config.userPinPath, mode: 0o600, version: 1)
-            let pf = try PinFileLoader.load(path: h.config.userPinPath, mode: .simple)
-            try expect(pf.version == 1 && pf.policy == .default && !pf.policy.liveAllowed, "v1 must load with the default policy")
+        test("v1 / v2 / v3 pin files are refused with the browser-passkeys message: hold, nothing sent, on user and root pins") { h in
             let (_, d, _) = try single(h)
-            try expect(try h.tick() == .processed(draftId: d.draftId, result: "sent"), "dry sends with a v1 pin")
-            // a v1 ROOT pin cannot enable live either
+            for v in [1, 2, 3] {
+                try h.writeRawPin(to: h.config.userPinPath, mode: 0o600, version: v, keys: [Harness.pinKey(h.key)], policy: ["live_allowed": false, "contacts_live_allowed": false])
+                let r = try h.tick()
+                try expect(isHeld(r) && h.dryLines().isEmpty && h.draftStatus(d.draftId) == "approved", "v\(v): \(r)")
+                try expect(h.lastError().contains(PinFileLoader.Refusal.browserPasskeys(v)), "v\(v): last_error '\(h.lastError())'")
+            }
+            // a v2 ROOT pin holds too (hardened: no fallback to the user pin)
+            try h.writePin(to: h.config.userPinPath, mode: 0o600)
             let root = h.dir + "/rootpin/passkeys.json"
-            try h.writePin(to: root, mode: 0o444, version: 1)
+            try h.writeRawPin(to: root, mode: 0o444, version: 2, keys: [Harness.pinKey(h.key)], policy: ["live_allowed": true])
             h.config.rootPinPath = root; h.config.rootExpectedUid = getuid(); h.config.checkPinAncestors = false
             try h.rebuild()
-            let (_, d2, _) = try single(h, liveOpts())
-            try expect(try h.tick() == .idle && h.live.calls.isEmpty && h.draftStatus(d2.draftId) == "review", "v1 root pin allowed a live approval")
+            let r = try h.tick()
+            try expect(isHeld(r) && h.live.calls.isEmpty && h.dryLines().isEmpty, "v2 root pin: \(r)")
         }
 
         // 3. proposed contacts
