@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- outbox-exec as a login item: registered by the app with SMAppService.agent(plistName:). Copy this file to
+     Agent Outbox.app/Contents/Library/LaunchAgents/ (build-app.sh). BundleProgram is relative to the app bundle and names the
+     executable INSIDE OutboxExec.app, so macOS charges the Messages and Contacts permissions to that one signed binary, as with
+     the developer install (deploy/io.github.ay2609.agent-outbox.exec.plist). The state directory is the executor's default
+     (~/Library/Application Support/agent-outbox); a login-item plist is static, so a custom OUTBOX_HOME cannot be set here.
+     No log paths: a bundled plist cannot know the user's home folder (launchd does not expand ~). -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>io.github.ay2609.agent-outbox.exec</string>
+	<key>BundleProgram</key>
+	<string>Contents/Helpers/OutboxExec.app/Contents/MacOS/outbox-exec</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>outbox-exec</string>
+		<string>run</string>
+	</array>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>io.github.ay2609.agent-outbox.exec</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+</dict>
+</plist>
