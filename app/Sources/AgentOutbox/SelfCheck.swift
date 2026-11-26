@@ -175,6 +175,8 @@ enum SelfCheck {
     static func migration() {
         print("migration (temp folder, recording runner; the real LaunchAgents are never touched)")
         let root = tempDir(); defer { try? FileManager.default.removeItem(atPath: root) }
+        check("the app's own sender login item is not an old agent", !Migration.isOldJob(printOutput: "\tmanaged_by = com.apple.xpc.ServiceManagement\n\tparent bundle identifier = io.github.ay2609.agent-outbox\n"))
+        check("a plain LaunchAgent job is an old agent", Migration.isOldJob(printOutput: "\tpath = /Users/you/Library/LaunchAgents/io.github.ay2609.agent-outbox.exec.plist\n"))
         check("nothing to migrate in an empty folder", Migration.detect(agentsDir: root, loaded: { _ in false }).isEmpty)
         for l in Migration.labels { FileManager.default.createFile(atPath: root + "/\(l).plist", contents: Data("<plist/>".utf8)) }
         FileManager.default.createFile(atPath: root + "/com.claude.imessage-outbox.plist", contents: Data("<plist/>".utf8))

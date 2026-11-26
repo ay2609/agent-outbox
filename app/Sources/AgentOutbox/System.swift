@@ -126,8 +126,15 @@ enum Migration {
         labels.filter { FileManager.default.fileExists(atPath: agentsDir + "/" + $0 + ".plist") || loaded($0) }
     }
 
+    /// Loaded AND an old developer-install job. The app's own sender login item has the same label but is submitted by
+    /// ServiceManagement with this app as its parent bundle: that one must never count (or be booted out).
     static func isLoaded(_ label: String, uid: uid_t) -> Bool {
-        realRunner("/bin/launchctl", ["print", "gui/\(uid)/\(label)"]).code == 0
+        let r = realRunner("/bin/launchctl", ["print", "gui/\(uid)/\(label)"])
+        return r.code == 0 && isOldJob(printOutput: r.out)
+    }
+
+    static func isOldJob(printOutput out: String) -> Bool {
+        !(out.contains("managed_by = com.apple.xpc.ServiceManagement") || out.contains("parent bundle identifier = io.github.ay2609.agent-outbox"))
     }
 
     /// Dev runs stub launchctl, so they must not delete the real plists either (only an injected test folder).
