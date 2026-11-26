@@ -7,7 +7,7 @@ import { call, fakeDeps, memDb, seedContact } from "./helpers";
 
 const ROOT = join(import.meta.dir, "..");
 // v4: contact_approvals (the user's signed contacts approvals) and contact_applies (the executor's consumption record) are gated too.
-const GATED_TABLES = ["approvals", "sends", "contact_writes", "passkeys", "sessions", "webauthn_challenges", "settings", "contact_approvals", "contact_applies", "native_keys", "native_challenges", "link_codes", "session_links"];
+const GATED_TABLES = ["approvals", "sends", "contact_writes", "passkeys", "sessions", "webauthn_challenges", "settings", "contact_approvals", "contact_applies", "native_keys", "native_challenges", "link_codes", "session_links", "owner_challenges"];
 
 // The complete route table. Adding a route means adding it here on purpose, after checking it can't approve or send.
 const ALLOWED_ROUTES = [

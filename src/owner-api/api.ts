@@ -117,7 +117,7 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
       draft_ids: z.array(z.string().max(100)).min(1).max(500),
       include_anyway: z.array(z.string().max(100)).max(500).optional(),
       signer: z.literal("secure-enclave").optional(),
-    }).strict());
+    }));
     const r = await approveOptions(cfg, db(), c.req.param("id"), body.draft_ids, body.include_anyway ?? []);
     return c.json({ ...r,
       /** Does the EFFECTIVE pin (root if installed, else the user pin) allow live? When transport is live but this is false, the executor will not really send. */

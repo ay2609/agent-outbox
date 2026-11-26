@@ -353,5 +353,19 @@ CREATE TABLE IF NOT EXISTS link_codes (code_sha256 TEXT PRIMARY KEY, expires_at 
 -- proofed = 1: the link was used while no sign-in key existed, which browser-link only allows after a Touch ID confirmation (se_reauth).
 -- proofed = 0: a link made while a sign-in key existed (the app channel alone): a session, never an owner proof.
 CREATE TABLE IF NOT EXISTS session_links (token_sha256 TEXT PRIMARY KEY, created_at TEXT NOT NULL, proofed INTEGER NOT NULL DEFAULT 0);
+
+-- v7: app only. Single-use owner challenges (approvals and Touch ID confirmations); replaces webauthn_challenges and
+-- native_challenges, which stay (unused) with passkeys, sessions, link_codes and session_links.
+CREATE TABLE IF NOT EXISTS owner_challenges (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('send','contacts','reauth')),
+  action TEXT,                 -- reauth: mode_live | policy_live | native_key_add
+  target TEXT,                 -- send: batch_id; contacts: set_id; reauth native_key_add: the pending key_id
+  approval_id TEXT, manifest TEXT,          -- send/contacts: the new approval id and exact manifest bytes
+  challenge TEXT NOT NULL,     -- send/contacts: b64u(sha256(manifest)); reauth: b64u(32 random bytes)
+  expires_at TEXT NOT NULL);
+-- First run is a stored fact: seeded once. Every install that already has a sign-in passkey or a non-pending Secure Enclave key counts as set up.
+-- (The ONLY read of the legacy passkeys table anywhere.)
+INSERT OR IGNORE INTO settings(key,value) SELECT 'setup_done', CASE WHEN EXISTS(SELECT 1 FROM passkeys) OR EXISTS(SELECT 1 FROM native_keys WHERE status <> 'pending') THEN '1' ELSE '0' END;
 """#
 }

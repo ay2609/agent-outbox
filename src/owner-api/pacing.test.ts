@@ -77,9 +77,9 @@ describe("PATCH /api/settings pacing", () => {
     }
     expect((await h.call("PATCH", "/api/settings", { pacing: "on" })).status).toBe(400);
   });
-  test("it needs a signed-in session like every owner route", async () => {
+  test("it needs the app token like every owner route", async () => {
     const { h } = await ready();
-    expect((await h.call("PATCH", "/api/settings", { pacing: { enabled: true } }, { cookie: null })).status).toBe(401);
+    expect((await h.call("PATCH", "/api/settings", { pacing: { enabled: true } }, { token: null })).status).toBe(401);
     expect(getSettings(h.db).pacing.enabled).toBe(false);
   });
 });
@@ -110,7 +110,7 @@ describe("approval window", () => {
     expect(o.plan.window_hours).toBeCloseTo(51, 2);
     expect(o.plan.fits).toBe(40);
     // and the signature covers that manifest: verifying stores the same not_after
-    const v = await h.call("POST", `/api/batches/${batchId}/approve/verify`, { challenge_id: o.challenge_id, response: h.auth.assert(o.options) });
+    const v = await h.call("POST", `/api/batches/${batchId}/approve/se-verify`, h.auth.signOptions({ challenge_id: o.challenge_id, manifest_bytes: o.manifest_bytes, se: o.se }));
     expect(v.status).toBe(200);
     expect(v.json.not_after).toBe(o.manifest.not_after);
     expect(h.db.query<{ not_after: string }, []>("SELECT not_after FROM approvals").get()!.not_after).toBe(o.manifest.not_after);
@@ -126,7 +126,7 @@ describe("approval window", () => {
     const { h, batchId, draftIds } = await ready(5);
     await patchPacing(h, { enabled: true, min_s: 600, max_s: 600 });
     const first = await approveOpts(h, batchId, draftIds.slice(0, 2));
-    await h.call("POST", `/api/batches/${batchId}/approve/verify`, { challenge_id: first.challenge_id, response: h.auth.assert(first.options) });
+    await h.call("POST", `/api/batches/${batchId}/approve/se-verify`, h.auth.signOptions(first));
     const o = await approveOpts(h, batchId, draftIds.slice(2));
     expect(o.plan).toMatchObject({ queued_ahead: 2, count: 3 });
   });

@@ -1,5 +1,5 @@
 // Fix-round tests: transactions, approvability, expiry, stop/undo, PATCH guards, warnings, contacts,
-// pin policy, imports paging. The two-key registration tests live in auth.test.ts.
+// pin policy, imports paging. Enrolment tests live in native.test.ts.
 import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -9,7 +9,7 @@ import { openDb } from "../db";
 import { addDraft, createBatch, getDrafts, getSettings, setBatchStatus } from "../core/store";
 import { DEFAULT_PIN_POLICY, type Warning, type WarningCode } from "../core/types";
 import { buildManifest } from "./approval";
-import { makeHarness, seedBatch, type Harness } from "./testkit";
+import { makeHarness, seedBatch, SoftSe, type Harness } from "./testkit";
 
 async function ready(n = 3, over: Parameters<typeof makeHarness>[0] = {}, o2: Parameters<typeof makeHarness>[1] = {}) {
   const h = makeHarness(over, o2);
@@ -18,10 +18,19 @@ async function ready(n = 3, over: Parameters<typeof makeHarness>[0] = {}, o2: Pa
 }
 const options = (h: Harness, batchId: string, ids: string[], extra: Record<string, unknown> = {}) =>
   h.call("POST", `/api/batches/${batchId}/approve/options`, { draft_ids: ids, ...extra });
+/** A second key, enrolled with the first key's confirmation. */
+async function enrolSecond(h: Harness) {
+  const se2 = new SoftSe();
+  const o = await h.call("POST", "/api/native-keys/enroll/options", { x963: se2.x963b64, label: "iPad" });
+  const signature = se2.sign("enroll", createHash("sha256").update(Buffer.concat([Buffer.from(o.json.challenge, "base64url"), se2.x963])).digest());
+  const v = await h.call("POST", "/api/native-keys/enroll/verify", { key_id: o.json.key_id, signature, se_reauth: await h.reauth("native_key_add", o.json.key_id) });
+  expect(v.status).toBe(200);
+  return se2;
+}
 async function approve(h: Harness, batchId: string, ids: string[], extra: Record<string, unknown> = {}) {
   const opt = await options(h, batchId, ids, extra);
   expect(opt.status).toBe(200);
-  const verify = await h.call("POST", `/api/batches/${batchId}/approve/verify`, { challenge_id: opt.json.challenge_id, response: h.auth.assert(opt.json.options) });
+  const verify = await h.call("POST", `/api/batches/${batchId}/approve/se-verify`, h.auth.signOptions(opt.json));
   expect(verify.status).toBe(200);
   return { opt, verify };
 }
@@ -30,7 +39,7 @@ const batchJson = async (h: Harness, batchId: string) => (await h.call("GET", `/
 function installPin(h: Harness, policy: Record<string, unknown> = { ...DEFAULT_PIN_POLICY, live_allowed: true }) {
   mkdirSync(join(h.dir, "root"), { recursive: true });
   const path = join(h.dir, "root", "passkeys.json");
-  writeFileSync(path, JSON.stringify({ v: 2, rp_id: "localhost", origin: "http://localhost:7477", keys: [{ credential_id: h.auth.id, x963: h.auth.x963.toString("base64url"), label: "Test approve" }], policy }));
+  writeFileSync(path, JSON.stringify({ v: 4, keys: [{ kind: "secure-enclave", credential_id: h.auth.id, x963: h.auth.x963b64, label: "Test approve" }], policy: { live_allowed: false, contacts_live_allowed: false, ...policy } }));
   return path;
 }
 
@@ -41,15 +50,15 @@ describe("manifest v2 and transport", () => {
     expect(dry.json.manifest).toMatchObject({ v: 2, transport: "dry" });
     expect(dry.json.pin_live_allowed).toBe(false);
     installPin(h);
-    await h.call("PATCH", "/api/settings", { transport: "live", reauth: await h.reauth() });
+    await h.call("PATCH", "/api/settings", { transport: "live", se_reauth: await h.reauth("mode_live") });
     expect(getSettings(h.db).transport).toBe("live");
     const live = await options(h, batchId, [draftIds[0]!]);
     expect(live.json.manifest.transport).toBe("live");
     expect(live.json.pin_live_allowed).toBe(true);
     // the signed bytes contain it
-    const row = h.db.query<any, [string]>("SELECT manifest FROM webauthn_challenges WHERE id = ?").get(live.json.challenge_id)!;
+    const row = h.db.query<any, [string]>("SELECT manifest FROM owner_challenges WHERE id = ?").get(live.json.challenge_id)!;
     expect(JSON.parse(row.manifest).transport).toBe("live");
-    const v = await h.call("POST", `/api/batches/${batchId}/approve/verify`, { challenge_id: live.json.challenge_id, response: h.auth.assert(live.json.options) });
+    const v = await h.call("POST", `/api/batches/${batchId}/approve/se-verify`, h.auth.signOptions(live.json));
     expect(v.json.transport).toBe("live");
     expect(JSON.parse(h.db.query<any, []>("SELECT manifest FROM approvals").get()!.manifest).transport).toBe("live");
   });
@@ -57,17 +66,16 @@ describe("manifest v2 and transport", () => {
   test("buildManifest refuses a proposed contact whose handles aren't exactly the draft handle", async () => {
     const { h, batchId } = await ready();
     const [, d2] = getDrafts(h.db, batchId);
-    const cfg = { rpId: "localhost", origin: "http://localhost:7477" };
     const bad = [
       { ...d2!, proposed_contact: { ...d2!.proposed_contact!, phones: [...d2!.proposed_contact!.phones, { e164: "+12025559999", label: "home" }] } },
       { ...d2!, proposed_contact: { ...d2!.proposed_contact!, phones: [{ e164: "+12025559999", label: "mobile" }] } },
       { ...d2!, proposed_contact: { ...d2!.proposed_contact!, emails: [{ email: "x@y.com", label: "work" }] } },
       { ...d2!, proposed_contact: { ...d2!.proposed_contact!, phones: [] } },
     ];
-    for (const d of bad) expect(() => buildManifest(cfg, batchId, [d], 24)).toThrow();
-    expect(() => buildManifest(cfg, batchId, [d2!], 24)).not.toThrow();
+    for (const d of bad) expect(() => buildManifest(batchId, [d], 24)).toThrow();
+    expect(() => buildManifest(batchId, [d2!], 24)).not.toThrow();
     // with create_contact off the proposal is irrelevant
-    expect(() => buildManifest(cfg, batchId, [{ ...bad[0]!, create_contact: false }], 24)).not.toThrow();
+    expect(() => buildManifest(batchId, [{ ...bad[0]!, create_contact: false }], 24)).not.toThrow();
   });
 });
 
@@ -75,13 +83,13 @@ describe("pin policy and install command", () => {
   test("the user pin carries the policy the user chose; mode 0600; the install command is sha256-checked and prints what it installed", async () => {
     const { h } = await ready();
     const policy = { live_allowed: true };
-    // simple mode (no root pin): turning live on takes effect at once, so it needs a fresh sign-in assertion
+    // simple mode (no root pin): turning live on takes effect at once, so it needs a fresh Touch ID confirmation
     expect((await h.call("PUT", "/api/pin-policy", policy)).status).toBe(403);
-    const put = await h.call("PUT", "/api/pin-policy", { ...policy, reauth: await h.reauth() });
+    const put = await h.call("PUT", "/api/pin-policy", { ...policy, se_reauth: await h.reauth("policy_live") });
     expect(put.status).toBe(200);
     const candPath = join(h.dir, "passkeys.json");
     const cand = JSON.parse(readFileSync(candPath, "utf8"));
-    expect(cand.v).toBe(2); expect(cand.policy).toEqual(policy);
+    expect(cand.v).toBe(4); expect(cand.policy).toEqual({ live_allowed: true, contacts_live_allowed: false });
     expect(cand.keys.map((k: any) => k.credential_id)).toEqual([h.auth.id]);
     expect(statSync(candPath).mode & 0o777).toBe(0o600);
     const st = (await h.call("GET", "/api/status")).json.pin;
@@ -90,13 +98,11 @@ describe("pin policy and install command", () => {
     expect(st.install_command).toBe(
       `echo '${sha}  ${candPath}' | shasum -a 256 -c - && sudo install -d -o root -g wheel -m 755 ${join(h.dir, "root")} && ` +
       `sudo install -o root -g wheel -m 444 ${candPath} ${join(h.dir, "root", "passkeys.json")} && plutil -p ${join(h.dir, "root", "passkeys.json")}`);
-    expect(st.expected_keys).toEqual([{ credential_id: h.auth.id, label: "Test approve" }]);
+    expect(st.expected_keys).toMatchObject([{ credential_id: h.auth.id, label: "Test approve", kind: "secure-enclave" }]);
     expect(st.policy).toEqual(policy);
-    // a later passkey registration keeps the user's policy
-    const o = await h.call("POST", "/api/passkeys/options", { purpose: "approve", label: "iPad", reauth: await h.reauth() });
-    const { SoftAuthenticator } = await import("./testkit");
-    await h.call("POST", "/api/passkeys/verify", { challenge_id: o.json.challenge_id, response: new SoftAuthenticator("localhost", "http://localhost:7477").register(o.json.options), label: "iPad" });
-    expect(JSON.parse(readFileSync(candPath, "utf8")).policy).toEqual(policy);
+    // a later key keeps the user's policy
+    await enrolSecond(h);
+    expect(JSON.parse(readFileSync(candPath, "utf8")).policy).toEqual({ live_allowed: true, contacts_live_allowed: false });
     expect(JSON.parse(readFileSync(candPath, "utf8")).keys).toHaveLength(2);
   });
 
@@ -125,7 +131,7 @@ describe("pin policy and install command", () => {
     const { h } = await ready();
     installPin(h, { live_allowed: true, min_pace_s: 90, min_burst_pause_s: 200, max_burst_size: 8, max_daily_cap: 20, require_quiet_hours: true } as any);
     const st = (await h.call("GET", "/api/status")).json.pin;
-    expect(st.root.policy).toEqual({ live_allowed: true });
+    expect(st.root.policy).toEqual({ live_allowed: true, contacts_live_allowed: false });
     expect(st.root.live_allowed).toBe(true);
     expect(st.clamped).toBeUndefined();
     expect(st.root.problems.join(" ")).not.toMatch(/policy/);
@@ -169,13 +175,13 @@ describe("transactions are IMMEDIATE (no SQLITE_BUSY_SNAPSHOT)", () => {
     expect(seen.interleaved).toBe(false); expect(seen.blocked).toBe(true);
   });
 
-  test("approve verify, stop, settings and registration all hold the write lock from their first read", async () => {
+  test("approve verify, stop, settings and key enrolment all hold the write lock from their first read", async () => {
     const dbPath = "interleave-all.db";
     const { h, batchId, draftIds } = await ready(3, {}, { dbPath });
     // approve verify
     const opt = await options(h, batchId, [draftIds[0]!]);
     let seen = interleaver(h, join(h.dir, dbPath), /^INSERT INTO approvals/);
-    const v = await h.call("POST", `/api/batches/${batchId}/approve/verify`, { challenge_id: opt.json.challenge_id, response: h.auth.assert(opt.json.options) });
+    const v = await h.call("POST", `/api/batches/${batchId}/approve/se-verify`, h.auth.signOptions(opt.json));
     expect(v.status).toBe(200);
     expect([seen.fired, seen.interleaved, seen.blocked]).toEqual([1, false, true]);
     // stop (revokeApprovals)
@@ -190,12 +196,9 @@ describe("transactions are IMMEDIATE (no SQLITE_BUSY_SNAPSHOT)", () => {
     seen = interleaver(h, join(h.dir, dbPath), /^UPDATE drafts SET status = 'skipped'/);
     expect((await h.call("POST", `/api/drafts/${draftIds[2]}/skip`, {})).status).toBe(200);
     expect([seen.fired, seen.interleaved, seen.blocked]).toEqual([1, false, true]);
-    // registration insert
-    const { SoftAuthenticator } = await import("./testkit");
-    const o = await h.call("POST", "/api/passkeys/options", { purpose: "approve", reauth: await h.reauth() });
-    seen = interleaver(h, join(h.dir, dbPath), /^INSERT INTO passkeys/);
-    const reg = await h.call("POST", "/api/passkeys/verify", { challenge_id: o.json.challenge_id, response: new SoftAuthenticator("localhost", "http://localhost:7477").register(o.json.options) });
-    expect(reg.status).toBe(200);
+    // key activation
+    seen = interleaver(h, join(h.dir, dbPath), /^UPDATE native_keys SET status = 'active'/);
+    await enrolSecond(h);
     expect([seen.fired, seen.interleaved, seen.blocked]).toEqual([1, false, true]);
   });
 
@@ -566,11 +569,8 @@ describe("recipient display and the ambiguous-contact picker", () => {
 describe("imports: filtered pages, re-ingest with a sheet or region", () => {
   const rowsCsv = ["name,phone"].concat(Array.from({ length: 12 }, (_, i) => `Person ${i},(202) 555-01${String(i).padStart(2, "0")}`), ["Bad,not a number", "Bad2,"]).join("\n") + "\n";
   async function upload(h: Harness, content: string, name = "people.csv", extra: Record<string, string> = {}) {
-    const fd = new FormData();
-    fd.append("file", new File([content], name, { type: "text/csv" }));
-    for (const [k, v] of Object.entries(extra)) fd.append(k, v);
-    const res = await h.request("/api/imports", { method: "POST", headers: { cookie: h.cookie, "x-outbox": "1" }, body: fd });
-    return { status: res.status, json: await res.json() as any };
+    const r = await h.call("POST", "/api/imports", { filename: name, data_b64: Buffer.from(content, "utf8").toString("base64"), ...extra });
+    return { status: r.status, json: r.json as any };
   }
   const tmp = () => join(process.env.TMPDIR ?? "/tmp", `outbox-imp-${Math.random().toString(36).slice(2)}`);
 
@@ -632,7 +632,7 @@ describe("misc", () => {
     const { h } = await ready();
     const p = join(h.dir, "passkeys.json");
     chmodSync(p, 0o644);
-    await h.call("PUT", "/api/pin-policy", { ...DEFAULT_PIN_POLICY, live_allowed: true, reauth: await h.reauth() });
+    await h.call("PUT", "/api/pin-policy", { ...DEFAULT_PIN_POLICY, live_allowed: true, se_reauth: await h.reauth("policy_live") });
     expect(statSync(p).mode & 0o777).toBe(0o600);
     expect(existsSync(p + `.${process.pid}.tmp`)).toBe(false);
   });

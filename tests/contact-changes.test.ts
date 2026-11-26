@@ -18,7 +18,6 @@ import { getContact } from "../src/core/store";
 import { createOutboxMcpServer } from "../src/mcp/server";
 import { call, memDb, seedContact, tmpDir } from "./helpers";
 
-const origin = "https://outbox.test";
 const H = { "X-Outbox-Client": "cc-test" };
 
 async function setup() {
@@ -33,7 +32,7 @@ async function setup() {
     ingestFile: (d, a) => ing.ingestFile(d, { ...a, importsDir }), setMapping: ing.setMapping as any, getImport: ing.getImport as any,
     batchFromImport: from.batchFromImport as any, lintBatch: lint.lintBatch as any, renderTemplate: tpl.renderTemplate as any,
   };
-  const app = createAgentApp({ db: () => db, deps: async () => deps, origin });
+  const app = createAgentApp({ db: () => db, deps: async () => deps });
   return { db, app };
 }
 const post = (app: any, path: string, body?: unknown) => call(app, "POST", path, body, H);
@@ -192,7 +191,7 @@ describe("POST /v1/contact-changes", () => {
     });
     expect(r.status).toBe(201);
     expect(r.json).toMatchObject({ status: "review", counts: { review: 2, rejected: 0 } });
-    expect(r.json.dashboard_url).toBe(`${origin}/#/contacts/changes/${r.json.set_id}`);
+    expect(r.json.dashboard_url).toBe(`agent-outbox://contacts/changes/${r.json.set_id}`);
     expect(r.json.message).not.toMatch(/automatically/);
     expect(r.json.message).toMatch(/nothing is added to Contacts until they approve/);
     expect(r.json.message).toMatch(/Touch ID/);
@@ -266,7 +265,7 @@ describe("GET /v1/contact-changes", () => {
     db.query("UPDATE contact_changes SET before_vcard = 'BEGIN:VCARD' WHERE set_id = ?").run(r.json.set_id); // what the executor would have stored
     const d = await get(app, `/v1/contact-changes/${r.json.set_id}`);
     expect(d.status).toBe(200);
-    expect(d.json.dashboard_url).toBe(`${origin}/#/contacts/changes/${r.json.set_id}`);
+    expect(d.json.dashboard_url).toBe(`agent-outbox://contacts/changes/${r.json.set_id}`);
     expect(d.json.counts).toEqual({ review: 2 });
     const [create, edit] = d.json.changes;
     expect(create).toMatchObject({ kind: "create", status: "review", before: null, payload: { given_name: "New", phones: [{ e164: "+14155550123" }] } });
@@ -412,7 +411,7 @@ describe("MCP tools and CLI verbs", () => {
     const id = seedContact(db, { name: "Sam Lee", given: "Sam", family: "Lee", phones: [{ e164: "+12025550009", label: "mobile" }] });
     const p = await client.callTool({ name: "outbox_propose_contacts", arguments: { title: "Via MCP", creates: [{ given_name: "New", family_name: "Person", phones: ["4155550123"] }], updates: [{ contact_id: id, set: { given_name: "Sam 📚" } }] } }) as any;
     expect(p.isError).toBeFalsy();
-    expect(textOf(p)).toMatch(/^Contact change set .*: 2 waiting for the user's Touch ID approval, 0 not needed\. Review link: https:\/\/outbox\.test\/#\/contacts\/changes\//);
+    expect(textOf(p)).toMatch(/^Contact change set .*: 2 waiting for the user's Touch ID approval, 0 not needed\. Open in Agent Outbox: agent-outbox:\/\/contacts\/changes\//);
     const set_id = jsonOf(p).set_id;
     expect(db.query("SELECT created_by, source FROM contact_change_sets WHERE id = ?").get(set_id)).toEqual({ created_by: "agent:mcp-cc", source: "mcp" });
     const g = await client.callTool({ name: "outbox_get_contact_changes", arguments: { set_id } }) as any;
@@ -443,7 +442,7 @@ describe("MCP tools and CLI verbs", () => {
     const p = await runCli(app, ["contacts", "propose", "--file", file]);
     expect(p.code).toBe(0);
     expect(p.out).toContain("2 waiting for the user's Touch ID approval, 0 not needed");
-    expect(p.out).toContain("dashboard: https://outbox.test/#/contacts/changes/");
+    expect(p.out).toContain("open: agent-outbox://contacts/changes/");
     const set_id = (db.query("SELECT id FROM contact_change_sets").get() as any).id;
     expect(db.query("SELECT created_by, source FROM contact_change_sets WHERE id = ?").get(set_id)).toEqual({ created_by: "agent:cli-cc", source: "cli" });
     const c = await runCli(app, ["contacts", "changes", set_id]);

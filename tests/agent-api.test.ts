@@ -4,11 +4,10 @@ import { call, fakeDeps, memDb, seedContact, type FakeState } from "./helpers";
 import type { Database } from "bun:sqlite";
 
 let db: Database; let app: ReturnType<typeof createAgentApp>; let st: FakeState;
-const ORIGIN = "https://outbox.test";
 beforeEach(() => {
   db = memDb();
   const f = fakeDeps(db); st = f.state;
-  app = createAgentApp({ db: () => db, deps: async () => f.deps, origin: ORIGIN });
+  app = createAgentApp({ db: () => db, deps: async () => f.deps });
 });
 const H = { "X-Outbox-Client": "unit test!" };
 
@@ -21,7 +20,7 @@ describe("single drafts", () => {
     expect(r.json.batch.source).toBe("mcp");
     expect(r.json.draft.handle).toBe("+14151234567");
     expect(r.json.draft.status).toBe("review");
-    expect(r.json.dashboard_url).toBe(`${ORIGIN}/#/batch/${r.json.batch.id}`);
+    expect(r.json.dashboard_url).toBe(`agent-outbox://batch/${r.json.batch.id}`);
     expect(st.lintCalls).toEqual([r.json.batch.id]);
     const rev = db.query("SELECT actor, version FROM draft_revisions").all() as any[];
     expect(rev).toEqual([{ actor: "agent", version: 1 }]);
@@ -89,7 +88,7 @@ describe("batches", () => {
     const s = await call(app, "POST", `/v1/batches/${id}/submit`);
     expect(s.status).toBe(200);
     expect(s.json.batch.status).toBe("review");
-    expect(s.json.dashboard_url).toBe(`${ORIGIN}/#/batch/${id}`);
+    expect(s.json.dashboard_url).toBe(`agent-outbox://batch/${id}`);
     // idempotent while in review, refused once past it
     expect((await call(app, "POST", `/v1/batches/${id}/submit`)).status).toBe(200);
     db.query("UPDATE batches SET status = 'approved' WHERE id = ?").run(id);
@@ -268,7 +267,7 @@ describe("imports", () => {
     const t = await call(app, "POST", "/v1/imports", { text: "Name,Phone,City\nAnn,4151230001,Oslo\nBob,4151230002,Rome\n", kind: "csv" }, H);
     expect(t.status).toBe(201);
     expect(t.json.import_id).toBeTruthy();
-    expect(t.json.dashboard_url).toContain("/#/imports/");
+    expect(t.json.dashboard_url).toContain("agent-outbox://imports/");
     expect(st.ingested[0].filename).toBe("pasted.csv");
     expect(st.ingested[0].created_by).toBe("agent:unittest");
     const id = t.json.import_id;
@@ -298,7 +297,7 @@ describe("imports", () => {
     expect(b.json.drafts.map((d: any) => d.body)).toEqual(["Hi Ann!", "Bob, long time!"]);
     expect(b.json.batch.status).toBe("drafting");
     expect(b.json.batch.created_by).toBe("agent:unittest");
-    expect(b.json.dashboard_url).toContain("/#/batch/");
+    expect(b.json.dashboard_url).toContain("agent-outbox://batch/");
     const b2 = await call(app, "POST", `/v1/imports/${id}/batch`, { title: "Invites", template: "Hi {{first_name}}", submit: true });
     expect(b2.json.batch.status).toBe("review");
     expect((await call(app, "POST", `/v1/imports/${id}/batch`, { title: "x", template: "y", per_row_bodies: { a: "b" } })).status).toBe(400);

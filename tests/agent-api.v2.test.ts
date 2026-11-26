@@ -12,7 +12,6 @@ import type { BDeps } from "../src/core/deps";
 import { addDraft, createBatch, getBatch, getDrafts } from "../src/core/store";
 import { call, memDb, seedContact, tmpDir } from "./helpers";
 
-const origin = "https://outbox.test";
 const H = { "X-Outbox-Client": "v2" };
 
 async function setup(over: Partial<BDeps> = {}) {
@@ -28,7 +27,7 @@ async function setup(over: Partial<BDeps> = {}) {
     setMapping: ing.setMapping as any, getImport: ing.getImport as any, batchFromImport: from.batchFromImport as any,
     lintBatch: lint.lintBatch as any, renderTemplate: tpl.renderTemplate as any, ...over,
   };
-  const app = createAgentApp({ db: () => db, deps: async () => deps, origin });
+  const app = createAgentApp({ db: () => db, deps: async () => deps });
   return { db, app, deps, importsDir };
 }
 const post = (app: any, path: string, body?: unknown) => call(app, "POST", path, body, H);
@@ -125,7 +124,7 @@ describe("imports through the API", () => {
     const { app } = await setup();
     const i = await post(app, "/v1/imports", { text: GOOGLE, kind: "csv" });
     expect(i.status).toBe(201);
-    expect(i.json.dashboard_url).toBe(`${origin}/#/imports/${i.json.import_id}`);
+    expect(i.json.dashboard_url).toBe(`agent-outbox://imports/${i.json.import_id}`);
     expect(i.json.mapping.fields.phone.columns).toEqual(["Phone 1 - Value", "Phone 2 - Value"]);
     const b = await post(app, `/v1/imports/${i.json.import_id}/batch`, { title: "Hi", template: "Hi {{first_name}}" });
     expect(b.status).toBe(201);
@@ -133,11 +132,11 @@ describe("imports through the API", () => {
     expect(b.json.skipped).toEqual([{ row_index: 4, reason: "No usable phone number or email" }]);
   });
 
-  test("GET /v1/imports/:id pages rows with vars, issues, match and handle; the dashboard link uses #/imports/", async () => {
+  test("GET /v1/imports/:id pages rows with vars, issues, match and handle; the Agent Outbox link uses agent-outbox://imports/", async () => {
     const { app } = await setup();
     const id = (await post(app, "/v1/imports", { text: GOOGLE, kind: "csv" })).json.import_id;
     const p1 = await call(app, "GET", `/v1/imports/${id}?limit=2`);
-    expect(p1.json).toMatchObject({ rows_total: 5, offset: 0, limit: 2, has_more: true, dashboard_url: `${origin}/#/imports/${id}` });
+    expect(p1.json).toMatchObject({ rows_total: 5, offset: 0, limit: 2, has_more: true, dashboard_url: `agent-outbox://imports/${id}` });
     expect(p1.json.rows).toHaveLength(2);
     const r0 = p1.json.rows[0];
     expect(r0).toMatchObject({ row_index: 0, match: "new", name: "Jane Smith", handle: "+13015550123", tags: ["College Friends"] });
@@ -265,7 +264,7 @@ describe("batch from import: refusals, instructions, unknown fields", () => {
     const s = await setup();
     const imp = await post(s.app, "/v1/imports", { text: GOOGLE, kind: "csv" });
     const lenient = createAgentApp({
-      db: () => s.db, origin,
+      db: () => s.db,
       deps: async () => ({ ...s.deps, batchFromImport: (d: Database, _i: string, o: any) => ({ batch_id: createBatch(d, { title: o.title, created_by: o.created_by, source: o.source }), drafts: 0, skipped: [{ row_index: 4, reason: "x" }] }) }) as any,
     });
     const r = await call(lenient, "POST", `/v1/imports/${imp.json.import_id}/batch`, { title: "x", template: "Hi" }, H);
@@ -280,7 +279,7 @@ describe("batch from import: refusals, instructions, unknown fields", () => {
     expect(getBatch(db, r.json.batch.id)!.instructions).toBe("Personalise every message");
     expect(r.json.warnings.map((w: any) => w.code)).toContain("identical_to_template");
     expect(r.json.batch.status).toBe("review");
-    expect(r.json.dashboard_url).toBe(`${origin}/#/batch/${r.json.batch.id}`);
+    expect(r.json.dashboard_url).toBe(`agent-outbox://batch/${r.json.batch.id}`);
   });
 
   test("an agent can write a body for EVERY row: page the rows, then pass per_row_bodies", async () => {

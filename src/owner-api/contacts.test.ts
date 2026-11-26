@@ -12,7 +12,7 @@ import type { ContactManifest } from "../core/types";
 import { b64u } from "./b64";
 import { buildContactManifest } from "./contact-approval";
 import { challengeBytes } from "./approval";
-import { makeHarness, seedBatch, type Harness } from "./testkit";
+import { makeHarness, seedBatch, SoftSe, type Harness } from "./testkit";
 
 const sha256 = (s: string | Uint8Array) => createHash("sha256").update(s).digest();
 const hex = (s: string) => sha256(s).toString("hex");
@@ -41,7 +41,7 @@ const approveOptions = (h: Harness, setId: string, ids: string[]) => h.call("POS
 async function approve(h: Harness, setId: string, ids: string[]) {
   const opt = await approveOptions(h, setId, ids);
   expect(opt.status).toBe(200);
-  const verify = await h.call("POST", `/api/contact-changes/${setId}/approve/verify`, { challenge_id: opt.json.challenge_id, response: h.auth.assert(opt.json.options) });
+  const verify = await h.call("POST", `/api/contact-changes/${setId}/approve/se-verify`, h.auth.signOptions(opt.json));
   return { opt, verify };
 }
 const status = (h: Harness, id: string) => (h.db.query("SELECT status FROM contact_changes WHERE id = ?").get(id) as any).status;
@@ -61,7 +61,7 @@ function markApplied(h: Harness, changeId: string, o: { transport?: "dry" | "liv
 function installPin(h: Harness, policy: Record<string, unknown>) {
   mkdirSync(join(h.dir, "root"), { recursive: true });
   const path = join(h.dir, "root", "passkeys.json");
-  writeFileSync(path, JSON.stringify({ v: 2, rp_id: "localhost", origin: "http://localhost:7477", keys: [{ credential_id: h.auth.id, x963: h.auth.x963.toString("base64url"), label: "Test approve" }], policy }));
+  writeFileSync(path, JSON.stringify({ v: 4, keys: [{ kind: "secure-enclave", credential_id: h.auth.id, x963: h.auth.x963b64, label: "Test approve" }], policy: { live_allowed: false, contacts_live_allowed: false, ...policy } }));
 }
 
 describe("list, detail, reject, cancel", () => {
@@ -84,9 +84,8 @@ describe("list, detail, reject, cancel", () => {
     expect(edit.before).toMatchObject({ contact_id: ann, display_name: "Ann Lee", groups: ["Friends"] });
     expect(d.json).toMatchObject({ contacts_transport: "dry", pin_contacts_live_allowed: false, approvals: [] });
     expect((await h.call("GET", "/api/contact-changes/nope")).status).toBe(404);
-    // the owner API needs a session
-    expect((await h.call("GET", "/api/contact-changes", undefined, { cookie: null })).status).toBe(401);
-    expect((await h.call("POST", `/api/contact-changes/${setId}/cancel`, {}, { csrf: false })).status).toBe(403);
+    // the owner API needs the app token
+    expect((await h.call("GET", "/api/contact-changes", undefined, { token: null })).status).toBe(401);
   });
 
   test("reject sets review -> rejected (audited); the set follows; an applied change can't be rejected; cancel stops everything unapplied", async () => {
@@ -130,7 +129,7 @@ describe("contacts manifest and approval", () => {
   test("buildContactManifest: shape, key order, sha256 of the exact payload bytes, 24 h, compact serialisation", async () => {
     const { h, setId } = await ready();
     const changes = h.db.query("SELECT * FROM contact_changes WHERE set_id = ? AND kind = 'update' ORDER BY position").all(setId) as any[];
-    const { manifest, bytes } = buildContactManifest({ rpId: "localhost", origin: "http://localhost:7477" }, setId,
+    const { manifest, bytes } = buildContactManifest(setId,
       changes.map((r) => ({ id: r.id, kind: r.kind, target_macos_id: r.target_macos_id, payload_json: r.payload_json })) as any, 24, "dry", "appr-1", new Date("2026-11-10T08:00:00.000Z"));
     expect(Object.keys(manifest)).toEqual(["v", "kind", "transport", "approval_id", "set_id", "created_at", "not_after", "rp_id", "origin", "contact_items"]);
     expect(manifest).toMatchObject({ v: 1, kind: "contacts", transport: "dry", approval_id: "appr-1", set_id: setId, not_after: "2026-11-11T08:00:00.000Z" });
@@ -144,14 +143,15 @@ describe("contacts manifest and approval", () => {
     const { h, setId, annEdit, benEdit, ann } = await ready();
     const r = await approveOptions(h, setId, [benEdit, annEdit]);
     expect(r.status).toBe(200);
-    const row = h.db.query("SELECT * FROM webauthn_challenges WHERE id = ?").get(r.json.challenge_id) as any;
-    expect(row).toMatchObject({ purpose: "approve", batch_id: setId });
+    const row = h.db.query("SELECT * FROM owner_challenges WHERE id = ?").get(r.json.challenge_id) as any;
+    expect(row).toMatchObject({ kind: "contacts", target: setId });
     expect(row.challenge).toBe(sha256(row.manifest).toString("base64url"));
-    expect(r.json.options.challenge).toBe(row.challenge);
+    expect(r.json.options).toBeUndefined();
+    expect(r.json.se.tag).toBe("contacts");
     expect(challengeBytes(row.manifest).length).toBe(32);
     expect(JSON.parse(row.manifest)).toEqual(r.json.manifest);
     const m = r.json.manifest as ContactManifest;
-    expect(m).toMatchObject({ v: 1, kind: "contacts", transport: "dry", set_id: setId, rp_id: "localhost", origin: "http://localhost:7477" });
+    expect(m).toMatchObject({ v: 1, kind: "contacts", transport: "dry", set_id: setId, rp_id: "agent-outbox", origin: "agent-outbox:app" });
     expect(m.contact_items.map((i) => i.change_id)).toEqual([annEdit, benEdit]); // in position order, whatever the request order
     expect(Date.parse(m.not_after) - Date.parse(m.created_at)).toBe(24 * 3600_000);
     for (const item of m.contact_items) expect(item.payload_sha256).toBe(hex(r.json.payloads[item.change_id]));
@@ -163,7 +163,7 @@ describe("contacts manifest and approval", () => {
     expect((await approveOptions(h, setId, [annEdit])).json.manifest.transport).toBe("live");
   });
 
-  test("options refuse: nothing picked, a change from another set, a leftover auto_queued row, an unknown set, no approval passkey", async () => {
+  test("options refuse: nothing picked, a change from another set, a leftover auto_queued row, an unknown set, no approval key", async () => {
     const { h, setId, create, annEdit } = await ready();
     expect((await approveOptions(h, setId, [])).status).toBe(400);
     expect((await approveOptions(h, setId, ["nope"])).status).toBe(400);
@@ -174,12 +174,12 @@ describe("contacts manifest and approval", () => {
     expect((await approveOptions(h, "nope", [annEdit])).status).toBe(404);
     const other = await ready();
     expect((await approveOptions(h, other.setId, [annEdit])).status).toBe(404); // different harness DB: set unknown there
-    const bare = makeHarness(); await bare.signUpLoginOnly();
+    const bare = makeHarness();
     const s = proposeContactChanges(bare.db, { title: "t", created_by: "agent:x", source: "mcp", creates: [], updates: [{ contact: getContact(bare.db, seedContact(bare.db, { name: "Z Z" }))!, payload: validateUpdate({ set: { org: "Q" } }) }] });
-    expect((await approveOptions(bare, s.set_id, [s.changes[0]!.id])).json.error).toBe("no_passkeys");
+    expect((await approveOptions(bare, s.set_id, [s.changes[0]!.id])).json.error).toBe("no_native_keys");
   });
 
-  test("approve: the signed manifest is stored verbatim, items become approved, the set follows, the passkey counter and audit are written", async () => {
+  test("approve: the signed manifest is stored verbatim, items become approved, the set follows, and the audit is written", async () => {
     const { h, setId, create, annEdit, benEdit } = await ready();
     const { opt, verify } = await approve(h, setId, [annEdit, benEdit]);
     expect(verify.status).toBe(200);
@@ -189,12 +189,10 @@ describe("contacts manifest and approval", () => {
     expect(row.manifest).toBe(JSON.stringify(opt.json.manifest));
     expect(row.manifest_sha256).toBe(hex(row.manifest));
     expect(JSON.parse(row.manifest).kind).toBe("contacts");
-    for (const f of ["authenticator_data_b64", "client_data_json_b64", "signature_b64"]) expect(row[f]).toMatch(/^[A-Za-z0-9_-]+$/);
-    // the client data's challenge is exactly sha256 of the stored manifest
-    expect(JSON.parse(Buffer.from(row.client_data_json_b64, "base64url").toString()).challenge).toBe(sha256(row.manifest).toString("base64url"));
+    expect(row.signature_b64).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect([row.authenticator_data_b64, row.client_data_json_b64]).toEqual(["", ""]); // Secure Enclave rows carry no WebAuthn fields
     expect([status(h, annEdit), status(h, benEdit), status(h, create)]).toEqual(["approved", "approved", "review"]);
     expect(setStatus(h, setId)).toBe("review"); // the new contact still waits
-    expect((h.db.query("SELECT counter FROM passkeys WHERE credential_id = ?").get(h.auth.id) as any).counter).toBe(h.auth.counter);
     expect(h.db.query("SELECT actor, target FROM audit_log WHERE action = 'contact_approval.create'").all()).toEqual([{ actor: "owner", target: opt.json.manifest.approval_id }]);
     // approving the same changes again while the approval is live and unused is refused
     expect((await approveOptions(h, setId, [annEdit])).json.error).toBe("already_approved");
@@ -211,7 +209,7 @@ describe("contacts manifest and approval", () => {
     const { opt, verify } = await approve(h, setId, [annEdit]);
     expect(verify.status).toBe(200);
     expect([status(h, annEdit), status(h, benEdit), setStatus(h, setId)]).toEqual(["approved", "review", "review"]);
-    const again = await h.call("POST", `/api/contact-changes/${setId}/approve/verify`, { challenge_id: opt.json.challenge_id, response: h.auth.assert(opt.json.options) });
+    const again = await h.call("POST", `/api/contact-changes/${setId}/approve/se-verify`, h.auth.signOptions(opt.json));
     expect(again.status).toBe(400); expect(again.json.error).toBe("challenge_invalid");
     expect(count(h, "contact_approvals")).toBe(1);
   });
@@ -220,13 +218,13 @@ describe("contacts manifest and approval", () => {
     const { h, setId, annEdit, benEdit } = await ready();
     const opt = await approveOptions(h, setId, [annEdit, benEdit]);
     h.db.query("UPDATE contact_changes SET payload_json = ? WHERE id = ?").run(JSON.stringify({ set: { given_name: "Ann 📚" }, add_phones: [{ e164: "+15550001111", label: "mobile" }] }), annEdit);
-    const v = await h.call("POST", `/api/contact-changes/${setId}/approve/verify`, { challenge_id: opt.json.challenge_id, response: h.auth.assert(opt.json.options) });
+    const v = await h.call("POST", `/api/contact-changes/${setId}/approve/se-verify`, h.auth.signOptions(opt.json));
     expect(v.status).toBe(409);
     expect(v.json.error).toBe("contact_changed");
     expect(v.json.changed).toEqual([{ change_id: annEdit, reason: "payload_changed" }]);
     expect(count(h, "contact_approvals")).toBe(0);
     expect([status(h, annEdit), status(h, benEdit), setStatus(h, setId)]).toEqual(["review", "review", "review"]);
-    expect(count(h, "webauthn_challenges")).toBe(0);
+    expect(count(h, "owner_challenges")).toBe(0);
   });
 
   test("TAMPER: a changed kind or target, a status moved on, a deleted change or a cancelled set are all refused", async () => {
@@ -239,7 +237,7 @@ describe("contacts manifest and approval", () => {
       const { h, setId, annEdit } = await ready();
       const opt = await approveOptions(h, setId, [annEdit]);
       tweak(h, annEdit);
-      const v = await h.call("POST", `/api/contact-changes/${setId}/approve/verify`, { challenge_id: opt.json.challenge_id, response: h.auth.assert(opt.json.options) });
+      const v = await h.call("POST", `/api/contact-changes/${setId}/approve/se-verify`, h.auth.signOptions(opt.json));
       expect([name, v.status, v.json.error]).toEqual([name, 409, code]);
       expect([name, count(h, "contact_approvals")]).toEqual([name, 0]);
     }
@@ -247,7 +245,7 @@ describe("contacts manifest and approval", () => {
     const opt = await approveOptions(h, setId, [annEdit]);
     h.db.query("PRAGMA foreign_keys = OFF").run();
     h.db.query("DELETE FROM contact_changes WHERE id = ?").run(annEdit);
-    const v = await h.call("POST", `/api/contact-changes/${setId}/approve/verify`, { challenge_id: opt.json.challenge_id, response: h.auth.assert(opt.json.options) });
+    const v = await h.call("POST", `/api/contact-changes/${setId}/approve/se-verify`, h.auth.signOptions(opt.json));
     expect(v.json.error).toBe("contact_changed");
     expect(count(h, "contact_approvals")).toBe(0);
   });
@@ -261,24 +259,18 @@ describe("contacts manifest and approval", () => {
     expect((await approveOptions(h, setId, [annEdit])).json.error).toBe("payload_invalid");
   });
 
-  test("only an approval passkey can approve: the sign-in key, a wrong challenge, a different set, and a tampered signature all fail and record nothing", async () => {
+  test("only an active key's valid signature can approve: a wrong digest, another set, a stranger and a send-tag signature all fail and record nothing", async () => {
     const { h, setId, annEdit } = await ready();
-    // sign-in key
-    let opt = await approveOptions(h, setId, [annEdit]);
-    let v = await h.call("POST", `/api/contact-changes/${setId}/approve/verify`, { challenge_id: opt.json.challenge_id, response: h.login.assert(opt.json.options) });
-    expect(v.status).toBe(401);
-    // another set's id
-    opt = await approveOptions(h, setId, [annEdit]);
-    v = await h.call("POST", `/api/contact-changes/other-set/approve/verify`, { challenge_id: opt.json.challenge_id, response: h.auth.assert(opt.json.options) });
-    expect(v.json.error).toBe("challenge_invalid");
-    // signature over a different challenge
-    opt = await approveOptions(h, setId, [annEdit]);
-    v = await h.call("POST", `/api/contact-changes/${setId}/approve/verify`, { challenge_id: opt.json.challenge_id, response: h.auth.assert({ challenge: b64u(sha256("something else")) }) });
-    expect(v.status).toBe(401);
-    // user presence/verification missing
-    opt = await approveOptions(h, setId, [annEdit]);
-    v = await h.call("POST", `/api/contact-changes/${setId}/approve/verify`, { challenge_id: opt.json.challenge_id, response: h.auth.assert(opt.json.options, { uv: false }) });
-    expect(v.status).toBe(401);
+    const stranger = new SoftSe();
+    const attempt = async (path: string, body: (opt: any) => any) => {
+      const opt = await approveOptions(h, setId, [annEdit]);
+      return h.call("POST", path, body(opt));
+    };
+    const url = `/api/contact-changes/${setId}/approve/se-verify`;
+    expect((await attempt(url, (o) => ({ ...h.auth.signOptions(o.json), signature: h.auth.sign("contacts", sha256("something else")) }))).status).toBe(401);
+    expect((await attempt(url, (o) => stranger.signOptions(o.json))).status).toBe(401);
+    expect((await attempt(url, (o) => h.auth.signOptions({ ...o.json, se: { tag: "send" } }))).status).toBe(401);
+    expect((await attempt(`/api/contact-changes/other-set/approve/se-verify`, (o) => h.auth.signOptions(o.json))).json.error).toBe("challenge_invalid");
     expect(count(h, "contact_approvals")).toBe(0);
     expect(status(h, annEdit)).toBe("review");
   });
@@ -287,14 +279,14 @@ describe("contacts manifest and approval", () => {
     const { h, setId, annEdit } = await ready();
     const copt = await approveOptions(h, setId, [annEdit]);
     // the same set id offered as a batch id
-    const asSend = await h.call("POST", `/api/batches/${setId}/approve/verify`, { challenge_id: copt.json.challenge_id, response: h.auth.assert(copt.json.options) });
+    const asSend = await h.call("POST", `/api/batches/${setId}/approve/se-verify`, h.auth.signOptions(copt.json));
     expect(asSend.status).toBe(400); expect(asSend.json.error).toBe("challenge_invalid");
     expect(count(h, "approvals")).toBe(0); expect(count(h, "contact_approvals")).toBe(0);
     // and the other way round
     const { batchId, draftIds } = seedBatch(h.db, 1);
     const sopt = await h.call("POST", `/api/batches/${batchId}/approve/options`, { draft_ids: draftIds });
     expect(sopt.status).toBe(200);
-    const asContacts = await h.call("POST", `/api/contact-changes/${batchId}/approve/verify`, { challenge_id: sopt.json.challenge_id, response: h.auth.assert(sopt.json.options) });
+    const asContacts = await h.call("POST", `/api/contact-changes/${batchId}/approve/se-verify`, h.auth.signOptions(sopt.json));
     expect(asContacts.status).toBe(400);
     expect(count(h, "approvals")).toBe(0); expect(count(h, "contact_approvals")).toBe(0);
     // a real send approval still works, and a real contacts approval too
@@ -305,13 +297,13 @@ describe("contacts manifest and approval", () => {
   test("an expired approval window is refused", async () => {
     const { h, setId, annEdit } = await ready();
     const opt = await approveOptions(h, setId, [annEdit]);
-    const m = JSON.parse((h.db.query("SELECT manifest FROM webauthn_challenges").get() as any).manifest);
+    const m = JSON.parse((h.db.query("SELECT manifest FROM owner_challenges").get() as any).manifest);
     // a manifest already past its not_after: build one, store it as the challenge, sign it
-    const past = buildContactManifest({ rpId: "localhost", origin: "http://localhost:7477" }, setId,
+    const past = buildContactManifest(setId,
       [{ id: annEdit, kind: "update", target_macos_id: m.contact_items[0].target_macos_id, payload_json: opt.json.payloads[annEdit] }] as any, 24, "dry", newId(), new Date(Date.now() - 25 * 3600_000));
     const ch = b64u(challengeBytes(past.bytes));
-    h.db.query("UPDATE webauthn_challenges SET manifest = ?, challenge = ?, approval_id = ? WHERE id = ?").run(past.bytes, ch, past.manifest.approval_id, opt.json.challenge_id);
-    const v = await h.call("POST", `/api/contact-changes/${setId}/approve/verify`, { challenge_id: opt.json.challenge_id, response: h.auth.assert({ challenge: ch }) });
+    h.db.query("UPDATE owner_challenges SET manifest = ?, challenge = ?, approval_id = ? WHERE id = ?").run(past.bytes, ch, past.manifest.approval_id, opt.json.challenge_id);
+    const v = await h.call("POST", `/api/contact-changes/${setId}/approve/se-verify`, h.auth.signOptions({ ...opt.json, manifest_bytes: past.bytes }));
     expect(v.status).toBe(400); expect(v.json.error).toBe("approval_expired");
     expect(count(h, "contact_approvals")).toBe(0);
   });
@@ -504,7 +496,7 @@ describe("undo", () => {
     const undo2 = (y.h.db.query("SELECT id FROM contact_changes WHERE kind = 'undo'").get() as any).id;
     const o2 = await approveOptions(y.h, u2.json.set_id, [undo2]);
     y.h.db.query("UPDATE contact_changes SET after_fingerprint = ? WHERE id = ?").run("e".repeat(64), y.annEdit);
-    const v2 = await y.h.call("POST", `/api/contact-changes/${u2.json.set_id}/approve/verify`, { challenge_id: o2.json.challenge_id, response: y.h.auth.assert(o2.json.options) });
+    const v2 = await y.h.call("POST", `/api/contact-changes/${u2.json.set_id}/approve/se-verify`, y.h.auth.signOptions(o2.json));
     expect(v2.status).toBe(409); expect(v2.json.error).toBe("undo_mismatch");
     expect(count(y.h, "contact_approvals")).toBe(0);
     // an undo whose original is no longer applied is refused at options time
@@ -517,13 +509,13 @@ describe("contacts transport and the pin's contacts_live_allowed", () => {
   test("pin policy: the candidate carries contacts_live_allowed (saved on tick); leaving it out keeps it; old payloads and old pins keep working", async () => {
     const { h } = await ready();
     expect((await h.call("GET", "/api/pin-policy")).json.policy).toEqual({ live_allowed: false, contacts_live_allowed: false });
-    const put = await h.call("PUT", "/api/pin-policy", { live_allowed: false, contacts_live_allowed: true, reauth: await h.reauth() });
+    const put = await h.call("PUT", "/api/pin-policy", { live_allowed: false, contacts_live_allowed: true, se_reauth: await h.reauth("policy_live") });
     expect(put.status).toBe(200);
     expect(put.json.policy).toEqual({ live_allowed: false, contacts_live_allowed: true });
     const cand = JSON.parse((await Bun.file(join(h.dir, "passkeys.json")).text()));
     expect(cand.policy).toEqual({ live_allowed: false, contacts_live_allowed: true });
     // a PUT without the field keeps it
-    expect((await h.call("PUT", "/api/pin-policy", { live_allowed: true, reauth: await h.reauth() })).json.policy).toEqual({ live_allowed: true, contacts_live_allowed: true });
+    expect((await h.call("PUT", "/api/pin-policy", { live_allowed: true, se_reauth: await h.reauth("policy_live") })).json.policy).toEqual({ live_allowed: true, contacts_live_allowed: true });
     expect((await h.call("PUT", "/api/pin-policy", { live_allowed: true, contacts_live_allowed: false })).json.policy).toEqual({ live_allowed: true, contacts_live_allowed: false });
     for (const bad of [{ live_allowed: true, contacts_live_allowed: "yes" }, { live_allowed: true, contacts_live: true }, { contacts_live_allowed: true }]) {
       expect((await h.call("PUT", "/api/pin-policy", bad)).status).toBe(400);
@@ -532,37 +524,37 @@ describe("contacts transport and the pin's contacts_live_allowed", () => {
     expect(h.db.query("SELECT details_json FROM audit_log WHERE action = 'pin_policy.set' ORDER BY id").all().map((r: any) => JSON.parse(r.details_json))).toContainEqual({ live_allowed: false, contacts_live_allowed: true });
   });
 
-  test("status reports pin_contacts_live_allowed from the INSTALLED pin; an old pin without the field is fine and means false", async () => {
+  test("status reports pin_contacts_live_allowed from the INSTALLED pin; a pin with contacts_live_allowed false means false", async () => {
     const { h } = await ready();
     let s = (await h.call("GET", "/api/status")).json;
     expect(s).toMatchObject({ contacts_transport: "dry", pin_contacts_live_allowed: false });
     expect(s.counts).toMatchObject({ contact_sets_review: 1, contact_changes_review: 3 });
-    installPin(h, { live_allowed: true }); // a pin from before v4
+    installPin(h, { live_allowed: true });
     s = (await h.call("GET", "/api/status")).json;
     expect(s.pin.root).toMatchObject({ live_allowed: true, contacts_live_allowed: false });
-    expect(s.pin.root.policy).toEqual({ live_allowed: true });
+    expect(s.pin.root.policy).toEqual({ live_allowed: true, contacts_live_allowed: false });
     expect(s.pin_contacts_live_allowed).toBe(false);
     installPin(h, { live_allowed: false, contacts_live_allowed: true });
     s = (await h.call("GET", "/api/status")).json;
     expect(s.pin_contacts_live_allowed).toBe(true);
     expect(s.pin.root).toMatchObject({ live_allowed: false, contacts_live_allowed: true });
-    // a non-boolean value never counts
+    // a non-boolean value never counts (and makes the pin invalid)
     installPin(h, { live_allowed: false, contacts_live_allowed: "true" });
     expect((await h.call("GET", "/api/status")).json.pin_contacts_live_allowed).toBe(false);
   });
 
-  test("going live: needs the installed pin's contacts_live_allowed (409 with the way forward), then a fresh sign-in assertion; back to dry needs nothing", async () => {
+  test("going live: needs the installed pin's contacts_live_allowed (409 with the way forward), then a fresh Touch ID confirmation; back to dry needs nothing", async () => {
     const { h, setId, annEdit } = await ready();
-    const noPin = await h.call("PATCH", "/api/settings", { contacts_transport: "live", reauth: await h.reauth() });
+    const noPin = await h.call("PATCH", "/api/settings", { contacts_transport: "live", se_reauth: await h.reauth("mode_live") });
     expect(noPin.status).toBe(409); expect(noPin.json.error).toBe("pin_not_contacts_live_allowed");
     expect(noPin.json.message).toMatch(/Allow live contact changes/);
     installPin(h, { live_allowed: true }); // sending allowed, contacts not
-    expect((await h.call("PATCH", "/api/settings", { contacts_transport: "live", reauth: await h.reauth() })).json.error).toBe("pin_not_contacts_live_allowed");
+    expect((await h.call("PATCH", "/api/settings", { contacts_transport: "live", se_reauth: await h.reauth("mode_live") })).json.error).toBe("pin_not_contacts_live_allowed");
     installPin(h, { live_allowed: false, contacts_live_allowed: true });
     const noAuth = await h.call("PATCH", "/api/settings", { contacts_transport: "live" });
     expect(noAuth.status).toBe(403); expect(noAuth.json.error).toBe("reauth_required");
     expect(getSettings(h.db).contacts_transport).toBe("dry");
-    const ok = await h.call("PATCH", "/api/settings", { contacts_transport: "live", reauth: await h.reauth() });
+    const ok = await h.call("PATCH", "/api/settings", { contacts_transport: "live", se_reauth: await h.reauth("mode_live") });
     expect(ok.status).toBe(200);
     expect(ok.json.settings).toMatchObject({ contacts_transport: "live", transport: "dry" });
     expect(h.db.query("SELECT action, details_json FROM audit_log WHERE action = 'setting.set' AND target = 'contacts_transport'").all()).toEqual([{ action: "setting.set", details_json: '{"value":"live"}' }]);
@@ -570,17 +562,17 @@ describe("contacts transport and the pin's contacts_live_allowed", () => {
     const o = await approveOptions(h, setId, [annEdit]);
     expect(o.json.manifest.transport).toBe("live");
     expect(o.json.pin_contacts_live_allowed).toBe(true);
-    // a sign-in assertion can't be replayed, and an approve key can't do it
-    const re = await h.reauth();
+    // a confirmation can't be replayed, and one signed with the wrong tag is refused
+    const re = await h.reauth("mode_live");
     expect((await h.call("PATCH", "/api/settings", { contacts_transport: "dry" })).json.settings.contacts_transport).toBe("dry");
-    expect((await h.call("PATCH", "/api/settings", { contacts_transport: "live", reauth: { challenge_id: re.challenge_id, response: h.auth.assert({ challenge: "x" }) } })).status).toBe(401);
+    expect((await h.call("PATCH", "/api/settings", { contacts_transport: "live", se_reauth: { ...re, signature: h.auth.sign("send", sha256("x")) } })).status).toBe(401);
     expect((await h.call("PATCH", "/api/settings", { contacts_transport: "sideways" })).status).toBe(400);
   });
 
-  test("going live for sending and for contacts in one request needs only one assertion", async () => {
+  test("going live for sending and for contacts in one request needs only one confirmation", async () => {
     const { h } = await ready();
     installPin(h, { live_allowed: true, contacts_live_allowed: true });
-    const r = await h.call("PATCH", "/api/settings", { transport: "live", contacts_transport: "live", reauth: await h.reauth() });
+    const r = await h.call("PATCH", "/api/settings", { transport: "live", contacts_transport: "live", se_reauth: await h.reauth("mode_live") });
     expect(r.status).toBe(200);
     expect(r.json.settings).toMatchObject({ transport: "live", contacts_transport: "live" });
   });
@@ -589,7 +581,7 @@ describe("contacts transport and the pin's contacts_live_allowed", () => {
     const { h, setId, annEdit } = await ready();
     const o = await approveOptions(h, setId, [annEdit]);
     h.db.query("UPDATE settings SET value = 'live' WHERE key = 'contacts_transport'").run(); // flipped after options
-    const v = await h.call("POST", `/api/contact-changes/${setId}/approve/verify`, { challenge_id: o.json.challenge_id, response: h.auth.assert(o.json.options) });
+    const v = await h.call("POST", `/api/contact-changes/${setId}/approve/se-verify`, h.auth.signOptions(o.json));
     expect(v.json.transport).toBe("dry");
     expect(JSON.parse((h.db.query("SELECT manifest FROM contact_approvals").get() as any).manifest).transport).toBe("dry");
   });

@@ -87,7 +87,7 @@ function fmtBatch(r: Json): string {
     lines.push(`  - ${d.id}  ${d.recipient_name || "(no name)"} <${d.handle}>  [${d.status}]${w ? "  warnings: " + w : ""}${sends ? "  sends: " + sends : ""}`);
     lines.push(`      ${String(d.body).replace(/\n/g, "\n      ")}`);
   }
-  lines.push(`  dashboard: ${r.dashboard_url}`);
+  lines.push(`  open: ${r.dashboard_url}`);
   if (r.lint_error) lines.push(`  NOTE: ${r.lint_error}`);
   if (r.next_step) lines.push(`  next: ${r.next_step}`);
   if (r.message) lines.push(`  ${r.message}`);
@@ -109,7 +109,7 @@ function fmtImport(r: Json): string {
     lines.push(`  rows ${r.offset + 1}-${r.offset + r.rows.length} of ${r.rows_total}${r.has_more ? `; next: --offset ${r.offset + r.rows.length}` : ""}`);
     for (const row of r.rows) lines.push(`   #${row.row_index} [${row.match}] ${row.name ?? ""} <${row.handle ?? "no handle"}>${row.issues?.length ? "  issues: " + row.issues.map((i: any) => i.code).join(",") : ""}`);
   }
-  lines.push(`  dashboard: ${r.dashboard_url}`);
+  lines.push(`  open: ${r.dashboard_url}`);
   return lines.join("\n");
 }
 function fmtContacts(r: Json): string {
@@ -146,7 +146,7 @@ function fmtContactSet(r: Json): string {
     if (!r.sets.length) return "no contact change sets";
     for (const s of r.sets) lines.push(`${s.id}  [${s.status}]  ${Object.entries(s.counts ?? {}).map(([k, v]) => `${v} ${k}`).join(", ")}  ${s.title}  (${s.created_by})`);
   }
-  if (r.dashboard_url) lines.push(`  dashboard: ${r.dashboard_url}`);
+  if (r.dashboard_url) lines.push(`  open: ${r.dashboard_url}`);
   return lines.join("\n");
 }
 
@@ -163,7 +163,7 @@ function fmtGroup(r: Json): string {
     if (r.added) lines.push(`  added ${r.added.length}, already in the group ${r.already.length}, not added ${r.invalid.length}`);
     if (r.removed) lines.push(`  removed ${r.removed.length}${r.not_found?.length ? `, not in the group: ${r.not_found.join(", ")}` : ""}`);
     for (const i of r.invalid ?? []) lines.push(`  not added: ${i.input || "#" + i.index}: ${i.reason}`);
-    lines.push(`  dashboard: ${g.dashboard_url}`);
+    lines.push(`  open: ${g.dashboard_url}`);
   }
   return lines.join("\n");
 }
@@ -196,7 +196,7 @@ export async function main(argv: string[], io: Partial<CliIo> = {}): Promise<num
         const { values, positionals } = opts(rest, { body: { type: "string" }, "body-file": { type: "string" } });
         const id = positionals[0]; if (!id) throw new UsageError("edit needs a draft id");
         const body = await textArg(full, values.body, values["body-file"], "--body or --body-file");
-        show(await api.patch(`/v1/drafts/${encodeURIComponent(id)}`, { body }), (r) => `draft ${id} updated (v${r.draft.version}), ${r.warnings.length} warning(s)\n  ${r.draft.body}\n  dashboard: ${r.dashboard_url}`);
+        show(await api.patch(`/v1/drafts/${encodeURIComponent(id)}`, { body }), (r) => `draft ${id} updated (v${r.draft.version}), ${r.warnings.length} warning(s)\n  ${r.draft.body}\n  open: ${r.dashboard_url}`);
         return 0;
       }
       case "edit-many": {
@@ -412,7 +412,7 @@ export async function main(argv: string[], io: Partial<CliIo> = {}): Promise<num
           `executor: ${r.executor.alive ? "alive" : "NOT running"}${r.executor.transport ? ` (transport ${r.executor.transport}, pin file ${r.executor.pin_file_ok ? "ok" : "not usable"})` : ""}`,
           `kill switch: ${r.kill_switch ? "ON (sending stopped)" : "off"}`,
           `batches: ${Object.entries(r.batches).map(([k, v]) => `${v} ${k}`).join(", ") || "none"}`,
-          `contacts: ${r.contacts}`, `dashboard: ${r.dashboard_url}`,
+          `contacts: ${r.contacts}`, `open: ${r.dashboard_url}`,
         ].join("\n"));
         return 0;
       }

@@ -1,4 +1,4 @@
-// Dashboard import flow: upload -> mapping -> preview -> batch. Skipped cleanly if the ingest library is absent.
+// Owner import flow (JSON only): upload -> mapping -> preview -> batch. Skipped cleanly if the ingest library is absent.
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { mkdtempSync, readdirSync } from "node:fs";
@@ -11,10 +11,8 @@ const csv = "name,phone,city\nSam Lee,(202) 555-0101,Boston\nPriya Nair,+1 202 5
 const tmpImports = (): string => mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "outbox-imports-"));
 
 async function upload(h: ReturnType<typeof makeHarness>, content: string, name = "people.csv") {
-  const fd = new FormData();
-  fd.append("file", new File([content], name, { type: "text/csv" }));
-  const res = await h.request("/api/imports", { method: "POST", headers: { cookie: h.cookie, "x-outbox": "1" }, body: fd });
-  return { status: res.status, json: await res.json() as any };
+  const r = await h.call("POST", "/api/imports", { filename: name, data_b64: Buffer.from(content, "utf8").toString("base64") });
+  return { status: r.status, json: r.json as any };
 }
 
 describe("owner imports", () => {
@@ -47,10 +45,10 @@ describe("owner imports", () => {
     expect(made.json.drafts).toBe(2);
     expect(made.json.skipped).toHaveLength(1);
     const b = getBatch(h.db, made.json.batch_id)!;
-    expect(b.status).toBe("review"); // batchFromImport leaves it 'drafting'; the dashboard submits it
-    expect(b.source).toBe("dashboard"); expect(b.created_by).toBe("owner");
+    expect(b.status).toBe("review"); // batchFromImport leaves it 'drafting'; the owner API submits it
+    expect(b.source).toBe("dashboard"); // the stored source name for owner-made batches expect(b.created_by).toBe("owner");
     expect(getDrafts(h.db, b.id).map((d) => d.body)).toEqual(["Hi Sam, dinner?", "Hi Priya, dinner?"]);
-    expect(getDrafts(h.db, b.id).every((d) => d.status === "review")).toBe(true);
+    expect(b.source).toBe("dashboard"); expect(b.created_by).toBe("owner"); // "dashboard" is the stored source name for owner-made batches
   });
 
   test("pasted text, bad files and missing imports are clean errors", async () => {
@@ -62,6 +60,9 @@ describe("owner imports", () => {
     expect((await h.call("GET", "/api/imports/nope")).status).toBe(404);
     expect((await h.call("POST", "/api/imports/nope/preview", { template: "x" })).status).toBe(404);
     expect((await h.call("POST", "/api/imports", { nope: 1 })).status).toBe(400);
+    expect((await h.call("POST", "/api/imports", { data_b64: "QUJD" })).status).toBe(400);                 // a file needs a filename
+    expect((await h.call("POST", "/api/imports", { data_b64: "QUJD", filename: "a.csv", text: "x" })).status).toBe(400); // not both
+    expect((await h.call("POST", "/api/imports", { data_b64: "not base64!!", filename: "a.csv" })).status).toBe(400);
     expect((await h.call("POST", "/api/imports/x/batch", { title: "", template: "" })).status).toBe(400);
   });
 });

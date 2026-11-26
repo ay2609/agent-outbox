@@ -36,7 +36,7 @@ const callTool = async (c: Client, name: string, args: Record<string, unknown> =
 beforeAll(() => {
   db = memDb();
   const { deps } = fakeDeps(db);
-  const app = createAgentApp({ db: () => db, deps: async () => deps, origin: "https://outbox.test" });
+  const app = createAgentApp({ db: () => db, deps: async () => deps });
   sock = join(tmpDir("outbox-sock-"), "agent.sock");
   server = Bun.serve({ unix: sock, fetch: app.fetch });
 });
@@ -55,7 +55,7 @@ describe("tool surface", () => {
     const { tools } = await c.listTools();
     const d = Object.fromEntries(tools.map((t) => [t.name, t.description ?? ""]));
     for (const n of ["outbox_create_draft", "outbox_create_batch", "outbox_batch_from_import", "outbox_submit_batch"]) {
-      expect(d[n]).toContain("only sent after the user approves them in the dashboard");
+      expect(d[n]).toContain("only sent after the user approves them in the Agent Outbox app");
       expect(d[n]).toContain("You cannot send");
     }
     expect(d.outbox_create_batch).toContain("{{first_name|there}}");
@@ -91,7 +91,7 @@ describe("tools against the live socket", () => {
     const c = await connect();
     const d = await callTool(c, "outbox_create_draft", { to: "415-123-0001", body: "Hey! Coffee Friday?" });
     expect(d.isError).toBeFalsy();
-    expect(textOf(d)).toMatch(/^Batch ".*" \(.*\): 1 draft, 0 warnings, waiting for the user to review and approve it\. Review link: https:\/\/outbox\.test\/#\/batch\//);
+    expect(textOf(d)).toMatch(/^Batch ".*" \(.*\): 1 draft, 0 warnings, waiting for the user to review and approve it\. Open in Agent Outbox: agent-outbox:\/\/batch\//);
     const r = jsonOf(d);
     expect(r.batch.created_by).toBe("agent:mcp-test");
     expect(r.draft.handle).toBe("+14151230001");

@@ -1,4 +1,4 @@
-// The owner's side of saved groups: sign-in and CSRF are required, then create / rename / add people / remove / delete.
+// The owner's side of saved groups: the app token is required (browsers are refused), then create / rename / add people / remove / delete.
 import { describe, expect, test } from "bun:test";
 import { seedContact } from "../../tests/helpers";
 import { createGroup, addMembers } from "../core/groups";
@@ -12,7 +12,7 @@ async function ready() {
 }
 
 describe("/api/groups: gate", () => {
-  test("every route needs a session, and every write needs the CSRF header and a same-origin Origin", async () => {
+  test("every route needs the app token, and a request carrying an Origin header is refused as a browser", async () => {
     const h = await ready();
     const g = createGroup(h.db, { name: "Crew", actor: "owner" });
     const reads: [string, string][] = [["GET", "/api/groups"], ["GET", `/api/groups/${g.id}`]];
@@ -21,12 +21,11 @@ describe("/api/groups: gate", () => {
       ["POST", `/api/groups/${g.id}/members`, { members: [{ to: "4151230001" }] }], ["POST", `/api/groups/${g.id}/remove`, { handles: ["4151230001"] }],
       ["DELETE", `/api/groups/${g.id}`, undefined],
     ];
-    for (const [m, p] of reads) expect((await h.call(m, p, undefined, { cookie: null })).status).toBe(401);
+    for (const [m, p] of reads) expect((await h.call(m, p, undefined, { token: null })).status).toBe(401);
     for (const [m, p, b] of writes) {
-      expect((await h.call(m, p, b, { cookie: null })).status).toBe(401);
-      expect((await h.call(m, p, b, { csrf: false })).status).toBe(403);
+      expect((await h.call(m, p, b, { token: null })).status).toBe(401);
       const r = await h.call(m, p, b, { headers: { origin: "http://localhost:9999" } });
-      expect(r.status).toBe(403); expect(r.json.error).toBe("bad_origin");
+      expect(r.status).toBe(403); expect(r.json.error).toBe("browser_refused");
     }
     // nothing changed
     expect(h.db.query("SELECT name FROM contact_groups").all()).toEqual([{ name: "Crew" }]);

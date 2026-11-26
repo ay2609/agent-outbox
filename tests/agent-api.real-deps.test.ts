@@ -23,7 +23,7 @@ describe.skipIf(!have)("agent API with real modules", () => {
       setMapping: ing.setMapping as any, getImport: ing.getImport as any, batchFromImport: from.batchFromImport as any,
       lintBatch: lint.lintBatch as any, renderTemplate: tpl.renderTemplate as any,
     };
-    return { db, app: createAgentApp({ db: () => db, deps: async () => deps, origin: "https://outbox.test" }) };
+    return { db, app: createAgentApp({ db: () => db, deps: async () => deps }) };
   }
 
   test("single draft: real normalizeHandle + lint", async () => {
@@ -61,7 +61,7 @@ describe.skipIf(!have)("agent API with real modules", () => {
     expect(up.json.draft.version).toBe(2);
     const s = await call(app, "POST", `/v1/batches/${bid}/submit`);
     expect(s.json.batch.status).toBe("review");
-    expect(s.json.dashboard_url).toBe(`https://outbox.test/#/batch/${bid}`);
+    expect(s.json.dashboard_url).toBe(`agent-outbox://batch/${bid}`);
     expect((await call(app, "GET", "/v1/imports/does-not-exist")).status).toBe(404);
   });
 

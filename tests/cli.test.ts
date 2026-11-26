@@ -12,7 +12,7 @@ let app: ReturnType<typeof createAgentApp>;
 beforeEach(() => {
   db = memDb();
   const { deps } = fakeDeps(db);
-  app = createAgentApp({ db: () => db, deps: async () => deps, origin: "https://outbox.test" });
+  app = createAgentApp({ db: () => db, deps: async () => deps });
 });
 
 async function run(args: string[], stdin = "") {
@@ -38,7 +38,7 @@ describe("outbox CLI", () => {
     expect(r.code).toBe(0);
     expect(r.out).toContain("Sam Lee <+12025550009>");
     expect(r.out).toContain("from stdin");
-    expect(r.out).toContain("dashboard: https://outbox.test/#/batch/");
+    expect(r.out).toContain("open: agent-outbox://batch/");
   });
 
   test("batch create from an items file, show, list, submit", async () => {

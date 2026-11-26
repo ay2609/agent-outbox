@@ -36,7 +36,7 @@ beforeAll(async () => {
     ingestFile: (d, a) => ing.ingestFile(d, { ...a, importsDir }), setMapping: ing.setMapping as any, getImport: ing.getImport as any,
     batchFromImport: from.batchFromImport as any, lintBatch: lint.lintBatch as any, renderTemplate: tpl.renderTemplate as any,
   };
-  app = createAgentApp({ db: () => db, deps: async () => deps, origin: "https://outbox.test" });
+  app = createAgentApp({ db: () => db, deps: async () => deps });
   sock = join(tmpDir("outbox-sock-"), "agent.sock");
   server = Bun.serve({ unix: sock, fetch: app.fetch });
   seedContact(db, { name: "Ann Lee", phones: [{ e164: "+12025550001", label: "mobile" }], tags: ["College Friends"] });
@@ -95,7 +95,7 @@ describe("import workflow tools", () => {
   test("ingest → get_import (paged, vars, issues) → batch_from_import with per-row bodies → add_items/update_drafts/cancel", async () => {
     const c = await connect();
     const i = jsonOf(await tool(c, "outbox_ingest_file", { text: GOOGLE }));
-    expect(i.dashboard_url).toContain("/#/imports/");
+    expect(i.dashboard_url).toContain("agent-outbox://imports/");
     const page1 = jsonOf(await tool(c, "outbox_get_import", { import_id: i.import_id, limit: 2 }));
     expect(page1).toMatchObject({ rows_total: 3, has_more: true });
     expect(page1.rows[0]).toMatchObject({ name: "Jane Smith", handle: "+13015550123", match: "new" });

@@ -19,19 +19,19 @@ let state: ReturnType<typeof fakeDeps>["state"];
 beforeEach(() => {
   db = memDb();
   const f = fakeDeps(db); state = f.state;
-  app = createAgentApp({ db: () => db, deps: async () => f.deps, origin: "https://outbox.test" });
+  app = createAgentApp({ db: () => db, deps: async () => f.deps });
 });
 const H: Record<string, string> = { "X-Outbox-Client": "g-test" };
 const api = (method: string, path: string, body?: unknown, headers = H) => call(app, method, path, body, headers);
 const people = [{ to: "4151230001", name: "Ann" }, { to: "4151230002", name: "Bo", vars: { city: "Oslo" } }, { to: "cy@x.com", name: "Cy" }];
 
 describe("agent API: groups", () => {
-  test("create → 201 with the group, who was added, and a dashboard link; list; get by id and by name", async () => {
+  test("create → 201 with the group, who was added, and an Agent Outbox link; list; get by id and by name", async () => {
     const sam = seedContact(db, { name: "Sam Lee", phones: [{ e164: "+12025550009", label: "mobile" }] });
     const r = await api("POST", "/v1/groups", { name: "Book club", description: "Thursdays", members: [...people, { to: "nope" }], contact_ids: [sam] });
     expect(r.status).toBe(201);
     expect(r.json.group).toMatchObject({ name: "Book club", description: "Thursdays", members: 4, created_by: "agent:g-test" });
-    expect(r.json.group.dashboard_url).toBe(`https://outbox.test/#/contacts/groups/${r.json.group.id}`);
+    expect(r.json.group.dashboard_url).toBe(`agent-outbox://groups/${r.json.group.id}`);
     expect(r.json.added).toHaveLength(4);
     expect(r.json.invalid).toEqual([{ index: 3, input: "nope", reason: expect.stringContaining("not a valid") }]);
 
@@ -124,7 +124,7 @@ describe("agent API: groups", () => {
     expect(r.status).toBe(201);
     expect(r.json.group).toEqual({ id: g.id, name: "Book club" });
     expect(r.json.batch).toMatchObject({ title: "Nov 20", status: "review", created_by: "agent:g-test", source: "mcp", template: "Hi {{first_name|there}} from {{city|nowhere}}" });
-    expect(r.json.dashboard_url).toContain("/#/batch/");
+    expect(r.json.dashboard_url).toContain("agent-outbox://batch/");
     const bodies = Object.fromEntries(r.json.drafts.map((d: any) => [d.handle, d.body]));
     expect(bodies["+14151230001"]).toBe("Ann, a special note");
     expect(bodies["+14151230002"]).toBe("Hi Bo from Oslo");
@@ -250,7 +250,7 @@ describe("MCP: group tools", () => {
   beforeAll(() => {
     mdb = memDb();
     const { deps } = fakeDeps(mdb);
-    const a = createAgentApp({ db: () => mdb, deps: async () => deps, origin: "https://outbox.test" });
+    const a = createAgentApp({ db: () => mdb, deps: async () => deps });
     sock = join(tmpDir("outbox-sock-"), "agent.sock");
     server = Bun.serve({ unix: sock, fetch: a.fetch });
   });
