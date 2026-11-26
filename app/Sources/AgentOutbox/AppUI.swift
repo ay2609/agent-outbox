@@ -55,8 +55,7 @@ struct MainView: View {
                 }.padding(10)
             }
         } detail: {
-            VStack(spacing: 0) {
-                BannerStack()
+            Group {
                 NavigationStack(path: $model.path) {
                     Group {
                         switch model.nav {

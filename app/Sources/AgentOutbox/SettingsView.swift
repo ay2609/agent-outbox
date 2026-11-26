@@ -46,6 +46,7 @@ struct SettingsView: View {
         let keys = nativeKeys.data?.arr("keys") ?? []
         let activeCount = keys.filter { $0.str("status") == "active" }.count
         Form {
+            Section { BannerStack() }
             if !model.reachable || action.error != nil || settings.error != nil || action.note != nil {
                 Section { ServerBanner(); ErrorLine(text: action.error ?? settings.error); if let n = action.note { Text(n).foregroundStyle(.secondary) } }
             }

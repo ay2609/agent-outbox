@@ -29,7 +29,7 @@ struct InboxView: View {
         let closed = bs.filter { !needIds.contains($0.id) && !activeIds.contains($0.id) && !draftingIds.contains($0.id) }
 
         List {
-            Section { StatusStrip(); ServerBanner(); ErrorLine(text: batches.error) }
+            Section { BannerStack(); StatusStrip(); ServerBanner(); ErrorLine(text: batches.error) }
             if bs.isEmpty && cs.isEmpty && batches.data != nil {
                 Section {
                     EmptyState(symbol: "tray", title: "Nothing to review",

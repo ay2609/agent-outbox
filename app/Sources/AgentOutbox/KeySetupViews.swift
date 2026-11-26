@@ -139,7 +139,8 @@ struct StaleKeysCard: View {
     }
 }
 
-/// Banners above every page: recovery open, a migration notice, hardened pin out of date, sender holding, Touch ID missing.
+/// Banners at the top of the Inbox and Settings: recovery open, a migration notice, hardened pin out of date, sender holding, Touch ID missing.
+/// (Put inside a List section: a safe-area inset on the whole detail column blanked the window.)
 struct BannerStack: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
@@ -178,7 +179,6 @@ struct BannerStack: View {
             }
             StaleKeysCard()
         }
-        .padding(.horizontal, 12).padding(.top, model.setup.recoveryOpen || model.migrationNotice != nil || model.pinNeedsUpdate || model.senderHold != nil || !model.staleKeys.isEmpty || model.needsKeySetup ? 10 : 0)
     }
 
     private func banner<A: View>(_ tone: Color, _ symbol: String, _ title: String, _ text: String, @ViewBuilder actions: () -> A) -> some View {

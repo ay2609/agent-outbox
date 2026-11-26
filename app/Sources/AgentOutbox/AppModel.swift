@@ -83,6 +83,7 @@ final class AppModel: ObservableObject {
                 }
             }
         }
+        if AppEnv.isDev && e["AGENT_OUTBOX_DEV_NOGATE"] == "1" { gateDismissed = true }   // screenshots: skip the one-time Touch ID screen
         devHooksAtLaunch()
         let flag = sending
         AppUpdater.shared.busyCheck = { flag.value }
