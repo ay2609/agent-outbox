@@ -39,6 +39,7 @@ public enum CLI {
         let config = ExecConfig.fromEnvironment()
         let known: Set<String> = ["--once", "--no-pace"]
         if let bad = a.first(where: { !known.contains($0) }) { throw ExecError("unknown option \(bad)") }
+        redirectStdioFromDevNull(home: config.home)
         let db = try Database(path: config.dbPath)
         let ex = Executor(db: db, config: config, contacts: SystemContacts())
         signal(SIGTERM) { _ in stopRequested = 1 }

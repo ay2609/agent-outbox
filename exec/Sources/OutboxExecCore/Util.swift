@@ -86,6 +86,24 @@ public enum Paths {
     }
 }
 
+/// A login item registered by Agent Outbox.app (SMAppService) has a static plist with no StandardOutPath: launchd then connects
+/// stdout and stderr to /dev/null. In that case (and only then) send them to `<home>/logs/outbox-exec.{out,err}.log`, the same files
+/// the developer install's LaunchAgent names. A terminal, a pipe or a file the caller chose is left alone.
+public func redirectStdioFromDevNull(home: String) {
+    var null = stat()
+    guard stat("/dev/null", &null) == 0 else { return }
+    let logs = home + "/logs"
+    for (fd, name) in [(Int32(1), "outbox-exec.out.log"), (Int32(2), "outbox-exec.err.log")] {
+        var st = stat()
+        guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFCHR, st.st_rdev == null.st_rdev else { continue }
+        try? FileManager.default.createDirectory(atPath: logs, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let f = open(logs + "/" + name, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard f >= 0 else { continue }
+        dup2(f, fd)
+        close(f)
+    }
+}
+
 public enum Version {
     public static let current = "0.1.0"
 }

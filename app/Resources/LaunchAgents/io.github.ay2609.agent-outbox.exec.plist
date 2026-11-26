@@ -5,7 +5,8 @@
      executable INSIDE OutboxExec.app, so macOS charges the Messages and Contacts permissions to that one signed binary, as with
      the developer install (deploy/io.github.ay2609.agent-outbox.exec.plist). The state directory is the executor's default
      (~/Library/Application Support/agent-outbox); a login-item plist is static, so a custom OUTBOX_HOME cannot be set here.
-     No log paths: a bundled plist cannot know the user's home folder (launchd does not expand ~). -->
+     No log paths: a bundled plist cannot know the user's home folder (launchd does not expand ~), so launchd gives the job
+     /dev/null; `outbox-exec run` notices that and appends to <state>/logs/outbox-exec.{out,err}.log itself. -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
