@@ -145,7 +145,7 @@ struct OnboardingView: View {
                 if login.needsApproval { Button("Allow in System Settings") { LoginItems.openSystemSettings() } }
             }
             ErrorLine(text: loginProblem)
-            if AppEnv.isDev { Text("Development run: login items are not registered.").font(.caption).foregroundStyle(.secondary) }
+            if AppEnv.isDev { Text("Test run: Open at login and the sender stay off, so nothing on this Mac changes. Press Continue.").font(.caption).foregroundStyle(.secondary) }
             nav(enabled: model.reachable) { advance() }
         }
     }
