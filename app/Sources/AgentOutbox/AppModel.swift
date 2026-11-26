@@ -143,15 +143,12 @@ final class AppModel: ObservableObject {
     }
 
     /// Opens the dashboard in the default browser, signed in through a one-time link (POST /api/app/browser-link).
-    /// `then`: a dashboard hash (for example "/batches/<id>") opened right after, because the link page lands on the inbox.
+    /// `then`: a dashboard route (for example "/batch/<id>"). With a link it rides along as `&next=` (the page moves there after
+    /// signing in, one tab); without one (no link possible) the route is opened directly.
     func openBrowser(then hash: String? = nil) async {
-        var url = origin
-        if let r = try? await post("/api/app/browser-link"), !r.str("url").isEmpty { url = r.str("url") }
+        var url = origin + (hash.map { "/#" + $0 } ?? "")
+        if let r = try? await post("/api/app/browser-link"), !r.str("url").isEmpty { url = r.str("url") + (hash.map { "&next=" + $0 } ?? "") }
         if let u = URL(string: url) { NSWorkspace.shared.open(u) }
-        if let hash, let u = URL(string: origin + "/#" + hash) {
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            NSWorkspace.shared.open(u)
-        }
     }
 
     func showMainWindow() {

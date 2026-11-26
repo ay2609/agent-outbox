@@ -25,10 +25,11 @@ export function App() {
   const refresh = () => get<AuthState>("/api/auth/state").then(setAuth).catch((e) => setErr(errText(e)));
   // #/link?code=…: Agent Outbox.app opened the dashboard for you. The one-time code becomes a normal session, then the address is cleaned up.
   useEffect(() => {
-    const m = /^#\/link\?code=([A-Za-z0-9_-]{20,100})$/.exec(location.hash);
+    // `&next=/batch/<id>`: the page the app wants open afterwards (a dashboard route on this origin only: letters, digits, - _ /).
+    const m = /^#\/link\?code=([A-Za-z0-9_-]{20,100})(?:&next=(\/[A-Za-z0-9_/-]{1,200}))?$/.exec(location.hash);
     if (!m) { void refresh(); return; }
     post("/api/auth/link", { code: m[1] })
-      .then(() => { history.replaceState(null, "", location.pathname); }, (e) => setErr(errText(e)))
+      .then(() => { history.replaceState(null, "", location.pathname + (m[2] ? "#" + m[2] : "")); }, (e) => setErr(errText(e)))
       .finally(() => { void refresh(); });
   }, []);
   if (err) return <div className="gate"><ErrorNote>{err}</ErrorNote><button className="btn" onClick={() => location.reload()}>Retry</button></div>;

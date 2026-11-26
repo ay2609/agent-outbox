@@ -244,7 +244,7 @@ struct BatchView: View {
                 await reload(); await model.refresh()
             } else {
                 action.note = "Approve in your browser, then come back."
-                await model.openBrowser(then: "/batches/\(id)")
+                await model.openBrowser(then: "/batch/\(id)")
             }
         }
     }
