@@ -11,7 +11,7 @@ struct MigrationView: View {
         VStack(alignment: .leading, spacing: 14) {
             Image(systemName: "arrow.triangle.2.circlepath.circle").font(.system(size: 40)).foregroundStyle(.tint)
             Text("Move over from the earlier install").font(.title2.bold())
-            Text("Agent Outbox found services from the developer install (install.sh) running in the background. The app runs the server and the sender itself now, so the old ones need to go. Your messages, contacts, keys and settings stay exactly where they are.")
+            Text("Agent Outbox found services from the earlier developer install running in the background. The app runs the server and the sender itself now, so the old ones need to go. Your messages, contacts, keys and settings stay exactly where they are.")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(model.oldAgents, id: \.self) { Label($0, systemImage: "gearshape.2").font(.callout.monospaced()) }
@@ -37,7 +37,7 @@ struct MigrationView: View {
                     }
                 }.keyboardShortcut(.defaultAction).disabled(working)
             }
-            Text("Not now starts the app anyway, but the old server holds the port, so the app's server can't start until they are removed.").font(.caption).foregroundStyle(.secondary)
+            Text("Not now starts the app anyway, but the old services can hold the sender's files, so remove them soon.").font(.caption).foregroundStyle(.secondary)
         }
         .padding(28).frame(maxWidth: 560)
     }
@@ -126,6 +126,9 @@ struct OnboardingView: View {
             Label("macOS \(v.majorVersion).\(v.minorVersion) on \(arm ? "Apple silicon" : "an Intel Mac")", systemImage: ok ? "checkmark.circle.fill" : "xmark.octagon.fill")
                 .foregroundStyle(ok ? Color.green : Color.red)
             if !ok { Text("Agent Outbox needs macOS 13 or later on a Mac with Apple silicon.").foregroundStyle(.secondary) }
+            Label(model.native.touchIDAvailable ? "Touch ID is ready" : "Touch ID isn't ready", systemImage: model.native.touchIDAvailable ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(model.native.touchIDAvailable ? Color.green : Color.orange).padding(.top, 4)
+            if !model.native.touchIDAvailable, let r = model.native.touchIDReason { Text(r).font(.caption).foregroundStyle(.secondary) }
             nav(enabled: ok) { advance() }
         }
     }
@@ -186,22 +189,12 @@ struct OnboardingView: View {
 
     // 4. Approval
     private var approvalStep: some View {
-        let haveKey = model.native.keysActive > 0 || model.status.obj("native").int("keys_active") > 0
-            || model.status.int("passkeys") > 0
+        let haveKey = model.keysActive > 0 && model.native.hasLocalKey && !model.native.touchIDChanged
         return VStack(alignment: .leading, spacing: 10) {
             header("touchid", "Set up approval", model.native.touchIDAvailable
-                   ? "Messages only send after you approve them with Touch ID. Set up the key that does it."
-                   : "Messages only send after you approve them. This Mac can't use Touch ID inside the app, so approvals use a passkey in your browser.")
-            if haveKey {
-                Label("Approval is set up", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-            } else if model.native.touchIDAvailable {
-                Button("Set up Touch ID") {
-                    action.run { _ = try await model.approval.enroll(label: Host.current().localizedName ?? "This Mac"); await model.refresh() }
-                }.disabled(action.busy)
-            } else {
-                Button("Set up in your browser") { action.run { await model.openBrowser() } }.disabled(action.busy)
-                Text("Create the sign-in and approval passkeys there, then come back to this window.").font(.caption).foregroundStyle(.secondary)
-            }
+                   ? "Messages only send after you approve them with your fingerprint. Set up the key that does it."
+                   : "Messages only send after you approve them with your fingerprint, and this Mac can't do that right now.")
+            KeySetupCard()
             nav(skip: haveKey ? nil : "Not now", showNext: haveKey) { advance() }
         }
     }

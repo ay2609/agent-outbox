@@ -65,7 +65,7 @@ public struct SEKeyStore: KeyProviding {
             // On a Mac without enrolled biometry (a Mac mini with no Touch ID keyboard) key creation fails with LAError -1000 / -7 / -12.
             let ns = error as NSError
             if ns.domain == LAError.errorDomain || ns.localizedDescription.lowercased().contains("bio") {
-                throw NativeError.touchIDNotAvailable(ns.localizedDescription)
+                throw NativeError.touchIDNotAvailable(TouchID.reason(for: ns))
             }
             throw NativeError.signingFailed(ns.localizedDescription)
         }

@@ -28,7 +28,7 @@ struct ContactsView: View {
                 Section { Text("No contact matches \u{201C}\(query)\u{201D}.").foregroundStyle(.secondary) }
             }
             Section(list.isEmpty ? "" : "\(total) contacts") {
-                ForEach(rows(list)) { r in ContactRow(c: r.j) }
+                ForEach(rows(list)) { r in NavigationLink(value: ContactRef(id: r.id)) { ContactRow(c: r.j) } }
                 if hasMore { Button("Load more") { Task { await load(reset: false) } }.disabled(loading) }
             }
         }
@@ -134,6 +134,7 @@ struct GroupDetailView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(r.j.str("name", r.j.str("handle"))).font(.headline)
                             Text(r.j.str("handle")).font(.caption).foregroundStyle(.secondary)
+                            if !r.j.obj("contact").str("id").isEmpty { NavigationLink("Contact", value: ContactRef(id: r.j.obj("contact").str("id"))).buttonStyle(.link).font(.caption) }
                         }
                         Spacer()
                         Button("Remove") { action.run { _ = try await model.post("/api/groups/\(id)/remove", ["handles": [r.j.str("handle")]]); await reload() } }
@@ -221,8 +222,8 @@ struct ContactSetView: View {
                 if !pickable.isEmpty {
                     Button("Reject selected") { act { _ = try await model.post("/api/contact-changes/\(id)/reject", ["change_ids": ids]) } }.disabled(ids.isEmpty || action.busy)
                     Button("Cancel set", role: .destructive) { confirmCancel = true }.disabled(action.busy)
-                    Button(model.approveInApp ? "Approve \(ids.count) with Touch ID…" : "Approve \(ids.count) in browser…") { approve(ids) }
-                        .keyboardShortcut(.defaultAction).disabled(ids.isEmpty || action.busy || model.killSwitch)
+                    Button("Approve \(ids.count) with Touch ID…") { approve(ids) }
+                        .keyboardShortcut(.defaultAction).disabled(ids.isEmpty || action.busy || model.killSwitch || !model.approveInApp)
                 }
                 }
             }.padding(12)
@@ -245,14 +246,10 @@ struct ContactSetView: View {
     }
     private func approve(_ ids: [String]) {
         action.run {
-            if model.approveInApp {
-                let ok = try await model.approval.approveContacts(id, changeIds: ids)
-                action.note = ok ? "Approved." : "Not approved."
-                await reload(); await model.refresh()
-            } else {
-                action.note = "Approve in your browser, then come back."
-                await model.openBrowser(then: "/contacts/changes/\(id)")
-            }
+            guard model.approveInApp else { throw APIFailure(status: 0, code: "approval_off", message: model.approvalHint ?? "Approving isn't possible right now.") }
+            let ok = try await model.approval.approveContacts(id, changeIds: ids)
+            action.note = ok ? "Approved." : "Not approved."
+            await reload(); await model.refresh()
         }
     }
 }

@@ -44,14 +44,17 @@ public final class NativeApprover: @unchecked Sendable {
 
     // MARK: Touch ID availability
 
-    /// Is there a Touch ID sensor with enrolled fingerprints? When false, create() would fail (LAError -1000 / -7 / -12) and the app
-    /// should use the browser approval instead. Cheap; safe to call from a view.
-    public static var touchIDAvailable: Bool {
-        let ctx = LAContext()
-        var err: NSError?
-        let ok = ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &err)
-        return ok
+    /// Is there a Touch ID sensor with enrolled fingerprints? When false, approving, enrolling and going live are disabled: there is no
+    /// password fallback. Cheap; safe to call from a view.
+    public static var touchIDAvailable: Bool { TouchID.check().available }
+
+    private var domainStateFile: URL { stateDir.appendingPathComponent("native-keys/touchid-state") }
+    private func rememberDomainState(_ h: String?) {
+        guard let h else { return }
+        try? FileManager.default.createDirectory(at: domainStateFile.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try? Data(h.utf8).write(to: domainStateFile)
     }
+    private func savedDomainState() -> String? { (try? String(contentsOf: domainStateFile, encoding: .utf8)) }
 
     // MARK: HTTP helpers
 
@@ -69,12 +72,13 @@ public final class NativeApprover: @unchecked Sendable {
 
     // MARK: status
 
-    /// What the app needs to choose between Touch ID approval and the browser. Never throws: an unreachable server just says so.
+    /// What the app needs to decide whether approving is possible here. Never throws: an unreachable server just says so.
     /// Also removes blobs of keys the server no longer knows as active or pending (expired, refused, revoked).
     public func status() async -> NativeStatus {
-        let touch = Self.touchIDAvailable
+        let t = TouchID.check()
         let se = SecureEnclave.isAvailable
-        var s = NativeStatus(touchIDAvailable: touch, secureEnclaveAvailable: se, keysActive: 0, approveInApp: false, pinNeedsUpdate: false,
+        let changed = t.available && !keys.localKeyIds().isEmpty && (savedDomainState().map { $0 != t.domainHash } ?? false) && t.domainHash != nil
+        var s = NativeStatus(touchIDAvailable: t.available, touchIDReason: t.reason, touchIDChanged: changed, secureEnclaveAvailable: se, keysActive: 0, approveInApp: false, pinNeedsUpdate: false,
                              localKeyId: nil, needsReenroll: false, serverReachable: false)
         guard let st = try? await call("GET", "/api/status"), let native = st["native"] as? [String: Any] else { return s }
         s.serverReachable = true
@@ -98,9 +102,9 @@ public final class NativeApprover: @unchecked Sendable {
 
     // MARK: enrolment
 
-    /// Makes a Secure Enclave key and enrols it. Throws `.touchIDNotAvailable` on a Mac without Touch ID (use the browser). Proof of owner,
-    /// in the server's order of preference: the first-run setup token, a recovery token from Terminal, an existing key's Touch ID, or the
-    /// browser (the result is then `status: "pending"` with a `confirmURL` to open).
+    /// Makes a Secure Enclave key and enrols it. Throws `.touchIDNotAvailable` on a Mac without Touch ID (no fallback). Proof of owner,
+    /// in the server's order of preference: a recovery token from Terminal, the first-run setup token, or an existing key's Touch ID
+    /// (`se_reauth`, bound to the new key id). With none available the server says `proof: null` and this throws `.proofRequired`.
     public func enroll(label: String) async throws -> NativeKeyInfo {
         let handle = try keys.create()                      // no prompt; fails cleanly without Touch ID
         lock.lock(); enrolling.insert(handle.keyId); lock.unlock()
@@ -109,36 +113,30 @@ public final class NativeApprover: @unchecked Sendable {
             let o = try await call("POST", "/api/native-keys/enroll/options", ["x963": B64.encode(handle.x963), "label": label])
             guard (o["key_id"] as? String) == handle.keyId, let challengeB64 = o["challenge"] as? String, let challenge = B64.decode(challengeB64), challenge.count == 32,
                   let fp = o["fingerprint"] as? String else { throw NativeError.mismatch("The server's setup answer doesn't match this key.") }
-            let proof = (o["proof"] as? String) ?? "browser"
-            let sig = try await SESig.sign(handle: handle, message: SESig.enrollMessage(challenge: challenge, x963: handle.x963), reason: ApprovalReason.enroll)
-            var body: [String: Any] = ["key_id": handle.keyId, "signature": B64.encode(sig)]
+            guard let proof = o["proof"] as? String, ["setup_token", "recovery_token", "se_reauth"].contains(proof) else { throw NativeError.proofRequired }
+            var body: [String: Any] = ["key_id": handle.keyId]
             switch proof {
-            case "setup_token": if let t = readSecret(named: "setup-token") { body["setup_token"] = t }
-            case "recovery_token": if let t = readSecret(named: "recovery-token") { body["recovery_token"] = t }
-            case "se_reauth":
-                // an existing active key on this Mac confirms adding another
-                if let old = keys.localKeyIds().first(where: { $0 != handle.keyId }) {
-                    let r = try await seReauth(action: "native_key_add", keyId: old)
-                    body["se_reauth"] = ["challenge_id": r.challengeId, "key_id": r.keyId, "signature": r.signature]
-                }
-            default: break
+            case "setup_token":
+                guard let t = readSecret(named: "setup-token") else { throw NativeError.proofRequired }
+                body["setup_token"] = t
+            case "recovery_token":
+                guard let t = readSecret(named: "recovery-token") else { throw NativeError.proofRequired }
+                body["recovery_token"] = t
+            default:
+                // an existing active key on this Mac confirms adding the new one (the confirmation names the new key id)
+                guard let old = keys.localKeyIds().first(where: { $0 != handle.keyId }) else { throw NativeError.proofRequired }
+                let r = try await seReauth(action: "native_key_add", keyId: old, target: handle.keyId)
+                body["se_reauth"] = ["challenge_id": r.challengeId, "key_id": r.keyId, "signature": r.signature]
             }
-            let v = try await call("POST", "/api/native-keys/enroll/verify", body)
-            let status = (v["status"] as? String) ?? "pending"
-            return NativeKeyInfo(keyId: handle.keyId, label: label, fingerprint: fp, status: status == "active" ? "active" : "pending",
-                                 confirmURL: v["confirm_url"] as? String)
+            let sig = try await SESig.sign(handle: handle, message: SESig.enrollMessage(challenge: challenge, x963: handle.x963), reason: ApprovalReason.enroll)
+            body["signature"] = B64.encode(sig)
+            _ = try await call("POST", "/api/native-keys/enroll/verify", body)
+            rememberDomainState(TouchID.check().domainHash)
+            return NativeKeyInfo(keyId: handle.keyId, label: label, fingerprint: fp, status: "active")
         } catch {
             keys.delete(keyId: handle.keyId)                // a key that never became active leaves nothing behind
             throw error
         }
-    }
-
-    /// Polls a pending enrolment (the browser confirms it): "pending", "active", "revoked" or throws when unknown/expired.
-    public func enrollmentStatus(keyId: String) async throws -> NativeKeyInfo {
-        let o = try await call("GET", "/api/native-keys/enroll/\(keyId)")
-        let st = (o["status"] as? String) ?? "pending"
-        if st == "revoked" { keys.delete(keyId: keyId) }
-        return NativeKeyInfo(keyId: keyId, label: (o["label"] as? String) ?? "", fingerprint: (o["fingerprint"] as? String) ?? "", status: st, confirmURL: nil)
     }
 
     /// The first-run setup token / recovery token written by the server or `agent-outbox recover`: a plain file we own, 0600, one token.
@@ -166,16 +164,18 @@ public final class NativeApprover: @unchecked Sendable {
     // MARK: reauth
 
     /// A Touch ID confirmation for a sensitive change; put the result in the request as `se_reauth`. `action` is one of mode_live,
-    /// policy_live, passkey_add, native_key_add, browser_link.
-    public func seReauth(action: String) async throws -> SEReauth { try await seReauth(action: action, keyId: nil) }
+    /// policy_live, native_key_add (the last one is only used while enrolling and names the new key as `target`).
+    public func seReauth(action: String) async throws -> SEReauth { try await seReauth(action: action, keyId: nil, target: nil) }
 
-    func seReauth(action: String, keyId: String?) async throws -> SEReauth {
+    func seReauth(action: String, keyId: String?, target: String?) async throws -> SEReauth {
         guard let reason = ApprovalReason.reauth(action: action) else { throw NativeError.unsupported("Unknown confirmation \(action).") }
-        let o = try await call("POST", "/api/native-keys/reauth/options", ["action": action])
+        var req: [String: Any] = ["action": action]
+        if let target { req["target"] = target }
+        let o = try await call("POST", "/api/native-keys/reauth/options", req)
         guard let cid = o["challenge_id"] as? String, let chB64 = o["challenge"] as? String, let challenge = B64.decode(chB64), challenge.count == 32 else {
             throw NativeError.mismatch("The server's confirmation request is malformed.")
         }
-        let handle = try localHandle(preferring: keyId.map { [$0] } ?? [])
+        let handle = try localHandle(preferring: keyId.map { [$0] } ?? [], onlyThese: keyId.map { [$0] })
         try beginSigning(); defer { endSigning() }
         let sig = try await SESig.sign(handle: handle, message: SESig.reauthMessage(challenge: challenge), reason: reason)
         return SEReauth(challengeId: cid, keyId: handle.keyId, signature: B64.encode(sig))

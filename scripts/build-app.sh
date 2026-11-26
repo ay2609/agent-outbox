@@ -11,8 +11,8 @@
 #   Contents/MacOS/Agent Outbox          SwiftUI shell (app/ SwiftPM target AgentOutbox)
 #   Contents/MacOS/agent-outbox          bun-compiled server | mcp | cli
 #   Contents/Helpers/OutboxExec.app      the executor, unchanged (own bundle id, entitlements, runtime)
-#   Contents/Resources/web               the dashboard (web/dist)
-#   Contents/Resources/AppIcon.icns
+#   Contents/Resources/AppIcon.icns      from app/Resources/icon-512.png
+# There is no web dashboard: the app is the only interface, and the server is started socket-only (--app-auth-fd).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
@@ -30,15 +30,11 @@ FEED_URL="https://agent-outbox.halcyn.dev/updates/appcast.xml"
 rm -rf "$APP" "$STAGE"
 mkdir -p "$STAGE"
 
-echo "== 1/6 dashboard (web/dist)"
+echo "== 1/5 bun binary (src/bin.ts -> agent-outbox)"
 bun install --frozen-lockfile >/dev/null
-bun run web:build >/dev/null
-[ -f web/dist/index.html ] || { echo "web/dist/index.html missing" >&2; exit 1; }
-
-echo "== 2/6 bun binary (src/bin.ts -> agent-outbox)"
 bun build --compile --target=bun-darwin-arm64 src/bin.ts --outfile "$STAGE/agent-outbox" >/dev/null
 
-echo "== 3/6 SwiftUI shell (swift build -c release --arch arm64)"
+echo "== 2/5 SwiftUI shell (swift build -c release --arch arm64)"
 # With only the Command Line Tools, the newest SDK can lack the SwiftUI macro plugin (@State fails to expand). Then fall back
 # to the newest MacOSX26*.sdk. Override with SWIFT_SDK=/path/to/MacOSX.sdk. Full Xcode (CI) builds with the default SDK.
 SDK_ARGS=()
@@ -56,12 +52,12 @@ grep -v '^\[' "$SWIFT_LOG" | grep -v "ld: warning: search path" | grep -E "error
 SWIFT_BIN="$(cd app && swift build -c release --arch arm64 ${SDK_ARGS[@]+"${SDK_ARGS[@]}"} --show-bin-path 2>/dev/null)"
 [ -x "$SWIFT_BIN/AgentOutbox" ] || { echo "swift build failed: $SWIFT_BIN/AgentOutbox not found" >&2; exit 1; }
 
-echo "== 4/6 executor (exec/build.sh)"
+echo "== 3/5 executor (exec/build.sh)"
 (cd exec && ./build.sh >/dev/null)
 EXEC_APP="$ROOT/exec/build/OutboxExec.app"
 [ -d "$EXEC_APP" ] || { echo "executor app missing" >&2; exit 1; }
 
-echo "== 5/6 assembling $APP"
+echo "== 4/5 assembling $APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
 cp "$SWIFT_BIN/AgentOutbox" "$APP/Contents/MacOS/$APP_NAME"
 cp "$STAGE/agent-outbox" "$APP/Contents/MacOS/agent-outbox"
@@ -69,11 +65,10 @@ ditto "$EXEC_APP" "$APP/Contents/Helpers/OutboxExec.app"
 # The executor's login item (SMAppService.agent(plistName:) looks in Contents/Library/LaunchAgents).
 mkdir -p "$APP/Contents/Library/LaunchAgents"
 cp "$ROOT/app/Resources/LaunchAgents/io.github.ay2609.agent-outbox.exec.plist" "$APP/Contents/Library/LaunchAgents/"
-ditto web/dist "$APP/Contents/Resources/web"
-# Icon: the dashboard's mark, from the 512 px PNG (the 1024 px slot is upscaled).
+# Icon: the app mark, from the 512 px PNG (the 1024 px slot is upscaled).
 ICONSET="$STAGE/AppIcon.iconset"
 mkdir -p "$ICONSET"
-SRC_PNG="$ROOT/web/public/icon-512.png"
+SRC_PNG="$ROOT/app/Resources/icon-512.png"
 for size in 16 32 128 256 512; do
   sips -z $size $size "$SRC_PNG" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
   sips -z $((size * 2)) $((size * 2)) "$SRC_PNG" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
@@ -102,6 +97,15 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>NSHighResolutionCapable</key><true/>
 	<key>NSPrincipalClass</key><string>NSApplication</string>
 	<key>NSHumanReadableCopyright</key><string>MIT License</string>
+	<!-- agent-outbox://inbox | batch/<id> | contacts/changes/<id> | imports/<id> | groups/<id>: navigation only (Links.swift). -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key><string>$APP_ID</string>
+			<key>CFBundleURLSchemes</key>
+			<array><string>agent-outbox</string></array>
+		</dict>
+	</array>
 	<!-- Read by Updater.swift: a Sparkle-format appcast, check-only (no Sparkle framework: see Updater.swift). -->
 	<key>AOUpdateFeedURL</key><string>$FEED_URL</string>
 </dict>
@@ -109,7 +113,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
-echo "== 6/6 codesign (ad-hoc, hardened runtime), inner to outer"
+echo "== 5/5 codesign (ad-hoc, hardened runtime), inner to outer"
 SIGN=(codesign --force --sign - --options runtime)
 # 1. the executor: same identifier, entitlements and runtime as exec/build.sh gave it (Messages/Contacts grants hang on this)
 "${SIGN[@]}" --identifier "io.github.ay2609.agent-outbox.exec" --entitlements "$ROOT/exec/entitlements.plist" "$APP/Contents/Helpers/OutboxExec.app"

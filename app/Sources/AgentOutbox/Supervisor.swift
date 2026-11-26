@@ -8,7 +8,7 @@ import Darwin
 ///  - stdin of the child = a pipe the app keeps open: when the app dies the pipe closes and the server exits (lifeline);
 ///  - stdout / stderr go to <state>/logs/outboxd.{out,err}.log;
 ///  - restarts with backoff (1, 2, 4 ... 30 s; the counter resets after a run of 30 s or more).
-/// Env passes through (OUTBOX_PORT, OUTBOX_HOME). Override the binary with AGENT_OUTBOX_SERVER_BIN (development).
+/// Env passes through (OUTBOX_HOME). Override the binary with AGENT_OUTBOX_SERVER_BIN (development).
 final class Supervisor: ObservableObject, @unchecked Sendable {
     enum State: Equatable {
         case stopped, starting, running(pid_t), backoff(Int), failed(String)
@@ -121,6 +121,8 @@ final class Supervisor: ObservableObject, @unchecked Sendable {
 
         var env = ProcessInfo.processInfo.environment
         env["OUTBOX_HOME"] = stateDir
+        // The server has no TCP listener and no web bundle any more: stray variables from an old install must not reach it.
+        for k in ["OUTBOX_PORT", "OUTBOX_WEB_DIST", "OUTBOX_RP_ID", "OUTBOX_ORIGIN"] { env.removeValue(forKey: k) }
         for (k, v) in extraEnv { env[k] = v }
         let argv: [UnsafeMutablePointer<CChar>?] = command.map { strdup($0) } + [nil]
         let envp: [UnsafeMutablePointer<CChar>?] = env.map { strdup("\($0.key)=\($0.value)") } + [nil]

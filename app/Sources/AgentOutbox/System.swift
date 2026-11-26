@@ -36,6 +36,21 @@ enum LoginItems {
         return problems.isEmpty ? nil : problems.joined(separator: " ")
     }
 
+    /// The version of the executor shipped in this bundle (its Info.plist), to compare with what the running sender reports.
+    static func bundledExecutorVersion() -> String? {
+        let p = AppEnv.bundlePath + "/Contents/Helpers/OutboxExec.app/Contents/Info.plist"
+        return (NSDictionary(contentsOfFile: p)?["CFBundleShortVersionString"] as? String)
+    }
+
+    /// Unregister and register the sender's login item again, so the executor from THIS bundle is the one running. Never in dev runs.
+    @discardableResult
+    static func restartExecutor() -> String? {
+        if AppEnv.isDev || !execPlistPresent { return nil }
+        let svc = SMAppService.agent(plistName: execPlistName)
+        try? svc.unregister()
+        do { try svc.register(); return nil } catch { return "Sender: \(error.localizedDescription)" }
+    }
+
     static func unregister() {
         if AppEnv.isDev { return }
         try? SMAppService.mainApp.unregister()
@@ -83,7 +98,7 @@ func runCommand(_ exe: String, _ args: [String], env: [String: String]? = nil, t
 
 let realRunner: CommandRunner = { exe, args in runCommand(exe, args) }
 
-// MARK: - Migration from the developer install (install.sh LaunchAgents)
+// MARK: - Migration from the developer install (the old LaunchAgents)
 
 /// The old install ran two LaunchAgents from ~/Library/LaunchAgents. The app replaces them: `launchctl bootout` each, delete the
 /// plists, keep the state directory (database, keys, pin). Testable: directory, uid and the command runner are injected.

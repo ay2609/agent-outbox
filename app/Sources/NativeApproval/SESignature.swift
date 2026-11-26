@@ -73,7 +73,7 @@ extension NativeError {
         if ns.domain == LAError.errorDomain {
             switch LAError.Code(rawValue: ns.code) {
             case .userCancel, .appCancel, .systemCancel: return .cancelled
-            case .biometryNotEnrolled, .biometryNotAvailable, .biometryLockout: return .touchIDNotAvailable(ns.localizedDescription)
+            case .biometryNotEnrolled, .biometryNotAvailable, .biometryLockout: return .touchIDNotAvailable(TouchID.reason(for: ns))
             case .authenticationFailed: return .signingFailed("Touch ID didn't recognise the finger")
             default: break
             }

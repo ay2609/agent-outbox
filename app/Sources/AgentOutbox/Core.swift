@@ -34,6 +34,8 @@ struct APIFailure: Error, LocalizedError {
     var status: Int
     var code: String
     var message: String
+    /// The whole error body (some errors carry extra fields, such as the id of the group that already exists).
+    var data: J = [:]
     var errorDescription: String? { message }
 }
 
@@ -53,12 +55,13 @@ enum AppEnv {
     static var serverBin: String { env["AGENT_OUTBOX_SERVER_BIN"].flatMap { $0.isEmpty ? nil : $0 } ?? bundlePath + "/Contents/MacOS/agent-outbox" }
     /// The MCP command registered with Claude Code (the bundled binary; subcommand `mcp`).
     static var mcpBin: String { serverBin }
-    static var port: Int {
-        if let p = env["OUTBOX_PORT"], let n = Int(p) { return n }
-        if let d = FileManager.default.contents(atPath: stateDir + "/config.json"), let n = parseJSON(d)["port"] as? Int { return n }
-        return 7477
+    /// The line the owner pastes into Terminal to open recovery: this bundle's own binary, single-quoted (and OUTBOX_HOME when set).
+    static var recoverCommand: String { recoverCommand(bin: bundlePath + "/Contents/MacOS/agent-outbox", home: env["OUTBOX_HOME"]) }
+    static func recoverCommand(bin: String, home: String?) -> String {
+        let prefix = (home?.isEmpty == false) ? "OUTBOX_HOME=\(shellQuote(home!)) " : ""
+        return prefix + shellQuote(bin) + " recover"
     }
-    static var origin: String { "http://localhost:\(port)" }
+    static func shellQuote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
     static var launchAgentsDir: String {
         // Dev only: the UX round points the migration screen at a temp folder of fake plists.
         if isDev, let d = env["AGENT_OUTBOX_LAUNCHAGENTS_DIR"], !d.isEmpty { return d }

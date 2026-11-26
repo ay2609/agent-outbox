@@ -8,10 +8,12 @@
 import Foundation
 import OwnerAPI
 
-/// Everything that can go wrong, with a sentence for the owner. `touchIDNotAvailable` means "use the browser approval instead".
+/// Everything that can go wrong, with a sentence for the owner. `touchIDNotAvailable` means approving can't happen on this Mac (no fallback).
 public enum NativeError: Error, LocalizedError, Equatable {
-    /// No Touch ID sensor, or no fingerprints enrolled: Secure Enclave approval can't be set up here. Fall back to the browser.
+    /// No Touch ID sensor, no fingerprints enrolled, or locked out: approving can't happen here. The text says why (no password fallback exists).
     case touchIDNotAvailable(String)
+    /// The server has no proof of the owner available for a new key: run the recover command in Terminal first.
+    case proofRequired
     case secureEnclaveUnavailable
     /// The Touch ID set changed (or the key was invalidated): enrol a new key.
     case keyInvalidated
@@ -29,7 +31,8 @@ public enum NativeError: Error, LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case .touchIDNotAvailable: return "Touch ID isn't available on this Mac, so approval has to happen in the browser."
+        case .touchIDNotAvailable(let m): return m.isEmpty ? TouchID.generic : m
+        case .proofRequired: return "Confirm it's you in Terminal first: run the recover command shown in the app, then try again."
         case .secureEnclaveUnavailable: return "This Mac has no Secure Enclave."
         case .keyInvalidated: return "Touch ID changed: set up approval again."
         case .cancelled: return "Cancelled."
@@ -61,8 +64,12 @@ public enum B64 {
 // MARK: models the app consumes
 
 public struct NativeStatus: Sendable, Equatable {
-    /// Touch ID sensor present with fingerprints enrolled (LocalAuthentication). False -> use the browser approval.
+    /// Touch ID sensor present with fingerprints enrolled (LocalAuthentication). False -> approvals are disabled (no fallback).
     public var touchIDAvailable: Bool
+    /// Plain-words reason when `touchIDAvailable` is false.
+    public var touchIDReason: String?
+    /// The fingerprint set changed since the key was made: every key on this Mac is dead; set up approval again.
+    public var touchIDChanged: Bool
     public var secureEnclaveAvailable: Bool
     /// Active keys the server knows (any Mac's).
     public var keysActive: Int
@@ -73,7 +80,7 @@ public struct NativeStatus: Sendable, Equatable {
     public var localKeyId: String?
     /// True when the server has no usable key for this Mac although a blob exists or existed: show "set up approval again".
     public var needsReenroll: Bool
-    /// Native or browser: the app signs here only when Touch ID works, a local active key exists AND the pin trusts it.
+    /// The app signs here only when Touch ID works, a local active key exists AND the pin trusts it.
     public var canApproveInApp: Bool { touchIDAvailable && secureEnclaveAvailable && localKeyId != nil && approveInApp }
     /// The server could not be asked (status call failed); the rest is what is known locally.
     public var serverReachable: Bool
@@ -83,9 +90,8 @@ public struct NativeKeyInfo: Sendable, Equatable {
     public var keyId: String
     public var label: String
     public var fingerprint: String
-    /// "active", or "pending" while the browser still has to confirm (see confirmURL).
+    /// Always "active": enrolment is synchronous.
     public var status: String
-    public var confirmURL: String?
 }
 
 public struct ApproveVerifyResult: Sendable, Equatable, Decodable {
