@@ -37,9 +37,9 @@ async function run(argv: string[]): Promise<number | undefined> {
   switch (cmd) {
     case "server": {
       pointAtBundledWeb();
-      // server.ts runs at import time and reads its own flags (`--app-auth-fd N`) from process.argv.
-      process.argv = [process.argv[0]!, "agent-outbox-server", ...rest];
-      await import("./server");
+      // server.ts parses its own flags (`--app-auth-fd N`); import.meta.main is false here, so start it explicitly.
+      const { main } = await import("./server");
+      await main(rest);
       return undefined; // keep running: Bun stays alive on the listeners
     }
     case "mcp": {
