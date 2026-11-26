@@ -126,22 +126,19 @@ export async function requireReauth(c: Context, cfg: OwnerConfig, limiterFor: (c
 
 // ---------- link sessions (browser fallback login from the app) ----------
 const LINK_TTL_MS = 5 * 60_000;
-/** Is this session one created from a browser link, and younger than `maxAgeMs`? */
+/** Is this session one created from a browser link made with an owner proof (see linkSessionWithoutProof), and younger than `maxAgeMs`? */
 export function isLinkSession(db: Database, token: string | undefined, maxAgeMs: number): boolean {
   if (!token || sessionAgeMs(db, token) === null) return false;
-  const r = db.query<{ created_at: string }, [string]>("SELECT created_at FROM session_links WHERE token_sha256 = ?").get(sha256Hex(token));
-  return !!r && Date.now() - Date.parse(r.created_at) < maxAgeMs;
+  const r = db.query<{ created_at: string; proofed: number }, [string]>("SELECT created_at, proofed FROM session_links WHERE token_sha256 = ?").get(sha256Hex(token));
+  return !!r && r.proofed === 1 && Date.now() - Date.parse(r.created_at) < maxAgeMs;
 }
 
-/** A link session made without an owner proof (the app channel alone: browser-link while a sign-in key exists) is worth a session,
- *  no more. It must not reach the "first approval key right after the sign-in key" shortcut unless that sign-in key was created in
- *  this same session (which needed the Touch ID confirmation browser-link asks for when no sign-in key exists). True = refuse it. */
+/** A link session made without an owner proof (the app channel alone: a browser link used while a sign-in key exists) is worth a
+ *  session, no more. It must not reach the "first approval key right after the sign-in key" shortcut. True = refuse it. */
 export function linkSessionWithoutProof(db: Database, token: string | undefined): boolean {
   if (!token) return false;
-  const r = db.query<{ created_at: string }, [string]>("SELECT created_at FROM session_links WHERE token_sha256 = ?").get(sha256Hex(token));
-  if (!r) return false;
-  const n = db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM passkeys WHERE purpose = 'login' AND created_at >= ?").get(r.created_at)?.n ?? 0;
-  return n === 0;
+  const r = db.query<{ proofed: number }, [string]>("SELECT proofed FROM session_links WHERE token_sha256 = ?").get(sha256Hex(token));
+  return !!r && r.proofed !== 1;
 }
 
 // ---------- se-verify (shared checks) ----------
@@ -388,7 +385,9 @@ export function registerNativeApi(app: Hono, cfg: OwnerConfig, limiterFor: (c: C
     });
     if (!ok) { limiter.fail(); throw new ApiError(400, "link_invalid", "That link is unknown, expired or was already used. Open it again from the app."); }
     const token = deps.startSession(c);
-    db().query("INSERT INTO session_links(token_sha256, created_at) VALUES (?,?)").run(sha256Hex(token), nowIso());
+    // Sign-in keys are never removed, so "none now" means none when the link was made: browser-link then required an se_reauth.
+    const proofed = passkeyCount(db(), "login") === 0 ? 1 : 0;
+    db().query("INSERT INTO session_links(token_sha256, created_at, proofed) VALUES (?,?,?)").run(sha256Hex(token), nowIso(), proofed);
     audit(db(), "owner", "browser_link.use", null, {});
     limiter.reset();
     return c.json({ ok: true });

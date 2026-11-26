@@ -350,6 +350,8 @@ CREATE TABLE IF NOT EXISTS native_keys (
 CREATE TABLE IF NOT EXISTS native_challenges (id TEXT PRIMARY KEY, key_id TEXT, action TEXT NOT NULL,
   challenge TEXT NOT NULL, expires_at TEXT NOT NULL);                 -- single use: deleted on take
 CREATE TABLE IF NOT EXISTS link_codes (code_sha256 TEXT PRIMARY KEY, expires_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS session_links (token_sha256 TEXT PRIMARY KEY, created_at TEXT NOT NULL);
+-- proofed = 1: the link was used while no sign-in key existed, which browser-link only allows after a Touch ID confirmation (se_reauth).
+-- proofed = 0: a link made while a sign-in key existed (the app channel alone): a session, never an owner proof.
+CREATE TABLE IF NOT EXISTS session_links (token_sha256 TEXT PRIMARY KEY, created_at TEXT NOT NULL, proofed INTEGER NOT NULL DEFAULT 0);
 """#
 }
