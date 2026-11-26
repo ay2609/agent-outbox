@@ -97,7 +97,7 @@ p, ver, mb, url = sys.argv[1:]
 s = open(p).read()
 s = re.sub(r'(<span data-ao="version">)[^<]*', r'\g<1>' + ver, s)
 s = re.sub(r'(<span data-ao="size">)[^<]*', r'\g<1>' + mb + ' MB', s)
-s = re.sub(r'(<a class="button" id="dl-link" href=")[^"]*', r'\g<1>' + url, s)
+s = re.sub(r'(<a class="button" data-dl href=")[^"]*', r'\g<1>' + url, s)
 open(p, "w").write(s)
 PY
 fi
