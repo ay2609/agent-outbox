@@ -1,4 +1,4 @@
-// Development stand-in for `agent-outbox server --app-auth-fd 3` (track B, before track C's server listener exists).
+// Development stand-in for `agent-outbox server --app-auth-fd 3` (canned data, no database).
 // Speaks the app channel of the owner API with canned data shaped like the real routes (src/owner-api/*.ts), so the SwiftUI
 // windows can be run and screenshotted:
 //   AGENT_OUTBOX_SERVER_BIN=$PWD/app/dev/server-wrapper.sh OUTBOX_HOME=/tmp/ao-b OUTBOX_PORT=7485 .build/debug/AgentOutbox

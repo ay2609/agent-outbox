@@ -1,4 +1,4 @@
-# App development helpers (track B)
+# App development helpers
 
 Run the SwiftUI app without a bundle, against a stand-in owner API, with a temp state dir. Never touches a real state directory,
 LaunchAgents or login items.
