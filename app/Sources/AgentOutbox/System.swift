@@ -97,7 +97,7 @@ enum Migration {
 
     struct Result: Equatable { var removed: [String]; var problems: [String]; var commands: [String] }
 
-    static func perform(agentsDir: String = AppEnv.launchAgentsDir, uid: uid_t = getuid(), run: CommandRunner = realRunner) -> Result {
+    static func perform(agentsDir: String = AppEnv.launchAgentsDir, uid: uid_t = getuid(), run: CommandRunner = AppEnv.isDev ? devNoopRunner : realRunner) -> Result {
         var res = Result(removed: [], problems: [], commands: [])
         for label in detect(agentsDir: agentsDir) {
             let args = ["bootout", "gui/\(uid)/\(label)"]
@@ -147,7 +147,7 @@ enum ClaudeConnect {
     /// `claude mcp add --scope user agent-outbox [-e OUTBOX_HOME=...] -- <bin> mcp`. If a registration already points elsewhere (the old
     /// bun path), it is removed first (re-point). Returns a message and whether it worked.
     static func connect(claude: String, bin: String = AppEnv.mcpBin, stateDirOverride: String? = ProcessInfo.processInfo.environment["OUTBOX_HOME"],
-                        run: CommandRunner = realRunner) -> (ok: Bool, message: String) {
+                        run: CommandRunner = AppEnv.isDev ? devClaudeRunner : realRunner) -> (ok: Bool, message: String) {
         let get = run(claude, ["mcp", "get", name])
         if get.code == 0 {
             if get.out.contains(bin) { return (true, "Already connected.") }

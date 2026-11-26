@@ -32,10 +32,8 @@ struct InboxView: View {
             Section { StatusStrip(); ServerBanner(); ErrorLine(text: batches.error) }
             if bs.isEmpty && cs.isEmpty && batches.data != nil {
                 Section {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Nothing to review").font(.headline)
-                        Text("When a Claude session drafts messages, they show up here. Nothing is ever sent without your approval.").foregroundStyle(.secondary)
-                    }.padding(.vertical, 8)
+                    EmptyState(symbol: "tray", title: "Nothing to review",
+                               text: "When Claude or another agent drafts messages for you, they appear here. Nothing is sent until you approve it. To try it, ask Claude: \u{201C}Use Agent Outbox to draft a text to me that says hi.\u{201D}")
                 }
             }
             if !cs.isEmpty || !needs.isEmpty {
@@ -66,13 +64,17 @@ struct StatusStrip: View {
         let s = model.status
         let e = s.obj("exec")
         HStack(spacing: 6) {
-            if model.killSwitch { Chip("Sending stopped", .bad) }
+            if model.killSwitch { Chip("Sending stopped", .bad).help("Nothing is sent until you press Resume sending.") }
             Chip(model.isLive ? "Live" : "Dry run", model.isLive ? .warn : .neutral)
+                .help(model.isLive ? "Approved messages are really sent." : "Approved messages are recorded but nothing is sent. Change this in Settings.")
             if !e.isEmpty {
-                Chip(e.bool("alive") ? "Sender up" : "Sender silent \(e.int("heartbeat_age_s") / 60) min", e.bool("alive") ? .good : .bad)
-            } else { Chip("Sender not seen", .bad) }
-            Chip(s.obj("pin").obj("effective").bool("valid") ? "Keys pinned" : "Keys not pinned", s.obj("pin").obj("effective").bool("valid") ? .good : .warn)
+                Chip(e.bool("alive") ? "Sender running" : "Sender silent \(e.int("heartbeat_age_s") / 60) min", e.bool("alive") ? .good : .bad)
+                    .help("The sender is the helper that hands approved messages to Messages.")
+            } else { Chip("Sender not running", .bad).help("The sender is the helper that hands approved messages to Messages. It starts with the app; if this stays red, open Settings > This app.") }
+            Chip(s.obj("pin").obj("effective").bool("valid") ? "Approval key set" : "No approval key yet", s.obj("pin").obj("effective").bool("valid") ? .good : .warn)
+                .help(s.obj("pin").obj("effective").bool("valid") ? "The sender only trusts approvals signed with your key." : "Set up approval in Settings before you approve anything.")
             Chip(model.hardened ? "Hardened" : "Simple mode", model.hardened ? .good : .neutral)
+                .help("Settings > Protection explains what this means.")
             Spacer()
             if model.killSwitch { Button("Resume sending") { Task { await model.resume() } } }
         }
@@ -102,7 +104,7 @@ struct BatchRow: View {
                 if b.int("new_contacts") > 0 { Chip(plural(b.int("new_contacts"), "new contact"), .info) }
                 if b.str("status") == "cancelled" { Chip("cancelled") }
             }
-            Text("\(plural(b.int("total"), "message")) from \(b.str("created_by").replacingOccurrences(of: "agent:", with: ""))")
+            Text("\(plural(b.int("total"), "message")), drafted by \(b.str("created_by").replacingOccurrences(of: "agent:", with: ""))")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(.vertical, 3)
@@ -121,7 +123,7 @@ struct SetRow: View {
                 Text(timeAgo(s.str("created_at"))).font(.caption).foregroundStyle(.secondary)
             }
             HStack(spacing: 5) {
-                Chip("Contacts", .info)
+                Chip("Contact changes", .info)
                 if c.int("review") > 0 { Chip("\(c.int("review")) to review", .info) }
                 if c.int("applied") > 0 { Chip("\(c.int("applied")) applied", .good) }
             }
@@ -167,9 +169,9 @@ struct BatchView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(spacing: 6) {
                             Chip(model.isLive ? "Live: approved messages are really sent" : "Dry run: nothing is sent", model.isLive ? .warn : .neutral)
-                            if !batch.isEmpty { Chip(batch.str("status")) }
+                            if !batch.isEmpty { Chip(statusLabel(batch.str("status"))) }
                         }
-                        Text("From \(batch.str("created_by").replacingOccurrences(of: "agent:", with: "")), \(timeAgo(batch.str("created_at")))")
+                        Text("Drafted by \(batch.str("created_by").replacingOccurrences(of: "agent:", with: "")), \(timeAgo(batch.str("created_at")))")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     ErrorLine(text: loader.error)
@@ -187,13 +189,18 @@ struct BatchView: View {
                 Section("\(plural(drafts.count, "message"))") {
                     ForEach(rows(drafts)) { r in
                         DraftRow(d: r.j, wants: wantsApproval(r.j), unsendable: isUnsendable(r.j), held: isHeld(r.j),
-                                 selected: Binding(get: { selected.contains(r.id) }, set: { on in if on { selected.insert(r.id) } else { selected.remove(r.id) } }),
+                                 heldOut: isHeld(r.j) && !anyway,
+                                 selected: Binding(get: { selected.contains(r.id) && !(isHeld(r.j) && !anyway) }, set: { on in if on { selected.insert(r.id) } else { selected.remove(r.id) } }),
                                  onSkip: { toggleSkip(r.j) })
                     }
                 }
             }
             Divider()
-            HStack {
+            VStack(alignment: .leading, spacing: 8) {
+                if action.note == nil, action.error == nil, !closed, let h = model.approvalHint {
+                    Label(h, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+                HStack {
                 ErrorLine(text: action.error)
                 if let n = action.note { Text(n).font(.callout).foregroundStyle(.secondary) }
                 Spacer()
@@ -202,6 +209,7 @@ struct BatchView: View {
                     Button(model.approveInApp ? "Approve \(ids.count) with Touch ID…" : "Approve \(ids.count) in browser…") { approve(ids, heldIds) }
                         .keyboardShortcut(.defaultAction)
                         .disabled(ids.isEmpty || action.busy || model.killSwitch)
+                }
                 }
             }.padding(12)
         }
@@ -255,6 +263,8 @@ struct DraftRow: View {
     let wants: Bool
     let unsendable: Bool
     let held: Bool
+    /// Held back and not included: its box is empty and can't be ticked until "include anyway" is on.
+    var heldOut = false
     @Binding var selected: Bool
     let onSkip: () -> Void
 
@@ -263,14 +273,14 @@ struct DraftRow: View {
         let covered = !(d["covered_by"] == nil || d["covered_by"] is NSNull)
         let skipped = status == "skipped"
         HStack(alignment: .top, spacing: 10) {
-            if wants && !unsendable { Toggle("", isOn: $selected).labelsHidden().toggleStyle(.checkbox) }
+            if wants && !unsendable { Toggle("", isOn: $selected).labelsHidden().toggleStyle(.checkbox).disabled(heldOut) }
             else { Color.clear.frame(width: 16) }
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 6) {
                     Text(d.str("recipient_name", d.str("handle"))).font(.headline)
                     Text(d.str("handle")).font(.caption).foregroundStyle(.secondary)
                     Chip(d.str("service", "auto"))
-                    if covered { Chip("Approved", .good) } else if status != "review" && status != "draft" { Chip(status, status == "failed" ? .bad : (status == "sent" ? .good : .neutral)) }
+                    if covered { Chip("Approved", .good) } else if status != "review" && status != "draft" { Chip(statusLabel(status), status == "failed" ? .bad : (status == "sent" ? .good : .neutral)) }
                     if d.bool("create_contact") { Chip("New contact", .info) }
                 }
                 Text(d.str("body")).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
@@ -278,7 +288,7 @@ struct DraftRow: View {
                     Label(w.str("message"), systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
                 }
                 if unsendable { Text("Can't be sent as it is.").font(.caption).foregroundStyle(.red) }
-                else if held { Text("Held back until you include it anyway.").font(.caption).foregroundStyle(.secondary) }
+                else if held { Text("Left out of this approval until you include it anyway.").font(.caption).foregroundStyle(.secondary) }
             }
             Spacer(minLength: 0)
             if ["draft", "review", "failed", "skipped"].contains(status) {

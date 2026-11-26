@@ -49,11 +49,12 @@ struct OnboardingView: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var supervisor: Supervisor
     enum Step: Int, CaseIterable { case mac, services, claude, approval, test }
-    @State private var step: Step = .mac
+    @State private var step: Step = AppEnv.isDev ? (Int(AppEnv.env["AGENT_OUTBOX_START_STEP"] ?? "").flatMap { Step(rawValue: $0) } ?? .mac) : .mac
     @StateObject private var action = Action()
     @State private var claudePath: String?
     @State private var claudeSearched = false
     @State private var connectMsg: String?
+    @State private var connectOK = false
     @State private var configCopied = false
     @State private var loginProblem: String?
     @State private var testSet = false
@@ -74,26 +75,33 @@ struct OnboardingView: View {
                 case .test: testStep
                 }
             }
-            Spacer(minLength: 12)
-            ErrorLine(text: action.error)
+            .frame(maxHeight: .infinity, alignment: .top)
+            ErrorLine(text: action.error).padding(.top, 6)
         }
-        .padding(28).frame(maxWidth: 600, minHeight: 440, alignment: .topLeading)
+        .padding(28).frame(maxWidth: 580, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity)
     }
 
-    private func header(_ symbol: String, _ title: String, _ sub: String) -> some View {
+    private func header(_ symbol: String, _ title: String, _ sub: String, appIcon: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Image(systemName: symbol).font(.system(size: 36)).foregroundStyle(.tint)
+            if appIcon { Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 72, height: 72) }
+            else { Image(systemName: symbol).font(.system(size: 36)).foregroundStyle(.tint) }
             Text(title).font(.title2.bold())
             Text(sub).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.padding(.bottom, 14)
     }
-    private func nav(next: String = "Continue", enabled: Bool = true, skip: String? = nil, _ go: @escaping () -> Void) -> some View {
-        HStack {
-            if step != .mac { Button("Back") { step = Step(rawValue: step.rawValue - 1)! } }
-            Spacer()
-            if let skip { Button(skip) { go() } }
-            Button(next) { go() }.keyboardShortcut(.defaultAction).disabled(!enabled)
-        }.padding(.top, 8)
+    /// The footer, pinned to the bottom of the window. `showNext: false` leaves only the skip button (the step isn't done yet).
+    private func nav(next: String = "Continue", enabled: Bool = true, skip: String? = nil, showNext: Bool = true, _ go: @escaping () -> Void) -> some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 16)
+            Divider().padding(.bottom, 12)
+            HStack {
+                if step != .mac { Button("Back") { step = Step(rawValue: step.rawValue - 1)! } }
+                Spacer()
+                if let skip { Button(skip) { go() } }
+                if showNext { Button(next) { go() }.keyboardShortcut(.defaultAction).disabled(!enabled) }
+            }
+        }
     }
     private func advance() { if let n = Step(rawValue: step.rawValue + 1) { step = n } else { model.finishOnboarding() } }
 
@@ -107,7 +115,14 @@ struct OnboardingView: View {
         #endif
         let ok = v.majorVersion >= 13 && arm
         return VStack(alignment: .leading) {
-            header("macwindow", "Welcome to Agent Outbox", "AI agents draft your messages. You read them here and approve with Touch ID. Only then does your Mac send them.")
+            header("macwindow", "Welcome to Agent Outbox", "AI agents draft your messages. You read them here and approve them. Only then does your Mac send them.", appIcon: true)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Setting up takes about a minute:").font(.callout.weight(.medium))
+                Label("Start Agent Outbox in the background", systemImage: "1.circle")
+                Label("Connect Claude Code, or another agent", systemImage: "2.circle")
+                Label("Set up approval, so only you can send", systemImage: "3.circle")
+                Label("Try it with a message that isn't sent", systemImage: "4.circle")
+            }.foregroundStyle(.secondary).padding(.bottom, 14)
             Label("macOS \(v.majorVersion).\(v.minorVersion) on \(arm ? "Apple silicon" : "an Intel Mac")", systemImage: ok ? "checkmark.circle.fill" : "xmark.octagon.fill")
                 .foregroundStyle(ok ? Color.green : Color.red)
             if !ok { Text("Agent Outbox needs macOS 13 or later on a Mac with Apple silicon.").foregroundStyle(.secondary) }
@@ -118,15 +133,15 @@ struct OnboardingView: View {
     // 2. Services
     private var servicesStep: some View {
         VStack(alignment: .leading, spacing: 10) {
-            header("server.rack", "Start the services", "The app runs a small server and a sender in the background. Messages and keys stay on this Mac.")
-            Label(model.reachable ? "Server is running" : supervisor.state.label, systemImage: model.reachable ? "checkmark.circle.fill" : "circle.dotted")
+            header("server.rack", "Start Agent Outbox", "Agent Outbox keeps your drafts in a small local service and hands approved messages to Messages through a sender. Everything stays on this Mac.")
+            Label(model.reachable ? "Local service is running" : supervisor.state.label, systemImage: model.reachable ? "checkmark.circle.fill" : "circle.dotted")
                 .foregroundStyle(model.reachable ? Color.green : Color.secondary)
             if !model.reachable && !supervisor.lastFailure.isEmpty { Text(supervisor.lastFailure).font(.caption).foregroundStyle(.red) }
             let login = LoginItems.summary()
             Label("Open at login: \(login.app)", systemImage: "power")
             Label("Sender: \(login.executor)", systemImage: "paperplane")
             HStack {
-                Button("Open at login") { loginProblem = LoginItems.register() }.disabled(AppEnv.isDev)
+                Button("Turn on Open at login") { loginProblem = LoginItems.register() }.disabled(AppEnv.isDev)
                 if login.needsApproval { Button("Allow in System Settings") { LoginItems.openSystemSettings() } }
             }
             ErrorLine(text: loginProblem)
@@ -153,19 +168,19 @@ struct OnboardingView: View {
                         claudePath = found; claudeSearched = true
                         guard let found else { connectMsg = nil; return }
                         let r = await Task.detached { ClaudeConnect.connect(claude: found) }.value
-                        connectMsg = r.message
+                        connectMsg = r.message; connectOK = r.ok
                         if !r.ok { throw APIFailure(status: 0, code: "claude", message: r.message) }
                     }
                 }.disabled(action.busy)
                 if action.busy { ProgressView().controlSize(.small) }
             }
-            if let m = connectMsg, action.error == nil { Text(m).font(.callout).foregroundStyle(.secondary) }
+            if let m = connectMsg, action.error == nil { Label(m, systemImage: connectOK ? "checkmark.circle.fill" : "info.circle").font(.callout).foregroundStyle(connectOK ? Color.green : Color.secondary) }
             DisclosureGroup("Claude Desktop, Cursor and other apps") {
                 Text(ClaudeConnect.configJSON()).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                     .padding(8).frame(maxWidth: .infinity, alignment: .leading).background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
                 Button(configCopied ? "Copied" : "Copy") { copyToPasteboard(ClaudeConnect.configJSON()); configCopied = true }
             }
-            nav(skip: "Skip") { advance() }
+            nav(skip: connectOK ? nil : "Skip for now") { advance() }
         }
     }
 
@@ -185,9 +200,9 @@ struct OnboardingView: View {
                 }.disabled(action.busy)
             } else {
                 Button("Set up in your browser") { action.run { await model.openBrowser() } }.disabled(action.busy)
-                Text("Create the sign-in and approval passkeys there, then come back.").font(.caption).foregroundStyle(.secondary)
+                Text("Create the sign-in and approval passkeys there, then come back to this window.").font(.caption).foregroundStyle(.secondary)
             }
-            nav(skip: haveKey ? nil : "Later") { advance() }
+            nav(skip: haveKey ? nil : "Not now", showNext: haveKey) { advance() }
         }
     }
 
@@ -199,7 +214,7 @@ struct OnboardingView: View {
                 .padding(10).frame(maxWidth: .infinity, alignment: .leading).background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
             Button("Copy this prompt") { copyToPasteboard("Use Agent Outbox to draft a text to me that says hi.") }
             if model.pendingCount > 0 { Label("A draft arrived. You're all set.", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
-            if testSet { Text("Dry run is on for the test. Switch to Live in Settings when you're ready; every message still needs your Touch ID.").font(.caption).foregroundStyle(.secondary) }
+            if testSet { Text("Dry run is on for now, so nothing is sent. Switch to Live in Settings when you're ready; every message still needs your approval.").font(.caption).foregroundStyle(.secondary) }
             nav(next: "Finish") { model.finishOnboarding() }
         }
         .task { do { try await model.setMode("dry"); testSet = true } catch { testSet = false } }

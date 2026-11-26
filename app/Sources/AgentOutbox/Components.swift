@@ -31,6 +31,37 @@ struct ErrorLine: View {
     }
 }
 
+/// Plain-words status for a batch or contact set (the server's words are short codes).
+func statusLabel(_ s: String) -> String {
+    switch s {
+    case "review": return "Waiting for your review"
+    case "drafting", "draft": return "Still being drafted"
+    case "approved": return "Approved"
+    case "sending", "applying": return "Sending"
+    case "done": return "Finished"
+    case "cancelled": return "Cancelled"
+    case "applied": return "Applied"
+    case "failed": return "Failed"
+    case "skipped": return "Skipped"
+    default: return s.prefix(1).uppercased() + s.dropFirst()
+    }
+}
+
+/// An empty list explained: what goes here and what to do.
+struct EmptyState: View {
+    let symbol: String
+    let title: String
+    let text: String
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: symbol).font(.system(size: 34)).foregroundStyle(.tertiary)
+            Text(title).font(.headline)
+            Text(text).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true).frame(maxWidth: 420)
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 36)
+    }
+}
+
 struct SectionTitle: View {
     let text: String
     init(_ t: String) { text = t }

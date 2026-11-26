@@ -2,6 +2,7 @@ import Combine
 import SwiftUI
 import NativeApproval
 import OwnerAPI
+import CryptoKit
 
 // The only file that touches NativeApproval's types. Views use ApprovalBridge, BridgeNativeStatus, ApprovalSheet and
 // ApprovalError. The app never builds its own signing UI and never calls SecureEnclave / LocalAuthentication outside
@@ -58,6 +59,30 @@ final class ApprovalBridge: ObservableObject {
         }
     }
 
+    /// Dev only (AGENT_OUTBOX_DEV_SHEET): shows the confirm sheet for a made-up approval, to look at it without Touch ID.
+    func devPreview(kind: String) {
+        func sha(_ s: String) -> String { SHA256.hash(data: Data(s.utf8)).map { String(format: "%02x", $0) }.joined() }
+        let exp = ISO8601DateFormatter().string(from: Date().addingTimeInterval(600))
+        let live = kind.hasSuffix("live")
+        let c = coordinator
+        do {
+            let p: ApprovalPayload
+            if kind.hasPrefix("contacts") {
+                let pay = "{\"given_name\":\"Maya\",\"family_name\":\"Okafor\",\"phones\":[{\"e164\":\"+14155550142\"}]}"
+                let m = "{\"v\":1,\"kind\":\"contacts\",\"set_id\":\"s1\",\"approval_id\":\"a1\",\"transport\":\"\(live ? "live" : "dry")\",\"not_after\":\"\(exp)\",\"contact_items\":[{\"change_id\":\"c1\",\"kind\":\"create\",\"payload_sha256\":\"\(sha(pay))\"}]}"
+                p = try ApprovalPayload.contacts(manifestBytes: m, setId: "s1", requestedChangeIds: ["c1"], payloads: ["c1": pay])
+            } else {
+                let b1 = "Hi Maya, the workshop moved to Thursday at 6. Same room. Bring the sketches!"
+                let b2 = "Hey Jonas, are you still up for Saturday? I can pick you up at 10."
+                let items = [("d1", "Maya Okafor", "+14155550142", b1), ("d2", "Jonas Reyes", "+14155550177", b2)]
+                    .map { "{\"draft_id\":\"\($0.0)\",\"name\":\"\($0.1)\",\"to\":\"\($0.2)\",\"service\":\"auto\",\"body_sha256\":\"\(sha($0.3))\"}" }.joined(separator: ",")
+                let m = "{\"v\":2,\"batch_id\":\"b1\",\"approval_id\":\"a1\",\"transport\":\"\(live ? "live" : "dry")\",\"not_after\":\"\(exp)\",\"items\":[\(items)]}"
+                p = try ApprovalPayload.send(manifestBytes: m, batchId: "b1", requestedDraftIds: ["d1", "d2"], bodies: ["d1": b1, "d2": b2])
+            }
+            sheet = ApprovalSheet(view: AnyView(ApprovalConfirmView(payload: p, onApprove: { c.approve() }, onCancel: { c.cancel() })))
+        } catch { print("dev preview failed: \(error)") }
+    }
+
     func nativeStatus() async -> BridgeNativeStatus {
         let s = await approver.status()
         return BridgeNativeStatus(touchIDAvailable: s.touchIDAvailable && s.secureEnclaveAvailable, keysActive: s.keysActive,
@@ -68,7 +93,7 @@ final class ApprovalBridge: ObservableObject {
     func enroll(label: String) async throws -> String {
         do {
             let info = try await approver.enroll(label: label)
-            if info.status != "active", let u = info.confirmURL, let url = URL(string: u) { NSWorkspace.shared.open(url) }
+            if info.status != "active", let u = info.confirmURL, let url = URL(string: u) { openExternal(url) }
             return info.keyId
         } catch { throw Self.map(error) }
     }

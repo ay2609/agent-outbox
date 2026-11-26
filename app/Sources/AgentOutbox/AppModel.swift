@@ -66,6 +66,7 @@ final class AppModel: ObservableObject {
                 }
             }
         }
+        devHooksAtLaunch()
         let flag = sending
         AppUpdater.shared.busyCheck = { flag.value }
         // Old LaunchAgents hold the port: wait for the owner's decision (Migration screen) before starting the server.
@@ -130,6 +131,12 @@ final class AppModel: ObservableObject {
     /// `native.approve_in_app`); otherwise approve in the browser.
     var approveInApp: Bool { native.canApproveInApp && status.obj("native").bool("approve_in_app") }
     var origin: String { status.str("origin", AppEnv.origin) }
+    /// Where Approve leads, in one line, when it isn't the in-app Touch ID sheet (nil when it is).
+    var approvalHint: String? {
+        if approveInApp { return nil }
+        return native.touchIDAvailable ? "Set up Touch ID in Settings to approve here. Until then Approve opens your browser."
+                                       : "Touch ID isn't available in the app on this Mac, so Approve opens your browser."
+    }
 
     // MARK: Actions
 
@@ -148,7 +155,7 @@ final class AppModel: ObservableObject {
     func openBrowser(then hash: String? = nil) async {
         var url = origin + (hash.map { "/#" + $0 } ?? "")
         if let r = try? await post("/api/app/browser-link"), !r.str("url").isEmpty { url = r.str("url") + (hash.map { "&next=" + $0 } ?? "") }
-        if let u = URL(string: url) { NSWorkspace.shared.open(u) }
+        if let u = URL(string: url) { openExternal(u) }
     }
 
     func showMainWindow() {

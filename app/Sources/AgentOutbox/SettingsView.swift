@@ -81,7 +81,7 @@ struct SettingsView: View {
             }
 
             Section("Approval keys") {
-                if keys.isEmpty && pk.isEmpty { Text("No approval key yet.").foregroundStyle(.secondary) }
+                if keys.isEmpty && pk.isEmpty { Text("No approval key yet. You need one before anything can be approved.").foregroundStyle(.secondary) }
                 ForEach(rows(keys, idKey: "key_id")) { r in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
@@ -121,7 +121,7 @@ struct SettingsView: View {
                 }
                 Text(model.hardened
                      ? "The sender trusts only the key file an administrator installed. After you change a key or policy, run the command again."
-                     : "Simple mode is the default. A program running as you, outside its sandbox, could write its own key into the pin file and approve its own messages. Hardening copies the pin to a folder only an administrator can change.")
+                     : "Simple mode is how Agent Outbox starts. Its limit: a program running as you, outside its sandbox, could swap in its own approval key and approve its own messages. Hardening closes that by keeping the trusted key where only an administrator can change it.")
                     .font(.callout).foregroundStyle(.secondary)
                 if let cmd = pin["install_command"] as? String, !cmd.isEmpty {
                     Text(cmd).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
@@ -129,10 +129,10 @@ struct SettingsView: View {
                         .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
                     HStack {
                         Button(copied ? "Copied" : "Copy harden command") { copyToPasteboard(cmd); copied = true }
-                        Text("Paste it into Terminal. It asks for your password.").font(.caption).foregroundStyle(.secondary)
+                        Text("Paste it into Terminal. It asks for your Mac password.").font(.caption).foregroundStyle(.secondary)
                     }
                 } else {
-                    Text("The harden command appears once an approval key exists.").font(.caption).foregroundStyle(.secondary)
+                    Text("Set up an approval key first; the command to harden appears here afterwards.").font(.caption).foregroundStyle(.secondary)
                 }
             }
 

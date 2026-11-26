@@ -59,7 +59,11 @@ enum AppEnv {
         return 7477
     }
     static var origin: String { "http://localhost:\(port)" }
-    static var launchAgentsDir: String { NSHomeDirectory() + "/Library/LaunchAgents" }
+    static var launchAgentsDir: String {
+        // Dev only: the UX round points the migration screen at a temp folder of fake plists.
+        if isDev, let d = env["AGENT_OUTBOX_LAUNCHAGENTS_DIR"], !d.isEmpty { return d }
+        return NSHomeDirectory() + "/Library/LaunchAgents"
+    }
 }
 
 func b64url(_ d: Data) -> String {

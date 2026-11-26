@@ -19,7 +19,15 @@ struct ContactsView: View {
                 ErrorLine(text: error ?? action.error)
                 if let n = action.note { Text(n).font(.callout).foregroundStyle(.secondary) }
             }
-            Section("\(total) contacts") {
+            if list.isEmpty && !loading && error == nil && query.isEmpty {
+                Section {
+                    EmptyState(symbol: "person.crop.circle", title: "No contacts yet",
+                               text: "Press Sync from Contacts (top right) to read your address book. macOS asks once whether Agent Outbox may see your contacts. Contacts that agents propose appear under Contact changes, and nothing is added until you approve it.")
+                }
+            } else if list.isEmpty && !loading && error == nil {
+                Section { Text("No contact matches \u{201C}\(query)\u{201D}.").foregroundStyle(.secondary) }
+            }
+            Section(list.isEmpty ? "" : "\(total) contacts") {
                 ForEach(rows(list)) { r in ContactRow(c: r.j) }
                 if hasMore { Button("Load more") { Task { await load(reset: false) } }.disabled(loading) }
             }
@@ -79,7 +87,7 @@ struct GroupsView: View {
             if !model.reachable || loader.error != nil || action.error != nil { Section { ServerBanner(); ErrorLine(text: loader.error ?? action.error) } }
             Section("Saved groups") {
                 if groups.isEmpty && loader.data != nil {
-                    Text("No groups yet. Ask Claude to save a group, or create one here.").foregroundStyle(.secondary)
+                    Text("No groups yet. A group is a saved list of people you message together. Ask Claude to save one, or name one below.").foregroundStyle(.secondary)
                 }
                 ForEach(rows(groups)) { r in
                     NavigationLink(value: GroupRef(id: r.id)) {
@@ -120,6 +128,7 @@ struct GroupDetailView: View {
         List {
             if loader.error != nil || action.error != nil { Section { ErrorLine(text: loader.error ?? action.error) } }
             Section("\(plural(members.count, "member"))") {
+                if members.isEmpty && loader.data != nil { Text("No one in this group yet. Ask Claude to add people to it.").foregroundStyle(.secondary) }
                 ForEach(rows(members, idKey: "handle")) { r in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
@@ -154,7 +163,7 @@ struct ContactChangeSetsView: View {
         List {
             if !model.reachable || loader.error != nil { Section { ServerBanner(); ErrorLine(text: loader.error) } }
             Section("Contact changes") {
-                if sets.isEmpty && loader.data != nil { Text("No contact changes yet.").foregroundStyle(.secondary) }
+                if sets.isEmpty && loader.data != nil { Text("No contact changes yet. When an agent proposes new contacts or edits, you review them here and nothing touches your address book until you approve.").foregroundStyle(.secondary) }
                 ForEach(rows(sets)) { r in NavigationLink(value: SetRef(id: r.id)) { SetRow(s: r.j) } }
             }
         }
@@ -184,7 +193,7 @@ struct ContactSetView: View {
                 Section {
                     HStack(spacing: 6) {
                         Chip(live ? "Live: approved changes are written to your address book" : "Dry run: your address book is not changed", live ? .warn : .neutral)
-                        if !set.isEmpty { Chip(set.str("status")) }
+                        if !set.isEmpty { Chip(statusLabel(set.str("status"))) }
                     }
                     ErrorLine(text: loader.error)
                 }
@@ -201,7 +210,11 @@ struct ContactSetView: View {
                 }
             }
             Divider()
-            HStack {
+            VStack(alignment: .leading, spacing: 8) {
+                if action.note == nil, action.error == nil, !pickable.isEmpty, let h = model.approvalHint {
+                    Label(h, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+                HStack {
                 ErrorLine(text: action.error)
                 if let n = action.note { Text(n).font(.callout).foregroundStyle(.secondary) }
                 Spacer()
@@ -210,6 +223,7 @@ struct ContactSetView: View {
                     Button("Cancel set", role: .destructive) { confirmCancel = true }.disabled(action.busy)
                     Button(model.approveInApp ? "Approve \(ids.count) with Touch ID…" : "Approve \(ids.count) in browser…") { approve(ids) }
                         .keyboardShortcut(.defaultAction).disabled(ids.isEmpty || action.busy || model.killSwitch)
+                }
                 }
             }.padding(12)
         }
@@ -253,17 +267,17 @@ struct ChangeCard: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Text(title(kind, name, before)).font(.headline)
-                Chip(ch.str("status"), ch.str("status") == "applied" ? .good : (ch.str("status") == "failed" ? .bad : .neutral))
+                if ch.str("status") != "review" { Chip(statusLabel(ch.str("status")), ch.str("status") == "applied" ? .good : (ch.str("status") == "failed" ? .bad : .neutral)) }
             }
             ForEach(lines(p), id: \.self) { Text($0).font(.callout).foregroundStyle(.secondary) }
-            if !ch.str("note").isEmpty { Text(ch.str("note")).font(.caption).foregroundStyle(.secondary) }
+            if !ch.str("note").isEmpty { Text(ch.str("note").prefix(1).uppercased() + ch.str("note").dropFirst()).font(.caption).foregroundStyle(.secondary) }
             if let e = ch["error"] as? String, !e.isEmpty { Text(e).font(.caption).foregroundStyle(.red) }
         }.padding(.vertical, 3)
     }
     private func title(_ kind: String, _ name: String, _ before: J) -> String {
         let who = name.isEmpty ? before.str("display_name", "contact") : name
         switch kind {
-        case "create": return "Create \(who)"
+        case "create": return "Add \(who)"
         case "edit", "update": return "Edit \(before.str("display_name", who))"
         case "undo": return "Undo a change"
         default: return "\(kind.capitalized) \(who)"
@@ -271,11 +285,14 @@ struct ChangeCard: View {
     }
     private func lines(_ p: J) -> [String] {
         var out: [String] = []
-        for (k, v) in p.sorted(by: { $0.key < $1.key }) {
-            if let s = v as? String, !s.isEmpty, k != "given_name", k != "family_name" { out.append("\(k.replacingOccurrences(of: "_", with: " ")): \(s)") }
+        let labels = ["nickname": "Nickname", "org": "Company", "phones": "Phone", "emails": "Email", "groups": "Groups"]
+        let order = ["nickname", "org", "phones", "emails", "groups"]
+        for (k, v) in p.sorted(by: { (order.firstIndex(of: $0.key) ?? 99, $0.key) < (order.firstIndex(of: $1.key) ?? 99, $1.key) }) {
+            let label = labels[k] ?? k.replacingOccurrences(of: "_", with: " ").capitalized
+            if let s = v as? String, !s.isEmpty, k != "given_name", k != "family_name" { out.append("\(label): \(s)") }
             else if let a = v as? [J], !a.isEmpty {
-                out.append("\(k): " + a.map { $0.str("e164", $0.str("email", $0.str("label"))) }.joined(separator: ", "))
-            }
+                out.append("\(label): " + a.map { $0.str("e164", $0.str("email", $0.str("label"))) }.joined(separator: ", "))
+            } else if let a = v as? [String], !a.isEmpty { out.append("\(label): " + a.joined(separator: ", ")) }
         }
         return out
     }
