@@ -121,6 +121,8 @@ struct ApprovalOpts {
     var transport = "dry"          // signed into the manifest
     var manifestV = 2
     var omitTransport = false
+    /// Sign like the Secure Enclave app instead of a WebAuthn authenticator (SelfTestNative.swift).
+    var se: SEOpts?
 }
 
 /// One isolated universe: a temp OUTBOX_HOME with its own DB, key, pin file and fake clock.
@@ -252,11 +254,13 @@ final class Harness {
             if !o.pad { return u }
             return u + String(repeating: "=", count: (4 - u.count % 4) % 4)
         }
+        var fields = (cred: B64.encodeURL(o.credentialId ?? credId), auth: enc(auth), cdj: enc(cdj), sig: enc(sig))
+        if let se = o.se { fields = se.fields(manifest: manifest, defaultTag: "send") }
         try db.exec("""
             INSERT INTO approvals(id, batch_id, manifest, manifest_sha256, credential_id, authenticator_data_b64, client_data_json_b64, signature_b64, not_after, created_at, revoked_at)
             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, [.text(o.approvalId), .text(batch), .text(manifest), .text(o.manifestShaColumn ?? Hex.encode(digest)), .text(B64.encodeURL(o.credentialId ?? credId)),
-                  .text(enc(auth)), .text(enc(cdj)), .text(enc(sig)), .text(Time.iso(notAfter)), .text(Time.iso(clock.now)), o.revoked ? .text(Time.iso(clock.now)) : .null])
+            """, [.text(o.approvalId), .text(batch), .text(manifest), .text(o.manifestShaColumn ?? Hex.encode(digest)), .text(fields.cred),
+                  .text(fields.auth), .text(fields.cdj), .text(fields.sig), .text(Time.iso(notAfter)), .text(Time.iso(clock.now)), o.revoked ? .text(Time.iso(clock.now)) : .null])
         return o.approvalId
     }
 

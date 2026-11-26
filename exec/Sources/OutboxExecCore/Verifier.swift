@@ -53,6 +53,8 @@ public struct VerifiedApproval {
     public let batchId: String
     public let notAfter: Date
     public let credentialLabel: String
+    /// Which kind of pinned key signed it (audit/report only; it changes no decision).
+    public let signerKind: PinKeyKind
     public let items: [ManifestItemModel]
 }
 
@@ -62,6 +64,15 @@ public struct DraftSnapshot {
     public init(row: Row) {
         id = row.str("id"); batchId = row.str("batch_id"); handle = row.str("handle"); service = row.str("service")
         body = row.str("body"); status = row.str("status"); createContact = row.i("create_contact") == 1
+    }
+}
+
+/// Secure Enclave approval message (local-docs/APP-SECURITY-C.md section 2). Byte-identical to the app's `SESig`:
+/// M = utf8("agent-outbox/se/v1") || 0x00 || utf8(TAG) || 0x00 || DIGEST (32 raw bytes).
+public enum SESig {
+    public static let prefix = Data("agent-outbox/se/v1".utf8)
+    public static func message(tag: String, digest: Data) -> Data {
+        var m = prefix; m.append(0); m.append(Data(tag.utf8)); m.append(0); m.append(digest); return m
     }
 }
 
@@ -79,52 +90,65 @@ public enum Verifier {
     }
 
     static func verifyEnvelope(manifest: String, manifestSha256: String, credentialId: String, authenticatorDataB64: String, clientDataJSONB64: String,
-                               signatureB64: String, notAfter: String, revokedAt: String?, pin: PinFile) throws -> Envelope {
-        // 1. decode the stored fields
-        guard let authData = B64.decodeURL(authenticatorDataB64) else { throw Rejection("authenticator_data is not valid base64url") }
-        guard let cdj = B64.decodeURL(clientDataJSONB64) else { throw Rejection("client_data_json is not valid base64url") }
-        guard let sigDER = B64.decodeURL(signatureB64) else { throw Rejection("signature is not valid base64url") }
+                               signatureB64: String, notAfter: String, revokedAt: String?, tag: String, pin: PinFile) throws -> Envelope {
+        // a. the pinned key decides which verification applies (never anything in the DB row): lookup comes first
         guard B64.decodeURL(credentialId) != nil else { throw Rejection("credential_id is not valid base64url") }
+        guard let key = pin.key(forCredentialId: credentialId) else { throw Rejection("credential_id is not in the pin file") }
+        guard let sigDER = B64.decodeURL(signatureB64) else { throw Rejection("signature is not valid base64url") }
         let manifestBytes = Data(manifest.utf8)
         let manifestHash = Hex.sha256(manifestBytes)
 
-        // 2. the stored hash column is advisory, but a mismatch means someone touched the row
+        // b. the stored hash column is advisory, but a mismatch means someone touched the row
         if manifestSha256.lowercased() != Hex.encode(manifestHash) { throw Rejection("manifest_sha256 column does not match the manifest bytes") }
 
-        // 3. clientDataJSON: parsed as JSON, then type / challenge / origin
-        guard let client = JSON.object(cdj) else { throw Rejection("clientDataJSON is not a JSON object") }
-        guard let type = client["type"] as? String else { throw Rejection("clientDataJSON.type missing") }
-        guard type == "webauthn.get" else { throw Rejection("clientDataJSON.type is \(type), expected webauthn.get") }
-        guard let challenge = client["challenge"] as? String else { throw Rejection("clientDataJSON.challenge missing") }
-        guard let challengeBytes = B64.decodeURL(challenge) else { throw Rejection("clientDataJSON.challenge is not valid base64url") }
-        guard challengeBytes == manifestHash else { throw Rejection("challenge does not equal sha256(manifest)") }
-        guard let origin = client["origin"] as? String else { throw Rejection("clientDataJSON.origin missing") }
-        guard origin == pin.origin else { throw Rejection("origin \(origin) does not match pinned origin \(pin.origin)") }
-        if let cross = client["crossOrigin"] {
-            guard let b = cross as? Bool, b == false else { throw Rejection("clientDataJSON.crossOrigin is set") }
+        switch key.kind {
+        case .webauthn:
+            // 1. decode the stored fields
+            guard let authData = B64.decodeURL(authenticatorDataB64) else { throw Rejection("authenticator_data is not valid base64url") }
+            guard let cdj = B64.decodeURL(clientDataJSONB64) else { throw Rejection("client_data_json is not valid base64url") }
+
+            // 3. clientDataJSON: parsed as JSON, then type / challenge / origin
+            guard let client = JSON.object(cdj) else { throw Rejection("clientDataJSON is not a JSON object") }
+            guard let type = client["type"] as? String else { throw Rejection("clientDataJSON.type missing") }
+            guard type == "webauthn.get" else { throw Rejection("clientDataJSON.type is \(type), expected webauthn.get") }
+            guard let challenge = client["challenge"] as? String else { throw Rejection("clientDataJSON.challenge missing") }
+            guard let challengeBytes = B64.decodeURL(challenge) else { throw Rejection("clientDataJSON.challenge is not valid base64url") }
+            guard challengeBytes == manifestHash else { throw Rejection("challenge does not equal sha256(manifest)") }
+            guard let origin = client["origin"] as? String else { throw Rejection("clientDataJSON.origin missing") }
+            guard origin == pin.origin else { throw Rejection("origin \(origin) does not match pinned origin \(pin.origin)") }
+            if let cross = client["crossOrigin"] {
+                guard let b = cross as? Bool, b == false else { throw Rejection("clientDataJSON.crossOrigin is set") }
+            }
+
+            // 4. authenticatorData: rpIdHash + flags
+            guard authData.count >= 37 else { throw Rejection("authenticatorData too short (\(authData.count) bytes)") }
+            let rpHash = authData.prefix(32)
+            guard Data(rpHash) == Hex.sha256(Data(pin.rpId.utf8)) else { throw Rejection("rpIdHash does not match sha256(pinned rp_id)") }
+            let flags = authData[authData.startIndex + 32]
+            guard flags & 0x01 != 0 else { throw Rejection("user-presence (UP) flag not set") }
+            guard flags & 0x04 != 0 else { throw Rejection("user-verification (UV) flag not set") }
+
+            // 5. signature over authData || sha256(clientDataJSON)
+            let signature: P256.Signing.ECDSASignature
+            do { signature = try P256.Signing.ECDSASignature(derRepresentation: sigDER) } catch { throw Rejection("signature is not a valid DER ECDSA signature") }
+            var signed = Data(authData)
+            signed.append(Hex.sha256(cdj))
+            guard key.publicKey.isValidSignature(signature, for: signed) else { throw Rejection("signature does not verify against the pinned key") }
+        case .secureEnclave:
+            // A Secure Enclave approval has no WebAuthn fields; the signature is over the domain-separated message M(tag, sha256(manifest)).
+            guard authenticatorDataB64.isEmpty && clientDataJSONB64.isEmpty else { throw Rejection("secure-enclave approval carries WebAuthn fields") }
+            let signature: P256.Signing.ECDSASignature
+            do { signature = try P256.Signing.ECDSASignature(derRepresentation: sigDER) } catch { throw Rejection("signature is not a valid DER ECDSA signature") }
+            guard key.publicKey.isValidSignature(signature, for: SESig.message(tag: tag, digest: manifestHash)) else {
+                throw Rejection("secure-enclave signature does not verify against the pinned key")
+            }
         }
 
-        // 4. authenticatorData: rpIdHash + flags
-        guard authData.count >= 37 else { throw Rejection("authenticatorData too short (\(authData.count) bytes)") }
-        let rpHash = authData.prefix(32)
-        guard Data(rpHash) == Hex.sha256(Data(pin.rpId.utf8)) else { throw Rejection("rpIdHash does not match sha256(pinned rp_id)") }
-        let flags = authData[authData.startIndex + 32]
-        guard flags & 0x01 != 0 else { throw Rejection("user-presence (UP) flag not set") }
-        guard flags & 0x04 != 0 else { throw Rejection("user-verification (UV) flag not set") }
-
-        // 5. pinned credential + signature over authData || sha256(clientDataJSON)
-        guard let key = pin.key(forCredentialId: credentialId) else { throw Rejection("credential_id is not in the pin file") }
-        let signature: P256.Signing.ECDSASignature
-        do { signature = try P256.Signing.ECDSASignature(derRepresentation: sigDER) } catch { throw Rejection("signature is not a valid DER ECDSA signature") }
-        var signed = Data(authData)
-        signed.append(Hex.sha256(cdj))
-        guard key.publicKey.isValidSignature(signature, for: signed) else { throw Rejection("signature does not verify against the pinned key") }
-
-        // 6. time and revocation
+        // d. time and revocation
         if let r = revokedAt, !r.isEmpty { throw Rejection("approval revoked at \(r)") }
         guard let columnExpiry = Time.parse(notAfter) else { throw Rejection("not_after is not a valid timestamp") }
 
-        // 7. manifest parse (after the signature: the bytes are now authentic)
+        // manifest parse (after the signature: the bytes are now authentic)
         guard let m = JSON.object(manifestBytes) else { throw Rejection("manifest is not a JSON object") }
         return Envelope(manifest: m, key: key, columnExpiry: columnExpiry)
     }
@@ -133,7 +157,7 @@ public enum Verifier {
     /// Throws `Rejection` with a reason on any failure. A manifest that carries a `kind` (a contacts manifest) is never a send approval.
     public static func verifyApproval(_ a: ApprovalRecord, pin: PinFile, now: Date) throws -> VerifiedApproval {
         let env = try verifyEnvelope(manifest: a.manifest, manifestSha256: a.manifestSha256, credentialId: a.credentialId, authenticatorDataB64: a.authenticatorDataB64,
-                                     clientDataJSONB64: a.clientDataJSONB64, signatureB64: a.signatureB64, notAfter: a.notAfter, revokedAt: a.revokedAt, pin: pin)
+                                     clientDataJSONB64: a.clientDataJSONB64, signatureB64: a.signatureB64, notAfter: a.notAfter, revokedAt: a.revokedAt, tag: "send", pin: pin)
         let m = env.manifest
         let key = env.key
         let columnExpiry = env.columnExpiry
@@ -171,7 +195,7 @@ public enum Verifier {
             }
             items.append(ManifestItemModel(draftId: did, to: to, service: svc, bodySha256: h.lowercased(), name: name, createContact: cc))
         }
-        return VerifiedApproval(transport: mTransport, approvalId: a.id, batchId: a.batchId, notAfter: notAfter, credentialLabel: key.label, items: items)
+        return VerifiedApproval(transport: mTransport, approvalId: a.id, batchId: a.batchId, notAfter: notAfter, credentialLabel: key.label, signerKind: key.kind, items: items)
     }
 
     static func parseContact(_ o: [String: Any], _ i: Int) throws -> ProposedContactModel {
@@ -258,6 +282,7 @@ public struct VerifiedContactApproval {
     public let setId: String
     public let notAfter: Date
     public let credentialLabel: String
+    public let signerKind: PinKeyKind
     public let items: [ContactItemModel]
 }
 
@@ -268,7 +293,7 @@ extension Verifier {
     /// caller decides the lane with `contactsLane`).
     public static func verifyContactApproval(_ a: ContactApprovalRecord, pin: PinFile, now: Date) throws -> VerifiedContactApproval {
         let env = try verifyEnvelope(manifest: a.manifest, manifestSha256: a.manifestSha256, credentialId: a.credentialId, authenticatorDataB64: a.authenticatorDataB64,
-                                     clientDataJSONB64: a.clientDataJSONB64, signatureB64: a.signatureB64, notAfter: a.notAfter, revokedAt: a.revokedAt, pin: pin)
+                                     clientDataJSONB64: a.clientDataJSONB64, signatureB64: a.signatureB64, notAfter: a.notAfter, revokedAt: a.revokedAt, tag: "contacts", pin: pin)
         let m = env.manifest
         guard let kind = m["kind"] as? String, kind == "contacts" else { throw Rejection("manifest.kind is not \"contacts\": not a contacts manifest") }
         guard let vNum = m["v"] as? NSNumber, CFGetTypeID(vNum) != CFBooleanGetTypeID(), vNum.intValue == 1 else { throw Rejection("manifest.v is not 1") }
@@ -296,7 +321,7 @@ extension Verifier {
             guard let h = o["payload_sha256"] as? String, h.count == 64, h.allSatisfy({ $0.isHexDigit }) else { throw Rejection("manifest.contact_items[\(i)].payload_sha256 invalid") }
             items.append(ContactItemModel(changeId: cid, kind: k, targetMacosId: target, payloadSha256: h.lowercased()))
         }
-        return VerifiedContactApproval(transport: mTransport, approvalId: a.id, setId: a.setId, notAfter: notAfter, credentialLabel: env.key.label, items: items)
+        return VerifiedContactApproval(transport: mTransport, approvalId: a.id, setId: a.setId, notAfter: notAfter, credentialLabel: env.key.label, signerKind: env.key.kind, items: items)
     }
 
     /// Live only when the user signed live AND the trusted pin allows contact changes live; otherwise dry.

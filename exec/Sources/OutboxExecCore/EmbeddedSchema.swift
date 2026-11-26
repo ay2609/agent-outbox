@@ -338,5 +338,18 @@ CREATE TABLE IF NOT EXISTS contact_group_members (
   PRIMARY KEY (group_id, handle)
 );
 CREATE INDEX IF NOT EXISTS idx_group_members_contact ON contact_group_members(contact_id);
+
+-- v6: Secure Enclave approval keys held by Agent Outbox.app. Public halves only. The executor never reads this table.
+CREATE TABLE IF NOT EXISTS native_keys (
+  key_id TEXT PRIMARY KEY,                 -- base64url(sha256(x963)), 43 chars
+  public_key_x963_b64 TEXT NOT NULL UNIQUE,
+  label TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL CHECK (status IN ('pending','active','revoked')),
+  enroll_challenge TEXT NOT NULL, enroll_expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL, activated_at TEXT, revoked_at TEXT);
+CREATE TABLE IF NOT EXISTS native_challenges (id TEXT PRIMARY KEY, key_id TEXT, action TEXT NOT NULL,
+  challenge TEXT NOT NULL, expires_at TEXT NOT NULL);                 -- single use: deleted on take
+CREATE TABLE IF NOT EXISTS link_codes (code_sha256 TEXT PRIMARY KEY, expires_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS session_links (token_sha256 TEXT PRIMARY KEY, created_at TEXT NOT NULL);
 """#
 }

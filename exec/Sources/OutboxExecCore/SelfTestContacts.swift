@@ -73,11 +73,13 @@ extension Harness {
         var signed = auth
         signed.append(Hex.sha256(cdj))
         let sig = try (o.signer ?? key).signature(for: o.signOver ?? signed).derRepresentation
+        var fields = (cred: B64.encodeURL(o.credentialId ?? credId), auth: B64.encodeURL(auth), cdj: B64.encodeURL(cdj), sig: B64.encodeURL(sig))
+        if let se = o.se { fields = se.fields(manifest: manifest, defaultTag: "contacts") }
         try db.exec("""
             INSERT INTO contact_approvals(id, set_id, manifest, manifest_sha256, credential_id, authenticator_data_b64, client_data_json_b64, signature_b64, not_after, created_at, revoked_at)
             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, [.text(o.approvalId), .text(set), .text(manifest), .text(o.manifestShaColumn ?? Hex.encode(digest)), .text(B64.encodeURL(o.credentialId ?? credId)),
-                  .text(B64.encodeURL(auth)), .text(B64.encodeURL(cdj)), .text(B64.encodeURL(sig)), .text(Time.iso(notAfter)), .text(Time.iso(clock.now)),
+            """, [.text(o.approvalId), .text(set), .text(manifest), .text(o.manifestShaColumn ?? Hex.encode(digest)), .text(fields.cred),
+                  .text(fields.auth), .text(fields.cdj), .text(fields.sig), .text(Time.iso(notAfter)), .text(Time.iso(clock.now)),
                   o.revoked ? .text(Time.iso(clock.now)) : .null])
         if markApproved {
             for i in items { try db.exec("UPDATE contact_changes SET status = 'approved' WHERE id = ?", [.text(i.id)]) }

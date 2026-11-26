@@ -93,7 +93,7 @@ public enum CLI {
         do { v = try Verifier.verifyApproval(rec, pin: pin, now: now) } catch let r as Rejection {
             return (false, ["approval \(approvalId): REJECTED: \(r.reason)"])
         }
-        lines.append("approval \(approvalId): signature OK (key '\(v.credentialLabel)', batch \(v.batchId), expires \(Time.iso(v.notAfter)))")
+        lines.append("approval \(approvalId): signature OK (key '\(v.credentialLabel)', signer \(v.signerKind.rawValue), batch \(v.batchId), expires \(Time.iso(v.notAfter)))")
         var all = true
         for it in v.items {
             let d = try db.one("SELECT id, batch_id, handle, service, body, status, create_contact FROM drafts WHERE id = ?", [.text(it.draftId)]).map(DraftSnapshot.init(row:))

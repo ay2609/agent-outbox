@@ -608,7 +608,7 @@ public final class Executor {
                                 [.text(sendId), .text(draft.id), .text(a.rec.id), .num(attempt), .text(lane), .text(ts), .text(draft.handle), .text(Hex.sha256Hex(draft.body))])
                     try db.exec("UPDATE drafts SET status = 'sending', updated_at = ? WHERE id = ?", [.text(ts), .text(draft.id)])
                     try db.exec("UPDATE batches SET status = 'sending', updated_at = ? WHERE id = ? AND status = 'approved'", [.text(ts), .text(draft.batchId)])
-                    try audit("send_start", target: draft.id, ["approval_id": a.rec.id, "attempt": attempt, "transport": lane, "to": draft.handle, "credential": a.ok.credentialLabel])
+                    try audit("send_start", target: draft.id, ["approval_id": a.rec.id, "attempt": attempt, "transport": lane, "to": draft.handle, "credential": a.ok.credentialLabel, "signer": a.ok.signerKind.rawValue])
                     out.claim = Claim(sendId: sendId, draft: draft, priorStatus: draft.status, approval: a.ok, item: a.item, attempt: attempt)
                     return out
                 }

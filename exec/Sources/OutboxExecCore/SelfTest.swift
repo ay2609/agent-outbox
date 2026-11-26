@@ -62,6 +62,7 @@ public enum SelfTest {
         registerContactCases(test)
         registerPinModeCases(test)
         registerPacingCases(test)
+        registerNativeCases(test)
 
         if let ex = try? AppleScriptSource.script(handle: "+15551234567", body: "say \"hi\" \\ now\n\" & do shell script \"touch /tmp/pwned\" & \"", service: "iMessage") {
             print("\nexample generated AppleScript (generated only, never executed):\n\(ex)")
