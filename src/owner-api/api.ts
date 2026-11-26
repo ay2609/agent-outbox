@@ -20,7 +20,7 @@ import {
   APPROVABLE, approveOptions, approveVerify, canonicalProposed, contactHandlesExact, coverageMap, numberInContact, revokeApprovals, undoStop,
 } from "./approval";
 import {
-  type FailureLimiter, listPasskeys, normalizePolicy, passkeyCount, registerVerify, registerOptions, sessionAgeMs, setPinPolicy, verifyLoginAssertion,
+  type FailureLimiter, listPasskeys, nativeKeyCount, normalizePolicy, passkeyCount, registerVerify, registerOptions, sessionAgeMs, setPinPolicy, verifyLoginAssertion,
   writePinFiles, getPinPolicy, pinText,
 } from "./auth";
 import { loadB, tryLint } from "./integrations";
@@ -30,6 +30,7 @@ import { registerContactApi } from "./contact-api";
 import { registerGroupsApi } from "./groups-api";
 import { restoreContactApprovals, revokeContactApprovals } from "./contact-approval";
 import { sha256Hex } from "./b64";
+import { isLinkSession, requireReauth, seReauthSchema } from "./native";
 
 const OWNER = "owner";
 /** Statuses no owner edit may touch: the executor owns them. (`unknown` = sent but unconfirmed; never edit or resend.) */
@@ -51,14 +52,17 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
     passkeys: listPasskeys(db()).map((p) => ({ credential_id: p.credential_id, label: p.label, purpose: p.purpose, created_at: p.created_at, counter: p.counter })),
   }));
   app.post("/api/passkeys/options", async (c) => {
-    const body = await readJsonOptional(c, z.object({ label: z.string().max(60).optional(), purpose: z.enum(["login", "approve"]), reauth: reauthSchema.optional() }));
+    const body = await readJsonOptional(c, z.object({ label: z.string().max(60).optional(), purpose: z.enum(["login", "approve"]), reauth: reauthSchema.optional(), se_reauth: seReauthSchema.optional() }));
     const age = sessionAgeMs(db(), getCookie(c, SESSION_COOKIE));
+    // A Mac whose setup was done in the app has no sign-in passkey yet: a browser-link session younger than 30 minutes may register the first one.
+    if (body.purpose === "login" && passkeyCount(db(), "login") === 0 && nativeKeyCount(db()) > 0 && isLinkSession(db(), getCookie(c, SESSION_COOKIE), SETUP_WINDOW_MS)) {
+      return c.json(await registerOptions(cfg, db(), { label: body.label ?? "", purpose: "login", kind: "setup" }));
+    }
     // Setup: the first approval key, right after the sign-in key created this session. Everything else needs a fresh assertion.
     if (body.purpose === "approve" && passkeyCount(db(), "approve") === 0 && age !== null && age < SETUP_WINDOW_MS) {
       return c.json(await registerOptions(cfg, db(), { label: body.label ?? "", purpose: "approve", kind: "setup" }));
     }
-    if (!body.reauth) throw new ApiError(403, "reauth_required", "Confirm with your sign-in passkey to add another.");
-    await verifyLoginAssertion(cfg, db(), limiterFor(c, "reauth"), body.reauth.challenge_id, body.reauth.response as any);
+    await requireReauth(c, cfg, limiterFor, body, "passkey_add", "Confirm with your sign-in passkey to add another.");
     return c.json(await registerOptions(cfg, db(), { label: body.label ?? "", purpose: body.purpose, kind: "additional" }));
   });
   app.post("/api/passkeys/verify", async (c) => {
@@ -75,10 +79,11 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
     /** v4. Left out = keep what the stored policy already says. */
     contacts_live_allowed: z.boolean().optional(),
     reauth: reauthSchema.optional(),
+    se_reauth: seReauthSchema.optional(),
   }).strict();
   app.get("/api/pin-policy", (c) => c.json({ policy: getPinPolicy(db()), mode: pinMode(cfg) }));
   app.put("/api/pin-policy", async (c) => {
-    const { reauth, ...body } = await readJson(c, policySchema);
+    const { reauth, se_reauth, ...body } = await readJson(c, policySchema);
     const before = getPinPolicy(db());
     // contacts_live_allowed left out keeps a stored `true`; with nothing stored it stays absent (= false), as in older pins.
     const keep = before.contacts_live_allowed === true ? true : undefined;
@@ -86,8 +91,7 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
     if (!p) throw badRequest("Invalid policy.");
     const turningOn = (p.live_allowed && !before.live_allowed) || (p.contacts_live_allowed === true && before.contacts_live_allowed !== true);
     if (turningOn && pinMode(cfg) === "simple") {
-      if (!reauth) throw new ApiError(403, "reauth_required", "In simple mode this takes effect at once, so it needs a sign-in confirmation (Touch ID).");
-      await verifyLoginAssertion(cfg, db(), limiterFor(c, "reauth"), reauth.challenge_id, reauth.response as any);
+      await requireReauth(c, cfg, limiterFor, { reauth, se_reauth }, "policy_live", "In simple mode this takes effect at once, so it needs a sign-in confirmation (Touch ID).");
     }
     tx(() => setPinPolicy(db(), p, OWNER));
     writePinFiles(cfg, db());
@@ -142,8 +146,9 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
     const body = await readJson(c, z.object({
       draft_ids: z.array(z.string().max(100)).min(1).max(500),
       include_anyway: z.array(z.string().max(100)).max(500).optional(),
+      signer: z.enum(["webauthn", "secure-enclave"]).optional(),
     }));
-    const r = await approveOptions(cfg, db(), c.req.param("id"), body.draft_ids, body.include_anyway ?? []);
+    const r = await approveOptions(cfg, db(), c.req.param("id"), body.draft_ids, body.include_anyway ?? [], body.signer ?? "webauthn");
     return c.json({ ...r,
       /** Does the EFFECTIVE pin (root if installed, else the user pin) allow live? When transport is live but this is false, the executor will not really send. */
       pin_live_allowed: pinLiveAllowed(cfg) });
@@ -355,10 +360,10 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
       enabled: z.boolean(), min_s: z.number(), max_s: z.number(), daily_cap: z.number(),
       quiet_start: z.string().max(5), quiet_end: z.string().max(5),
     }).partial().strict(),
-  }).partial().strict().extend({ reauth: reauthSchema.optional() });
+  }).partial().strict().extend({ reauth: reauthSchema.optional(), se_reauth: seReauthSchema.optional() });
 
   app.patch("/api/settings", async (c) => {
-    const { reauth, pacing: pacingPatch, ...patch } = await readJson(c, settingsSchema);
+    const { reauth, se_reauth, pacing: pacingPatch, ...patch } = await readJson(c, settingsSchema);
     const before = getSettings(db());
     const nextPacing = pacingPatch ? { ...before.pacing, ...pacingPatch } : before.pacing;
     const pacingBad = pacingPatch ? pacingProblem(nextPacing) : null;
@@ -375,8 +380,7 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
       throw new ApiError(409, "pin_not_contacts_live_allowed", `The pin file doesn't allow live contact changes. In Settings, tick "Allow live contact changes"${way}.`);
     }
     if (goingLive || contactsLive) {
-      if (!reauth) throw new ApiError(403, "reauth_required", "Going live needs a sign-in confirmation (Touch ID).");
-      await verifyLoginAssertion(cfg, db(), limiterFor(c, "reauth"), reauth.challenge_id, reauth.response as any);
+      await requireReauth(c, cfg, limiterFor, { reauth, se_reauth }, "mode_live", "Going live needs a sign-in confirmation (Touch ID).");
     }
     tx(() => {
       const cur = getSettings(db());
@@ -397,7 +401,7 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
   // Hardened mode: never touches the policy or the root pin; it only flips a transport the installed pin already allows.
   // Sending itself is unchanged: every message still needs a Touch ID approval of its exact text.
   app.post("/api/mode", async (c) => {
-    const { mode, reauth } = await readJson(c, z.object({ mode: z.enum(["live", "dry"]), reauth: reauthSchema.optional() }).strict());
+    const { mode, reauth, se_reauth } = await readJson(c, z.object({ mode: z.enum(["live", "dry"]), reauth: reauthSchema.optional(), se_reauth: seReauthSchema.optional() }).strict());
     // `approval_key` false: no approval key exists, so no pin file can exist and nothing can really send yet.
     const finish = (extra: object) => c.json({ settings: getSettings(db()), status: buildStatus(cfg, db()).pin, approval_key: passkeyCount(db(), "approve") > 0, ...extra });
     if (mode === "dry") {
@@ -421,8 +425,7 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
     const policyChange = !hardened && (!policy.live_allowed || policy.contacts_live_allowed !== true);
     const changes = policyChange || before.transport !== "live" || (contactsOk && before.contacts_transport !== "live");
     if (changes) {
-      if (!reauth) throw new ApiError(403, "reauth_required", "Going live needs a sign-in confirmation (Touch ID).");
-      await verifyLoginAssertion(cfg, db(), limiterFor(c, "reauth"), reauth.challenge_id, reauth.response as any);
+      await requireReauth(c, cfg, limiterFor, { reauth, se_reauth }, "mode_live", "Going live needs a sign-in confirmation (Touch ID).");
       tx(() => {
         // Re-read inside the lock: the policy and settings may have changed while the assertion was being checked.
         if (!hardened) {

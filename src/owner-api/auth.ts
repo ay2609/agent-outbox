@@ -14,7 +14,7 @@
 // P-256 (ES256, COSE alg -7) only, because the Swift executor verifies with P-256. We store both the COSE key (for
 // @simplewebauthn) and the 65-byte x963 key (for the pin file).
 import type { Database } from "bun:sqlite";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse,
@@ -45,6 +45,20 @@ export const listPasskeys = (db: Database, purpose?: PasskeyPurpose): PasskeyRow
   purpose
     ? db.query<PasskeyRow, [string]>("SELECT * FROM passkeys WHERE purpose = ? ORDER BY created_at, credential_id").all(purpose)
     : db.query<PasskeyRow, []>("SELECT * FROM passkeys ORDER BY created_at, credential_id").all();
+
+// ---------- native (Secure Enclave) keys: public halves held by Agent Outbox.app (schema v6) ----------
+export interface NativeKeyRow {
+  key_id: string; public_key_x963_b64: string; label: string; status: "pending" | "active" | "revoked";
+  enroll_challenge: string; enroll_expires_at: string; created_at: string; activated_at: string | null; revoked_at: string | null;
+}
+export const listNativeKeys = (db: Database, status?: NativeKeyRow["status"]): NativeKeyRow[] =>
+  status
+    ? db.query<NativeKeyRow, [string]>("SELECT * FROM native_keys WHERE status = ? ORDER BY activated_at, key_id").all(status)
+    : db.query<NativeKeyRow, []>("SELECT * FROM native_keys ORDER BY created_at, key_id").all();
+export const nativeKeyCount = (db: Database, status: NativeKeyRow["status"] = "active"): number =>
+  db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM native_keys WHERE status = ?").get(status)?.n ?? 0;
+/** First-run state: no sign-in passkey and no active native key. Open (no-session) registration and the setup token exist only then. */
+export const firstRun = (db: Database): boolean => passkeyCount(db, "login") === 0 && nativeKeyCount(db) === 0;
 
 // ---------- COSE -> x963 ----------
 /** COSE EC2 P-256 key (CBOR) -> 65-byte uncompressed point 0x04 || x || y. Throws for anything but ES256 / P-256. */
@@ -81,11 +95,25 @@ export function setPinPolicy(db: Database, p: PinPolicy, actor: string): void {
 }
 
 // ---------- pin files ----------
-/** v2 pin: APPROVE keys only, plus the policy floors and ceilings the executor enforces. */
+/** The pin: approval passkeys, plus active native keys. With no active native key this is exactly the v2 object (no `kind`
+ *  fields: the bytes existing hardened installs have installed stay identical). With one or more, it is v3: every key has a
+ *  `kind`, webauthn keys first (current order), then native keys by activation time and key id. */
 export function buildPinFile(cfg: OwnerConfig, db: Database): PinFile {
+  const web = listPasskeys(db, "approve");
+  const native = listNativeKeys(db, "active");
+  if (native.length === 0) {
+    return {
+      v: 2, rp_id: cfg.rpId, origin: cfg.origin,
+      keys: web.map((p) => ({ credential_id: p.credential_id, x963: p.public_key_x963_b64, label: p.label })),
+      policy: getPinPolicy(db),
+    };
+  }
   return {
-    v: 2, rp_id: cfg.rpId, origin: cfg.origin,
-    keys: listPasskeys(db, "approve").map((p) => ({ credential_id: p.credential_id, x963: p.public_key_x963_b64, label: p.label })),
+    v: 3, rp_id: cfg.rpId, origin: cfg.origin,
+    keys: [
+      ...web.map((p) => ({ kind: "webauthn" as const, credential_id: p.credential_id, x963: p.public_key_x963_b64, label: p.label })),
+      ...native.map((k) => ({ kind: "secure-enclave" as const, credential_id: k.key_id, x963: k.public_key_x963_b64, label: k.label })),
+    ],
     policy: getPinPolicy(db),
   };
 }
@@ -104,7 +132,11 @@ function writeAtomic(path: string, text: string): void {
  *  while there is no approve key (an empty pin is refused by the executor). */
 export function writePinFiles(cfg: OwnerConfig, db: Database): PinFile {
   const pin = buildPinFile(cfg, db);
-  if (pin.keys.length === 0) return pin;
+  if (pin.keys.length === 0) {
+    // Every key was revoked: leave no pin behind that still trusts one (the sender then holds, like a fresh install).
+    try { unlinkSync(cfg.userPinFile); } catch { /* none */ }
+    return pin;
+  }
   writeAtomic(cfg.userPinFile, pinText(cfg, db));
   return pin;
 }
@@ -191,10 +223,13 @@ interface RegisterMeta { kind: RegisterKind; purpose: PasskeyPurpose; label: str
 /** The lock. Throws unless a registration of this kind and purpose is allowed right now. Called at options time and
  *  again, inside the insert transaction, at verify time. */
 export function registerGate(db: Database, kind: RegisterKind, purpose: PasskeyPurpose): void {
-  const sameCount = passkeyCount(db, purpose), loginCount = passkeyCount(db, "login");
+  const sameCount = passkeyCount(db, purpose), loginCount = passkeyCount(db, "login"), nativeCount = nativeKeyCount(db);
   let ok: boolean;
-  if (kind === "open") ok = purpose === "login" ? sameCount === 0 : sameCount === 0 && loginCount === 0;
-  else if (kind === "setup") ok = purpose === "approve" && sameCount === 0 && loginCount > 0;
+  // An active Secure Enclave key closes open registration too: a first run done entirely in the app is a finished setup.
+  if (kind === "open") ok = nativeCount === 0 && (purpose === "login" ? sameCount === 0 : sameCount === 0 && loginCount === 0);
+  // "setup": the first approval key right after the sign-in key; or (only reachable from a browser-link session, checked at the route)
+  // the first sign-in key of a Mac whose setup was done in the app.
+  else if (kind === "setup") ok = purpose === "approve" ? sameCount === 0 && loginCount > 0 : sameCount === 0 && nativeCount > 0;
   else ok = true;
   if (!ok) {
     throw new ApiError(403, "registration_locked", kind === "open"

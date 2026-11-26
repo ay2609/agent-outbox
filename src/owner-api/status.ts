@@ -7,7 +7,7 @@ import { readPaceState } from "../core/pacing-db";
 import type { PinFile, PinPolicy } from "../core/types";
 import type { OwnerConfig } from "./config";
 import { sha256Hex } from "./b64";
-import { getPinPolicy, installCommand, listPasskeys, normalizePolicy, pinText, userPinSha256 } from "./auth";
+import { getPinPolicy, installCommand, listNativeKeys, listPasskeys, normalizePolicy, pinText, userPinSha256 } from "./auth";
 
 export type PinKind = "root" | "user";
 export type PinMode = "simple" | "hardened";
@@ -68,12 +68,12 @@ export function readEffectivePin(cfg: OwnerConfig): { kind: PinKind; pin: PinFil
 /** Does the EFFECTIVE pin allow live sending? (The sender additionally verifies root ownership in hardened mode.) */
 export function pinLiveAllowed(cfg: OwnerConfig): boolean {
   const e = readEffectivePin(cfg);
-  return !!e && e.pin.v === 2 && normalizePolicy(e.pin.policy)?.live_allowed === true;
+  return !!e && (e.pin.v === 2 || e.pin.v === 3) && normalizePolicy(e.pin.policy)?.live_allowed === true;
 }
 /** v4: does the EFFECTIVE pin allow live contact changes (approved creates, edits and undos)? */
 export function pinContactsLiveAllowed(cfg: OwnerConfig): boolean {
   const e = readEffectivePin(cfg);
-  return !!e && e.pin.v === 2 && normalizePolicy(e.pin.policy)?.contacts_live_allowed === true;
+  return !!e && (e.pin.v === 2 || e.pin.v === 3) && normalizePolicy(e.pin.policy)?.contacts_live_allowed === true;
 }
 
 /** The same ownership rules the sender applies to this pin file before it will use it in live mode. */
@@ -102,7 +102,7 @@ export function pinStatus(cfg: OwnerConfig, db: Database, kind: PinKind): PinSta
   if (pin) {
     s.version = typeof pin.v === "number" ? pin.v : null;
     s.keys = pin.keys?.length ?? 0;
-    if (pin.v !== 2) s.problems.push(`The pin file is version ${pin.v}, not 2. ${fix}`);
+    if (pin.v !== 2 && pin.v !== 3) s.problems.push(`The pin file is version ${pin.v}, not 2 or 3. ${fix}`);
     else {
       s.policy = normalizePolicy(pin.policy);
       if (!s.policy) s.problems.push(`The pin file has no valid policy; the sender will refuse it. ${fix}`);
@@ -112,7 +112,11 @@ export function pinStatus(cfg: OwnerConfig, db: Database, kind: PinKind): PinSta
     if (pin.rp_id !== cfg.rpId) s.problems.push(`rp_id is ${pin.rp_id}, this server uses ${cfg.rpId}.`);
     if (pin.origin !== cfg.origin) s.problems.push(`origin is ${pin.origin}, this server uses ${cfg.origin}.`);
     const have = new Map((pin.keys ?? []).map((k) => [k.credential_id, k.x963]));
-    const approve = listPasskeys(db, "approve");
+    // Approval passkeys plus active Secure Enclave keys (v3): the pin lists exactly these.
+    const approve: { credential_id: string; public_key_x963_b64: string }[] = [
+      ...listPasskeys(db, "approve"),
+      ...listNativeKeys(db, "active").map((k) => ({ credential_id: k.key_id, public_key_x963_b64: k.public_key_x963_b64 })),
+    ];
     const known = new Map(approve.map((p) => [p.credential_id, p.public_key_x963_b64]));
     s.matches_passkeys = approve.length > 0 && approve.every((p) => have.get(p.credential_id) === p.public_key_x963_b64);
     s.unexpected_keys = (pin.keys ?? []).filter((k) => known.get(k.credential_id) !== k.x963).map((k) => ({ credential_id: k.credential_id, label: k.label ?? "" }));
@@ -125,6 +129,13 @@ export function pinStatus(cfg: OwnerConfig, db: Database, kind: PinKind): PinSta
 }
 export const rootPinStatus = (cfg: OwnerConfig, db: Database): PinStatus => pinStatus(cfg, db, "root");
 
+/** Key ids (credential_id) of the Secure Enclave keys in the EFFECTIVE pin, or an empty set when there is no usable pin. */
+export function effectiveNativeKeyIds(cfg: OwnerConfig): Set<string> {
+  const e = readEffectivePin(cfg);
+  if (!e || e.pin.v !== 3) return new Set();
+  return new Set((e.pin.keys ?? []).filter((k) => k.kind === "secure-enclave").map((k) => k.credential_id));
+}
+
 export function buildStatus(cfg: OwnerConfig, db: Database) {
   const exec = db.query<{ heartbeat_at: string; version: string; transport: string; pin_file_ok: number; last_error: string | null }, []>(
     "SELECT * FROM exec_status WHERE id = 1").get();
@@ -136,14 +147,26 @@ export function buildStatus(cfg: OwnerConfig, db: Database) {
   const user = pinStatus(cfg, db, "user");
   const effective = mode === "hardened" ? root : user;
   const approveKeys = listPasskeys(db, "approve");
+  const nativeCount = listNativeKeys(db, "active").length;
   const userSha = userPinSha256(cfg);
   // Hardened: is the installed root file byte-identical to the pin the dashboard builds from its keys and policy (what the
   // harden command installs)? Compared with the database, not the user pin file, which anything running as the user can edit.
-  const wantSha = approveKeys.length > 0 ? sha256Hex(Buffer.from(pinText(cfg, db), "utf8")) : null;
+  const wantSha = approveKeys.length > 0 || nativeCount > 0 ? sha256Hex(Buffer.from(pinText(cfg, db), "utf8")) : null;
   let rootCurrent: boolean | null = null;
   if (root.present) { try { rootCurrent = wantSha !== null && wantSha === sha256Hex(readFileSync(cfg.rootPinFile)); } catch { rootCurrent = null; } }
+  // Native (Secure Enclave) approval: may the app sign now? Simple mode: the user pin holds the key. Hardened mode: only the root pin
+  // counts, so a freshly enrolled key needs the harden command run again (until then the app opens the browser approval instead).
+  const activeNative = listNativeKeys(db, "active");
+  const pinned = effectiveNativeKeyIds(cfg);
+  const revokedStillPinned = listNativeKeys(db, "revoked").some((k) => pinned.has(k.key_id));
+  const native = {
+    keys_active: activeNative.length,
+    approve_in_app: activeNative.some((k) => pinned.has(k.key_id)),
+    pin_needs_update: mode === "hardened" && (activeNative.some((k) => !pinned.has(k.key_id)) || revokedStillPinned),
+  };
   return {
     server_time: new Date().toISOString(),
+    native,
     rp_id: cfg.rpId, origin: cfg.origin, port: cfg.port,
     transport: settings.transport, kill_switch: settings.kill_switch, kill_reason: settings.kill_reason,
     contacts_transport: settings.contacts_transport,
@@ -164,7 +187,10 @@ export function buildStatus(cfg: OwnerConfig, db: Database) {
       /** One sha256-checked command that installs the user pin as the root pin; prints the installed credential ids and labels. Null until the user pin exists. */
       install_command: installCommand(cfg, db),
       /** What the installed pin should show, for comparing with the command's output. */
-      expected_keys: approveKeys.map((p) => ({ credential_id: p.credential_id, label: p.label })),
+      expected_keys: [
+        ...approveKeys.map((p) => ({ credential_id: p.credential_id, label: p.label })),
+        ...listNativeKeys(db, "active").map((k) => ({ credential_id: k.key_id, label: k.label, kind: "secure-enclave" as const })),
+      ],
       policy: getPinPolicy(db),
     },
     passkeys: listPasskeys(db).length,

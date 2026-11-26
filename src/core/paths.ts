@@ -12,6 +12,10 @@ export const paths = {
   db: join(STATE_DIR, "outbox.db"),
   runDir: join(STATE_DIR, "run"),
   agentSocket: join(STATE_DIR, "run", "agent.sock"),
+  // The app channel of the owner API (only with `server --app-auth-fd`): 0600 socket in the 0700 run dir.
+  ownerSocket: join(STATE_DIR, "run", "owner.sock"),
+  // Terminal-made owner proof for re-enrolling a Secure Enclave key (`agent-outbox recover`): 0600, 30 minutes, one use.
+  recoveryToken: join(STATE_DIR, "recovery-token"),
   imports: join(STATE_DIR, "imports"),
   logs: join(STATE_DIR, "logs"),
   drySendLog: join(STATE_DIR, "logs", "dry-sends.jsonl"),

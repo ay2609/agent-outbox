@@ -4,6 +4,10 @@
 // Gate summary: the Host header must be localhost:<port> or 127.0.0.1:<port> (DNS rebinding); page loads on 127.0.0.1 are
 // redirected to localhost; every /api route except /api/auth/* needs a session cookie; every non-GET /api request needs
 // the `X-Outbox: 1` header (and an Origin, when the browser sends one, equal to this server's origin).
+//
+// Two channels (local-docs/APP-SECURITY-C.md section 7): "tcp" (loopback, the browser) and "app" (<state>/run/owner.sock, Agent
+// Outbox.app, only when the server was started with --app-auth-fd). The channel is set by server.ts, never by the request. On
+// tcp any `X-Outbox-App` header is refused. On app a valid `X-Outbox-App` token replaces the session cookie, and only /api is served.
 import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { existsSync, statSync } from "node:fs";
@@ -13,9 +17,10 @@ import { audit } from "../core/store";
 import { SESSION_COOKIE, allowedHosts, cookieSecure, resolveConfig, type OwnerConfig } from "./config";
 import { ApiError, forbidden, unauthorized } from "./errors";
 import {
-  LimiterSet, createSession, destroySession, loginOptions, passkeyCount, registerOptions, registerVerify, sessionValid,
+  LimiterSet, createSession, destroySession, firstRun, loginOptions, passkeyCount, registerOptions, registerVerify, sessionValid,
   verifyLoginAssertion,
 } from "./auth";
+import { channelOf, isAppOnly, isTcpOnly, registerNativeApi } from "./native";
 import { registerApi } from "./api";
 import { assertionSchema, attestationSchema, readJson, readJsonOptional } from "./schemas";
 
@@ -36,6 +41,19 @@ export function createOwnerApp(over: Partial<OwnerConfig> = {}): Hono {
   // (DNS rebinding) arrives with a foreign Host and gets nothing. A missing Host is refused too.
   app.use("*", async (c, next) => {
     const host = (c.req.header("host") ?? "").toLowerCase();
+    if (channelOf(c) === "app") {
+      // The app talks over a unix socket (a Host header means nothing there); it sends `localhost`. Only /api exists on this channel.
+      if (!hosts.has(host) && host !== "localhost") return c.json({ error: "bad_host", message: "Unexpected Host." }, 403);
+      if (!cfg.appAuth.active) return c.json({ error: "app_channel_off", message: "The app channel isn't enabled." }, 503);
+      if (!c.req.path.startsWith("/api/")) return c.json({ error: "not_found", message: "No such route." }, 404);
+      return next();
+    }
+    // The token belongs to the socket only. Over TCP (which any local program or web page can reach) it is never accepted, and
+    // the attempt is recorded: someone is trying to use or probe the app channel.
+    if (c.req.header("x-outbox-app") !== undefined) {
+      try { audit(db(), "owner", "app_auth.tcp_refused", null, { path: c.req.path.slice(0, 100) }); } catch { /* never let auditing break the refusal */ }
+      return c.json({ error: "app_auth_tcp", message: "The app token is not accepted over this connection." }, 400);
+    }
     if (!hosts.has(host)) return c.json({ error: "bad_host", message: `Open the dashboard at ${cfg.origin}.` }, 403);
     // Passkeys are bound to "localhost", so a page load on 127.0.0.1 moves to the localhost origin (the API stays reachable on both).
     if (host.startsWith("127.0.0.1:") && !c.req.path.startsWith("/api") && (c.req.method === "GET" || c.req.method === "HEAD")) {
@@ -59,20 +77,28 @@ export function createOwnerApp(over: Partial<OwnerConfig> = {}): Hono {
   // CSRF + session gate for /api.
   app.use("/api/*", async (c, next) => {
     const method = c.req.method;
+    const channel = channelOf(c);
+    if (channel === "tcp" && isAppOnly(method, c.req.path)) throw forbidden("app_only", "This is only available from Agent Outbox.app.");
+    if (channel === "app" && isTcpOnly(method, c.req.path)) throw forbidden("tcp_only", "This is only available in the browser.");
     if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
       const origin = c.req.header("origin");
       if (origin && origin !== cfg.origin) throw forbidden("bad_origin", "Request came from an unexpected origin.");
       if (c.req.header("x-outbox") !== "1") throw forbidden("csrf", "Missing X-Outbox header.");
     }
-    if (!c.req.path.startsWith("/api/auth/")) {
+    if (channel === "app") {
+      // The per-launch token replaces the session cookie. It is a signed-in session, not an owner proof: routes that need a
+      // reauth still need a sign-in passkey assertion or a Touch ID confirmation.
+      if (!cfg.appAuth.matches(c.req.header("x-outbox-app"))) throw new ApiError(401, "app_auth", "The app token is missing or wrong.");
+    } else if (!c.req.path.startsWith("/api/auth/")) {
       if (!sessionValid(db(), getCookie(c, SESSION_COOKIE))) throw unauthorized();
     }
     await next();
   });
 
-  const startSession = (c: any): void => {
+  const startSession = (c: any): string => {
     const { token, expires } = createSession(cfg, db(), c.req.header("user-agent") ?? "");
     setCookie(c, SESSION_COOKIE, token, { httpOnly: true, secure: secureCookie, sameSite: "Strict", path: "/", expires });
+    return token;
   };
 
   // ---------- /api/auth ----------
@@ -81,7 +107,7 @@ export function createOwnerApp(over: Partial<OwnerConfig> = {}): Hono {
     /** Setup progress: the sign-in key comes first, then the approval key. */
     setup: { login: passkeyCount(db(), "login") > 0, approve: passkeyCount(db(), "approve") > 0 },
     /** True while open (no-session) registration is possible: it then needs the one-time setup token. The token itself is never returned. */
-    setup_token_required: passkeyCount(db(), "login") === 0,
+    setup_token_required: firstRun(db()),
     authenticated: sessionValid(db(), getCookie(c, SESSION_COOKIE)),
     rp_id: cfg.rpId, origin: cfg.origin,
   }));
@@ -134,6 +160,7 @@ export function createOwnerApp(over: Partial<OwnerConfig> = {}): Hono {
   });
 
   registerApi(app, cfg, limiterFor);
+  registerNativeApi(app, cfg, limiterFor, { startSession });
 
   // ---------- errors: JSON only, never a stack ----------
   app.onError((err, c) => {

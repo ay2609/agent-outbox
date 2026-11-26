@@ -15,7 +15,8 @@ import type { ContactChange, ContactChangeSet, ContactManifest, ContactManifestI
 import type { OwnerConfig } from "./config";
 import { b64u, fromB64u, isB64u, sha256Hex } from "./b64";
 import { ApiError, badRequest, conflict, notFound } from "./errors";
-import { FailureLimiter, listPasskeys, storeChallenge, takeChallenge, type PasskeyRow } from "./auth";
+import { FailureLimiter, listNativeKeys, listPasskeys, storeChallenge, takeChallenge, type PasskeyRow } from "./auth";
+import type { Signer } from "./approval";
 import { APPROVAL_HOURS, challengeBytes } from "./approval";
 import { pinContactsLiveAllowed } from "./status";
 
@@ -83,7 +84,11 @@ export function refreshSetStatus(db: Database, setId: string): void {
 // ---------- options ----------
 export interface ContactApproveOptionsResult {
   challenge_id: string;
-  options: Awaited<ReturnType<typeof generateAuthenticationOptions>>;
+  /** WebAuthn options; null when the signer is the Secure Enclave. */
+  options: Awaited<ReturnType<typeof generateAuthenticationOptions>> | null;
+  /** The EXACT manifest bytes; the app signs M("contacts", sha256 of these). */
+  manifest_bytes: string;
+  se?: { tag: "contacts"; key_ids: string[] };
   manifest: ContactManifest;
   /** The exact payload_json of every item. The browser re-hashes each and compares with manifest.contact_items[].payload_sha256. */
   payloads: Record<string, string>;
@@ -124,7 +129,7 @@ function checkApprovable(db: Database, ch: ContactChange, live: ContactApprovalR
   }
 }
 
-export async function contactApproveOptions(cfg: OwnerConfig, db: Database, setId: string, changeIds: string[]): Promise<ContactApproveOptionsResult> {
+export async function contactApproveOptions(cfg: OwnerConfig, db: Database, setId: string, changeIds: string[], signer: Signer = "webauthn"): Promise<ContactApproveOptionsResult> {
   const set = getContactSet(db, setId);
   if (!set) throw notFound("Contact change set not found.");
   if (set.status === "cancelled") throw conflict("set_cancelled", "This set was cancelled.");
@@ -143,7 +148,10 @@ export async function contactApproveOptions(cfg: OwnerConfig, db: Database, setI
   }
   picked.sort((a, b) => a.position - b.position);
   const passkeys = listPasskeys(db, "approve");
-  if (passkeys.length === 0) throw conflict("no_passkeys", "Register an approval passkey first (Settings).");
+  const nativeKeys = listNativeKeys(db, "active");
+  if (signer === "secure-enclave") {
+    if (nativeKeys.length === 0) throw conflict("no_native_keys", "Set up Touch ID approval in the app first.");
+  } else if (passkeys.length === 0) throw conflict("no_passkeys", "Register an approval passkey first (Settings).");
 
   // An undo of a change that went in live must go in live too (a dry undo would log and leave the card as it is). That needs
   // the effective pin's contacts_live_allowed, since the executor would otherwise apply it dry.
@@ -159,17 +167,21 @@ export async function contactApproveOptions(cfg: OwnerConfig, db: Database, setI
   }
   const { manifest, bytes } = buildContactManifest(cfg, setId, picked, APPROVAL_HOURS, transport);
   const digest = challengeBytes(bytes);
-  const options = await generateAuthenticationOptions({
-    rpID: cfg.rpId, userVerification: "required", timeout: 120_000, challenge: digest,
-    allowCredentials: passkeys.map((p) => ({ id: p.credential_id, transports: JSON.parse(p.transports_json) })),
-  });
   const stored = b64u(digest);
-  if (options.challenge !== stored) throw new Error("challenge encoding mismatch");
+  let options: ContactApproveOptionsResult["options"] = null;
+  if (signer === "webauthn") {
+    options = await generateAuthenticationOptions({
+      rpID: cfg.rpId, userVerification: "required", timeout: 120_000, challenge: digest,
+      allowCredentials: passkeys.map((p) => ({ id: p.credential_id, transports: JSON.parse(p.transports_json) })),
+    });
+    if (options.challenge !== stored) throw new Error("challenge encoding mismatch");
+  }
   // purpose 'approve' is shared with send approvals; the set id goes in the batch_id column (no FK) and the manifest's kind tells them apart.
   const challenge_id = storeChallenge(cfg, db, { purpose: "approve", challenge: stored, approval_id: manifest.approval_id, manifest: bytes, batch_id: setId });
-  audit(db, "owner", "contact_approval.options", setId, { challenge_id, approval_id: manifest.approval_id, count: picked.length, transport });
+  audit(db, "owner", "contact_approval.options", setId, { challenge_id, approval_id: manifest.approval_id, count: picked.length, transport, signer });
   return {
-    challenge_id, options, manifest, live_reason,
+    challenge_id, options, manifest, manifest_bytes: bytes, live_reason,
+    ...(signer === "secure-enclave" ? { se: { tag: "contacts" as const, key_ids: nativeKeys.map((k) => k.key_id) } } : {}),
     payloads: Object.fromEntries(picked.map((c) => [c.id, c.payload_json])),
     display: Object.fromEntries(picked.map((c) => {
       const o = originalOf(db, c);
@@ -230,7 +242,19 @@ export async function contactApproveVerify(cfg: OwnerConfig, db: Database, limit
     if (!isB64u(v)) throw badRequest(`${k} must be base64url.`);
   }
 
-  const result = db.transaction((): ContactApproveVerifyResult => {
+  const result = commitContactApproval(db, { manifest, bytes, setId, credentialId: pk.credential_id, authData: authenticatorData, clientData: clientDataJSON,
+    signature, signer: "webauthn", afterInsert: () => db.query("UPDATE passkeys SET counter = ? WHERE credential_id = ?").run(newCounter, pk.credential_id) });
+  limiter.reset();
+  return result;
+}
+
+/** Records a verified contacts approval (WebAuthn assertion or Secure Enclave signature) in ONE immediate transaction. */
+export function commitContactApproval(db: Database, a: {
+  manifest: ContactManifest; bytes: string; setId: string; credentialId: string; authData: string; clientData: string; signature: string;
+  signer: Signer; afterInsert?: () => void;
+}): ContactApproveVerifyResult {
+  const { manifest, bytes, setId } = a;
+  return db.transaction((): ContactApproveVerifyResult => {
     const set = getContactSet(db, setId);
     if (!set || set.status === "cancelled") throw conflict("set_cancelled", "This set was cancelled.");
     const changed = changedContactItems(db, manifest);
@@ -243,20 +267,18 @@ export async function contactApproveVerify(cfg: OwnerConfig, db: Database, limit
     const t = nowIso();
     db.query(`INSERT INTO contact_approvals(id, set_id, manifest, manifest_sha256, credential_id, authenticator_data_b64, client_data_json_b64,
               signature_b64, not_after, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
-      .run(manifest.approval_id, setId, bytes, sha256Hex(bytes), pk.credential_id, authenticatorData, clientDataJSON, signature, manifest.not_after, t);
+      .run(manifest.approval_id, setId, bytes, sha256Hex(bytes), a.credentialId, a.authData, a.clientData, a.signature, manifest.not_after, t);
     for (const item of manifest.contact_items) {
       db.query("UPDATE contact_changes SET status = 'approved', error = NULL WHERE id = ? AND status IN ('review','approved')").run(item.change_id);
     }
     refreshSetStatus(db, setId);
-    db.query("UPDATE passkeys SET counter = ? WHERE credential_id = ?").run(newCounter, pk.credential_id);
+    a.afterInsert?.();
     audit(db, "owner", "contact_approval.create", manifest.approval_id, {
-      set_id: setId, count: manifest.contact_items.length, credential_id: pk.credential_id, manifest_sha256: sha256Hex(bytes),
-      not_after: manifest.not_after, transport: manifest.transport,
+      set_id: setId, count: manifest.contact_items.length, credential_id: a.credentialId, manifest_sha256: sha256Hex(bytes),
+      not_after: manifest.not_after, transport: manifest.transport, signer: a.signer,
     });
-    return { approval_id: manifest.approval_id, manifest_sha256: sha256Hex(bytes), count: manifest.contact_items.length, not_after: manifest.not_after, credential_id: pk.credential_id, transport: manifest.transport };
+    return { approval_id: manifest.approval_id, manifest_sha256: sha256Hex(bytes), count: manifest.contact_items.length, not_after: manifest.not_after, credential_id: a.credentialId, transport: manifest.transport };
   }).immediate();
-  limiter.reset();
-  return result;
 }
 
 // ---------- reject / cancel ----------
@@ -308,10 +330,11 @@ export function cancelContactSet(db: Database, setId: string, actor: string): { 
 export interface ContactRevokeResult { approvals: number; changes: number; approval_ids: string[]; change_ids: string[]; at: string }
 /** Revokes contact approvals and drops their still-`approved`, unconsumed changes back to review (the executor refuses a revoked
  *  approval anyway; this keeps the dashboard honest). IMMEDIATE. */
-export function revokeContactApprovals(db: Database, where: { setId?: string; all?: boolean }, actor: string, why: string): ContactRevokeResult {
+export function revokeContactApprovals(db: Database, where: { setId?: string; credentialId?: string; all?: boolean }, actor: string, why: string): ContactRevokeResult {
   return db.transaction((): ContactRevokeResult => {
-    let rows = db.query<ContactApprovalRow, []>("SELECT * FROM contact_approvals WHERE revoked_at IS NULL").all();
+    let rows = db.query<ContactApprovalRow & { credential_id: string }, []>("SELECT * FROM contact_approvals WHERE revoked_at IS NULL").all();
     if (where.setId) rows = rows.filter((a) => a.set_id === where.setId);
+    if (where.credentialId) rows = rows.filter((a) => a.credential_id === where.credentialId);
     const t = nowIso();
     const changeIds: string[] = [];
     const sets = new Set<string>();

@@ -11,7 +11,7 @@ import { dirname } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { paths } from "../core/paths";
 import { b64u } from "./b64";
-import { passkeyCount } from "./auth";
+import { firstRun } from "./auth";
 
 /** 32 random bytes as unpadded base64url. */
 const WELL_FORMED = /^[A-Za-z0-9_-]{43}$/;
@@ -22,7 +22,7 @@ export class SetupToken {
 
   /** Loads or generates the token when no sign-in key exists yet (returns it); otherwise removes any leftover file (returns null). */
   start(db: Database): string | null {
-    if (passkeyCount(db, "login") > 0) { this.clear(); return null; }
+    if (!firstRun(db)) { this.clear(); return null; }
     this.value = this.read() ?? this.generate();
     return this.value;
   }

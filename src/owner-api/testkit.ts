@@ -12,6 +12,7 @@ import { addDraft, createBatch, setBatchStatus } from "../core/store";
 import { createOwnerApp } from "./index";
 import { b64u } from "./b64";
 import { SetupToken } from "./setup-token";
+import { AppAuth } from "./app-auth";
 
 const sha = (b: Uint8Array | string): Buffer => createHash("sha256").update(b).digest();
 const u32 = (n: number): Buffer => { const b = Buffer.alloc(4); b.writeUInt32BE(n); return b; };
@@ -67,6 +68,12 @@ export interface Harness {
   /** The sign-in key (login and reauth only). */
   login: SoftAuthenticator;
   cookie: string;
+  /** The app channel's token holder (a fresh one per harness; never the process-wide default) and the token set on it. */
+  appAuth: AppAuth; appToken: string;
+  /** Terminal recovery token file for this harness (inside its temp dir). */
+  recoveryFile: string;
+  /** A request over the APP channel (owner.sock): Host `localhost`, X-Outbox, and X-Outbox-App unless `token: null` (or another value). */
+  callApp(method: string, path: string, body?: unknown, o?: { token?: string | null; csrf?: boolean; headers?: Record<string, string> }): Promise<{ status: number; json: any; res: Response }>;
   call(method: string, path: string, body?: unknown, o?: { csrf?: boolean; cookie?: string | null; host?: string | null; headers?: Record<string, string> }): Promise<{ status: number; json: any; res: Response }>;
   /** A raw request (multipart uploads, static files): like `call`, but with your own init. Adds the Host header a browser would send. */
   request(path: string, init?: RequestInit): Promise<Response>;
@@ -87,13 +94,17 @@ export function makeHarness(over: Parameters<typeof createOwnerApp>[0] = {}, o2:
   let wrap: (d: Database) => Database = (d) => d;
   const setup = new SetupToken(join(dir, "setup-token"));
   const setupToken = setup.start(db)!;
+  const appAuth = new AppAuth();
+  const appToken = b64u(randomBytes(32));
+  appAuth.set(appToken);
+  const recoveryFile = join(dir, "recovery-token");
   const app = createOwnerApp({
-    db: () => wrap(db), rpId, origin, port, stateDir: dir, userPinFile: join(dir, "passkeys.json"), setupToken: setup,
+    db: () => wrap(db), rpId, origin, port, stateDir: dir, userPinFile: join(dir, "passkeys.json"), setupToken: setup, appAuth, recoveryTokenFile: recoveryFile,
     rootPinFile: join(dir, "root", "passkeys.json"), webDist: join(dir, "dist"),
     ...over,
   });
   const h: Harness = {
-    app, db, dir, rpId, origin, setup, setupToken, auth: new SoftAuthenticator(rpId, origin), login: new SoftAuthenticator(rpId, origin), cookie: "",
+    app, db, dir, rpId, origin, setup, setupToken, appAuth, appToken, recoveryFile, auth: new SoftAuthenticator(rpId, origin), login: new SoftAuthenticator(rpId, origin), cookie: "",
     async call(method, path, body, o = {}) {
       const headers: Record<string, string> = {};
       if (body !== undefined) headers["content-type"] = "application/json";
@@ -104,6 +115,18 @@ export function makeHarness(over: Parameters<typeof createOwnerApp>[0] = {}, o2:
       if (o.host !== null) headers["host"] = o.host ?? `localhost:${port}`;
       Object.assign(headers, o.headers ?? {});
       const res = await app.request(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+      const text = await res.text();
+      let json: any = null; try { json = JSON.parse(text); } catch { json = text; }
+      return { status: res.status, json, res };
+    },
+    async callApp(method, path, body, o = {}) {
+      const headers: Record<string, string> = { host: "localhost" };
+      if (body !== undefined) headers["content-type"] = "application/json";
+      if (o.csrf !== false && method !== "GET") headers["x-outbox"] = "1";
+      const tok = o.token === undefined ? appToken : o.token;
+      if (tok !== null) headers["x-outbox-app"] = tok;
+      Object.assign(headers, o.headers ?? {});
+      const res = await app.request(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }, { channel: "app" });
       const text = await res.text();
       let json: any = null; try { json = JSON.parse(text); } catch { json = text; }
       return { status: res.status, json, res };

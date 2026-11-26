@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { getDb } from "../db";
 import { ORIGIN, PORT, RP_ID, paths } from "../core/paths";
 import { SetupToken, defaultSetupToken } from "./setup-token";
+import { AppAuth, defaultAppAuth } from "./app-auth";
 
 export interface OwnerConfig {
   db: () => Database;
@@ -21,6 +22,10 @@ export interface OwnerConfig {
   webDist: string;
   /** Guards open (no-session) registration while no sign-in key exists. Not started here: server.ts (or a test) calls start(). */
   setupToken: SetupToken;
+  /** The per-launch token of the app channel (owner.sock). Inactive (no app channel) unless server.ts was started with --app-auth-fd. */
+  appAuth: AppAuth;
+  /** Terminal-made recovery token file (`agent-outbox recover`). */
+  recoveryTokenFile: string;
   /** Failed passkey verifications allowed per window before login is locked (global: every request is from 127.0.0.1). */
   loginMaxFailures: number;
   loginWindowMs: number;
@@ -54,6 +59,8 @@ export function resolveConfig(over: Partial<OwnerConfig> = {}): OwnerConfig {
     rootPinFile: paths.rootPinFile,
     webDist: join(here, "..", "..", "web", "dist"),
     setupToken: defaultSetupToken,
+    appAuth: defaultAppAuth,
+    recoveryTokenFile: paths.recoveryToken,
     loginMaxFailures: 8,
     loginWindowMs: 10 * 60_000,
     challengeTtlMs: 5 * 60_000,

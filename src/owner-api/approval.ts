@@ -19,7 +19,7 @@ import { b64u, fromB64u, isB64u, sha256Buf, sha256Hex } from "./b64";
 import { ApiError, badRequest, conflict, notFound } from "./errors";
 import { planSends, type Plan } from "../core/pacing";
 import { queuedAhead, readPaceState, sentSinceLocalMidnight } from "../core/pacing-db";
-import { FailureLimiter, listPasskeys, storeChallenge, takeChallenge, type PasskeyRow } from "./auth";
+import { FailureLimiter, listNativeKeys, listPasskeys, storeChallenge, takeChallenge, type PasskeyRow } from "./auth";
 
 /** Draft states an approval may cover. `skipped` counts as re-included when the owner picks it, and `approved` is
  *  approvable again once its covering approval is dead (expired, revoked or consumed). */
@@ -131,9 +131,16 @@ function checkApprovable(db: Database, d: Draft): void {
 }
 
 // ---------- options ----------
+export type Signer = "webauthn" | "secure-enclave";
+
 export interface ApproveOptionsResult {
   challenge_id: string;
-  options: Awaited<ReturnType<typeof generateAuthenticationOptions>>;
+  /** WebAuthn options; null when the signer is the Secure Enclave (the app signs `se` instead). */
+  options: Awaited<ReturnType<typeof generateAuthenticationOptions>> | null;
+  /** The EXACT manifest bytes (a string). The challenge is sha256 of these, and the app signs M(tag, sha256 of these). */
+  manifest_bytes: string;
+  /** Secure Enclave signer only: what to sign and which active keys may sign it. */
+  se?: { tag: "send"; key_ids: string[] };
   manifest: Manifest;
   /** What pacing means for this approval: the estimate shown in the sheet. `enabled: false` = right away, one every 2 s. */
   plan: Plan;
@@ -145,7 +152,7 @@ export interface ApproveOptionsResult {
 export const APPROVAL_HOURS = 24;
 
 export async function approveOptions(cfg: OwnerConfig, db: Database, batchId: string, draftIds: string[],
-  includeAnyway: string[] = []): Promise<ApproveOptionsResult> {
+  includeAnyway: string[] = [], signer: Signer = "webauthn"): Promise<ApproveOptionsResult> {
   const batch = getBatch(db, batchId);
   if (!batch) throw notFound("Batch not found.");
   if (batch.status === "drafting") throw conflict("batch_drafting", "This batch isn't submitted for review yet.");
@@ -175,7 +182,10 @@ export async function approveOptions(cfg: OwnerConfig, db: Database, batchId: st
   }
   picked.sort((a, b) => a.position - b.position);
   const passkeys = listPasskeys(db, "approve");
-  if (passkeys.length === 0) throw conflict("no_passkeys", "Register an approval passkey first (Settings).");
+  const nativeKeys = listNativeKeys(db, "active");
+  if (signer === "secure-enclave") {
+    if (nativeKeys.length === 0) throw conflict("no_native_keys", "Set up Touch ID approval in the app first.");
+  } else if (passkeys.length === 0) throw conflict("no_passkeys", "Register an approval passkey first (Settings).");
 
   const settings = getSettings(db);
   const transport = settings.transport;
@@ -188,16 +198,20 @@ export async function approveOptions(cfg: OwnerConfig, db: Database, batchId: st
   });
   const { manifest, bytes } = buildManifest(cfg, batchId, picked, plan.window_hours, transport, newId(), now);
   const digest = challengeBytes(bytes);
-  const options = await generateAuthenticationOptions({
-    rpID: cfg.rpId, userVerification: "required", timeout: 120_000, challenge: digest,
-    allowCredentials: passkeys.map((p) => ({ id: p.credential_id, transports: JSON.parse(p.transports_json) })),
-  });
   const stored = b64u(digest);
-  if (options.challenge !== stored) throw new Error("challenge encoding mismatch"); // never expected; surfaces as a 500
+  let options: ApproveOptionsResult["options"] = null;
+  if (signer === "webauthn") {
+    options = await generateAuthenticationOptions({
+      rpID: cfg.rpId, userVerification: "required", timeout: 120_000, challenge: digest,
+      allowCredentials: passkeys.map((p) => ({ id: p.credential_id, transports: JSON.parse(p.transports_json) })),
+    });
+    if (options.challenge !== stored) throw new Error("challenge encoding mismatch"); // never expected; surfaces as a 500
+  }
   const challenge_id = storeChallenge(cfg, db, { purpose: "approve", challenge: stored, approval_id: manifest.approval_id, manifest: bytes, batch_id: batchId });
-  audit(db, "owner", "approval.options", batchId, { challenge_id, approval_id: manifest.approval_id, count: picked.length, transport, window_hours: plan.window_hours, paced: plan.enabled });
+  audit(db, "owner", "approval.options", batchId, { challenge_id, approval_id: manifest.approval_id, count: picked.length, transport, window_hours: plan.window_hours, paced: plan.enabled, signer });
   return {
-    challenge_id, options, manifest, plan,
+    challenge_id, options, manifest, manifest_bytes: bytes, plan,
+    ...(signer === "secure-enclave" ? { se: { tag: "send" as const, key_ids: nativeKeys.map((k) => k.key_id) } } : {}),
     drafts: picked.map((d) => ({ draft_id: d.id, body: d.body, warnings: d.warnings, number_in_contact: numberInContact(db, d) })),
   };
 }
@@ -261,8 +275,21 @@ export async function approveVerify(cfg: OwnerConfig, db: Database, limiter: Fai
     if (!isB64u(v)) throw badRequest(`${k} must be base64url.`);
   }
 
+  const result = commitApproval(db, { manifest, bytes, batchId, credentialId: pk.credential_id, authData: authenticatorData, clientData: clientDataJSON,
+    signature, signer: "webauthn", afterInsert: () => db.query("UPDATE passkeys SET counter = ? WHERE credential_id = ?").run(newCounter, pk.credential_id) });
+  limiter.reset();
+  return result;
+}
+
+/** Records a verified approval (WebAuthn assertion or Secure Enclave signature) in ONE immediate transaction: every item is
+ *  re-checked against the live drafts first. SE rows carry empty authenticator/client data and `credential_id = key_id`. */
+export function commitApproval(db: Database, a: {
+  manifest: Manifest; bytes: string; batchId: string; credentialId: string; authData: string; clientData: string; signature: string;
+  signer: Signer; afterInsert?: () => void;
+}): ApproveVerifyResult {
+  const { manifest, bytes, batchId } = a;
   // IMMEDIATE: the review reproduced SQLITE_BUSY_SNAPSHOT when a second connection wrote between our read and write.
-  const result = db.transaction((): ApproveVerifyResult => {
+  return db.transaction((): ApproveVerifyResult => {
     const changed = changedItems(db, manifest);
     if (changed.length) throw conflict("draft_changed", "Some messages changed after you opened the approval. Review them and approve again.", { changed });
     for (const item of manifest.items) {
@@ -272,30 +299,29 @@ export async function approveVerify(cfg: OwnerConfig, db: Database, limiter: Fai
     const t = nowIso();
     db.query(`INSERT INTO approvals(id, batch_id, manifest, manifest_sha256, credential_id, authenticator_data_b64, client_data_json_b64,
               signature_b64, not_after, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`)
-      .run(manifest.approval_id, batchId, bytes, sha256Hex(bytes), pk.credential_id, authenticatorData, clientDataJSON, signature, manifest.not_after, t);
+      .run(manifest.approval_id, batchId, bytes, sha256Hex(bytes), a.credentialId, a.authData, a.clientData, a.signature, manifest.not_after, t);
     for (const item of manifest.items) {
       db.query("UPDATE drafts SET status = 'approved', updated_at = ? WHERE id = ?").run(t, item.draft_id);
     }
     setBatchStatus(db, batchId, "approved", "owner");
-    db.query("UPDATE passkeys SET counter = ? WHERE credential_id = ?").run(newCounter, pk.credential_id);
+    a.afterInsert?.();
     audit(db, "owner", "approval.create", manifest.approval_id, {
-      batch_id: batchId, count: manifest.items.length, credential_id: pk.credential_id, manifest_sha256: sha256Hex(bytes), not_after: manifest.not_after,
-      transport: manifest.transport,
+      batch_id: batchId, count: manifest.items.length, credential_id: a.credentialId, manifest_sha256: sha256Hex(bytes), not_after: manifest.not_after,
+      transport: manifest.transport, signer: a.signer,
     });
-    return { approval_id: manifest.approval_id, manifest_sha256: sha256Hex(bytes), count: manifest.items.length, not_after: manifest.not_after, credential_id: pk.credential_id, transport: manifest.transport };
+    return { approval_id: manifest.approval_id, manifest_sha256: sha256Hex(bytes), count: manifest.items.length, not_after: manifest.not_after, credential_id: a.credentialId, transport: manifest.transport };
   }).immediate();
-  limiter.reset();
-  return result;
 }
 
 // ---------- revocation ----------
 export interface RevokeResult { approvals: number; drafts: number; approval_ids: string[]; draft_ids: string[]; at: string }
 /** Revokes approvals and drops their still-`approved` drafts back to `review` (the executor already refuses revoked
  *  approvals; this keeps the dashboard honest). Returns what was affected, so a stop can be undone. IMMEDIATE. */
-export function revokeApprovals(db: Database, where: { batchId?: string; draftId?: string; all?: boolean }, actor: string, why: string): RevokeResult {
+export function revokeApprovals(db: Database, where: { batchId?: string; draftId?: string; credentialId?: string; all?: boolean }, actor: string, why: string): RevokeResult {
   return db.transaction((): RevokeResult => {
-    let rows = db.query<ApprovalRow, []>("SELECT * FROM approvals WHERE revoked_at IS NULL").all();
+    let rows = db.query<ApprovalRow & { credential_id: string }, []>("SELECT * FROM approvals WHERE revoked_at IS NULL").all();
     if (where.batchId) rows = rows.filter((a) => a.batch_id === where.batchId);
+    if (where.credentialId) rows = rows.filter((a) => a.credential_id === where.credentialId);
     if (where.draftId) rows = rows.filter((a) => parseManifest(a)?.items.some((i) => i.draft_id === where.draftId));
     const t = nowIso();
     const draftIds: string[] = [];

@@ -117,10 +117,11 @@ export interface Manifest {
  *  `keys` holds ONLY approval-purpose passkeys (never the sign-in passkey), so a harvested login assertion can't
  *  satisfy the executor. `policy` holds floors the executor enforces over whatever the DB settings say. */
 export interface PinFile {
-  v: 2;
+  /** 2 = approval passkeys only (no `kind`); 3 = every key carries a `kind` (written only while a Secure Enclave key is active). */
+  v: 2 | 3;
   rp_id: string;
   origin: string;
-  keys: { credential_id: string; x963: string; label: string }[]; // base64url, purpose = 'approve' only
+  keys: { kind?: "webauthn" | "secure-enclave"; credential_id: string; x963: string; label: string }[]; // base64url, approve passkeys + active native keys
   policy: PinPolicy;
 }
 /** v3 (2026-11-10: "approve → send, nothing else"): the only policy is whether live sending is allowed.
