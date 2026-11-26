@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ApiErr, get, post, errText } from "./api";
 import { useLoad } from "./hooks";
-import { getSetupToken, login, passkeyError, registerApprove, registerLogin } from "./passkeys";
+import { getSetupToken, login, passkeyError, registerApprove, registerLogin, registerLoginViaLink } from "./passkeys";
 import { href, useRoute } from "./router";
 import { ErrorNote, Sheet, Spinner, ToastHost, useToast } from "./ui";
 import { Controls } from "./controls";
@@ -14,6 +14,7 @@ import { ContactChangeDetail, ContactChangesList } from "./pages/ContactChanges"
 import { GroupDetail, GroupsList } from "./pages/Groups";
 import { Activity } from "./pages/Activity";
 import { Settings } from "./pages/Settings";
+import { NativeEnroll } from "./pages/NativeEnroll";
 
 interface AuthState { registered: boolean; authenticated: boolean; setup_token_required: boolean; setup: { login: boolean; approve: boolean }; rp_id: string; origin: string }
 
@@ -22,13 +23,22 @@ export function App() {
   const [err, setErr] = useState<string | null>(null);
   const [skipped, setSkipped] = useState(() => sessionStorage.getItem("outbox:skip-setup") === "1");
   const refresh = () => get<AuthState>("/api/auth/state").then(setAuth).catch((e) => setErr(errText(e)));
-  useEffect(() => { void refresh(); }, []);
+  // #/link?code=…: Agent Outbox.app opened the dashboard for you. The one-time code becomes a normal session, then the address is cleaned up.
+  useEffect(() => {
+    const m = /^#\/link\?code=([A-Za-z0-9_-]{20,100})$/.exec(location.hash);
+    if (!m) { void refresh(); return; }
+    post("/api/auth/link", { code: m[1] })
+      .then(() => { history.replaceState(null, "", location.pathname); }, (e) => setErr(errText(e)))
+      .finally(() => { void refresh(); });
+  }, []);
   if (err) return <div className="gate"><ErrorNote>{err}</ErrorNote><button className="btn" onClick={() => location.reload()}>Retry</button></div>;
   if (!auth) return <div className="gate"><Spinner /></div>;
-  const needApprove = auth.authenticated && !auth.setup.approve && !skipped;
+  const needLogin = auth.authenticated && !auth.setup.login;          // a link session on a Mac set up in the app: no sign-in key yet
+  const needApprove = auth.authenticated && !needLogin && !auth.setup.approve && !skipped;
   return (
     <ToastHost>
-      {!auth.authenticated ? <Gate key={auth.registered ? "signin" : "1"} auth={auth} step={auth.registered ? "signin" : 1} onDone={refresh} />
+      {needLogin ? <Gate key="link1" auth={auth} step={1} viaLink onDone={refresh} />
+        : !auth.authenticated ? <Gate key={auth.registered ? "signin" : "1"} auth={auth} step={auth.registered ? "signin" : 1} onDone={refresh} />
         : needApprove ? <Gate key="2" auth={auth} step={2} onDone={refresh} onSkip={() => { sessionStorage.setItem("outbox:skip-setup", "1"); setSkipped(true); }} />
         : <Shell setup={auth.setup} />}
     </ToastHost>
@@ -37,13 +47,13 @@ export function App() {
 
 const WHY_TWO = "Two keys, so the Touch ID sheet says \"APPROVE SENDING\" only when you are approving a send, never when you are just signing in.";
 
-function Gate({ auth, step, onDone, onSkip }: { auth: AuthState; step: 1 | 2 | "signin"; onDone: () => void; onSkip?: () => void }) {
+function Gate({ auth, step, onDone, onSkip, viaLink }: { auth: AuthState; step: 1 | 2 | "signin"; onDone: () => void; onSkip?: () => void; viaLink?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const device = "This Mac";
   const [label, setLabel] = useState(step === 2 ? `${device} approval` : `${device} sign-in`);
   // Step 1 needs the one-time setup link; without its token the button can't work, so say how to get the link.
-  const needLink = step === 1 && auth.setup_token_required && !getSetupToken();
+  const needLink = step === 1 && !viaLink && auth.setup_token_required && !getSetupToken();
   const run = async (f: () => Promise<unknown>) => {
     setBusy(true); setErr(null);
     try { await f(); onDone(); } catch (e) { setErr(e instanceof ApiErr ? errText(e) : passkeyError(e)); } finally { setBusy(false); }
@@ -75,7 +85,7 @@ function Gate({ auth, step, onDone, onSkip }: { auth: AuthState; step: 1 | 2 | "
           <label className="field"><span>Name this key</span><input value={label} onChange={(e) => setLabel(e.target.value)} maxLength={60} /></label>
           {needLink && <p className="note note-info small" data-testid="setup-link-note">Open the setup link printed by the installer, or run <code>./install.sh --setup-link</code> in the agent-outbox folder.</p>}
           <button className="btn btn-primary btn-wide" disabled={busy || needLink}
-            onClick={() => run(() => (step === 1 ? registerLogin(label) : registerApprove(label)))}>
+            onClick={() => run(() => (step === 1 ? (viaLink ? registerLoginViaLink(label) : registerLogin(label)) : registerApprove(label)))}>
             {busy ? "Waiting for Touch ID…" : step === 1 ? "Create sign-in key" : "Create approval key"}
           </button>
           {step === 2 && onSkip && <button className="btn-text" onClick={onSkip}>Later (nothing can be approved until you do)</button>}
@@ -147,6 +157,7 @@ function Shell({ setup }: { setup: { login: boolean; approve: boolean } }) {
     case "contacts": page = route[1] === "changes" ? (route[2] ? <ContactChangeDetail id={route[2]} status={status.data} /> : <ContactChangesList />)
       : route[1] === "groups" ? (route[2] ? <GroupDetail id={route[2]} /> : <GroupsList />) : <Contacts />; break;
     case "activity": page = <Activity />; break;
+    case "native-enroll": page = <NativeEnroll id={route[1] ?? ""} />; break;
     case "settings": page = <Settings status={status.data} reloadStatus={status.reload} focus={route[1]} />; break;
     default: page = <Inbox status={status.data} />;
   }

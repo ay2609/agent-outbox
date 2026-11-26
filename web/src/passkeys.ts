@@ -41,6 +41,12 @@ export async function registerLogin(label: string) {
   forgetSetupToken();
   return r;
 }
+/** The first sign-in key of a Mac whose setup was done in the app: a browser-link session (see #/link) may register it without the setup token. */
+export async function registerLoginViaLink(label: string) {
+  const { challenge_id, options } = await post("/api/passkeys/options", { label, purpose: "login" });
+  const response = await startRegistration({ optionsJSON: options });
+  return post("/api/passkeys/verify", { challenge_id, response, label });
+}
 export async function login() {
   const { challenge_id, options } = await post("/api/auth/login/options");
   const response = await startAuthentication({ optionsJSON: options });
