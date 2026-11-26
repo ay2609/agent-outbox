@@ -54,7 +54,7 @@ struct MainView: View {
                 }.padding(10)
             }
         } detail: {
-            NavigationStack {
+            NavigationStack(path: $model.path) {
                 Group {
                     switch model.nav {
                     case .inbox: InboxView()
@@ -68,7 +68,7 @@ struct MainView: View {
                 .navigationDestination(for: SetRef.self) { ContactSetView(id: $0.id) }
                 .navigationDestination(for: GroupRef.self) { GroupDetailView(id: $0.id) }
             }
-            .id(model.nav)
+            .onChange(of: model.nav) { _ in model.path = NavigationPath() }
         }
     }
 }

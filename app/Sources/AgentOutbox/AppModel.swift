@@ -34,8 +34,7 @@ final class AppModel: ObservableObject {
     @Published var connectionError: String?
     @Published var native = BridgeNativeStatus()
     @Published var nav: NavItem = .inbox
-    @Published var openBatch: String?          // batch id shown in the Inbox detail
-    @Published var openChangeSet: String?
+    @Published var path = NavigationPath()     // the detail column's stack (batch, contact set, group)
     @Published var onboarded: Bool
     @Published var oldAgents: [String]
     @Published var flash: String?
@@ -54,6 +53,19 @@ final class AppModel: ObservableObject {
         let e = AppEnv.env
         onboarded = e["AGENT_OUTBOX_FORCE_ONBOARDING"] == "1" ? false : (e["AGENT_OUTBOX_SKIP_ONBOARDING"] == "1" || UserDefaults.standard.bool(forKey: Self.onboardedKey))
         oldAgents = e["AGENT_OUTBOX_SKIP_MIGRATION"] == "1" ? [] : Migration.detect()
+        // Dev/screenshot aid: AGENT_OUTBOX_START_NAV=settings, AGENT_OUTBOX_START_PATH=batch:b1 (or set:<id>, group:<id>).
+        if let n = e["AGENT_OUTBOX_START_NAV"], let item = NavItem.allCases.first(where: { $0.rawValue.lowercased() == n.lowercased() }) { nav = item }
+        if let sp = e["AGENT_OUTBOX_START_PATH"] {
+            let parts = sp.split(separator: ":").map(String.init)
+            if parts.count == 2 {
+                switch parts[0] {
+                case "batch": path.append(BatchRef(id: parts[1]))
+                case "set": path.append(SetRef(id: parts[1]))
+                case "group": path.append(GroupRef(id: parts[1]))
+                default: break
+                }
+            }
+        }
         let flag = sending
         AppUpdater.shared.busyCheck = { flag.value }
         // Old LaunchAgents hold the port: wait for the owner's decision (Migration screen) before starting the server.

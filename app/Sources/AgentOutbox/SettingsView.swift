@@ -47,7 +47,9 @@ struct SettingsView: View {
         let keys = nativeKeys.data?.arr("keys") ?? []
         let pk = passkeys.data?.arr("passkeys") ?? []
         Form {
-            Section { ServerBanner(); ErrorLine(text: action.error ?? settings.error); if let n = action.note { Text(n).foregroundStyle(.secondary) } }
+            if !model.reachable || action.error != nil || settings.error != nil || action.note != nil {
+                Section { ServerBanner(); ErrorLine(text: action.error ?? settings.error); if let n = action.note { Text(n).foregroundStyle(.secondary) } }
+            }
 
             Section("Sending") {
                 Picker("Mode", selection: Binding(get: { model.isLive ? "live" : "dry" }, set: { m in

@@ -76,7 +76,7 @@ struct GroupsView: View {
     var body: some View {
         let groups = loader.data?.arr("groups") ?? []
         List {
-            Section { ServerBanner(); ErrorLine(text: loader.error ?? action.error) }
+            if !model.reachable || loader.error != nil || action.error != nil { Section { ServerBanner(); ErrorLine(text: loader.error ?? action.error) } }
             Section("Saved groups") {
                 if groups.isEmpty && loader.data != nil {
                     Text("No groups yet. Ask Claude to save a group, or create one here.").foregroundStyle(.secondary)
@@ -118,7 +118,7 @@ struct GroupDetailView: View {
         let g = loader.data?.obj("group") ?? [:]
         let members = loader.data?.arr("members") ?? []
         List {
-            Section { ErrorLine(text: loader.error ?? action.error) }
+            if loader.error != nil || action.error != nil { Section { ErrorLine(text: loader.error ?? action.error) } }
             Section("\(plural(members.count, "member"))") {
                 ForEach(rows(members, idKey: "handle")) { r in
                     HStack {
@@ -152,7 +152,7 @@ struct ContactChangeSetsView: View {
     var body: some View {
         let sets = loader.data?.arr("sets") ?? []
         List {
-            Section { ServerBanner(); ErrorLine(text: loader.error) }
+            if !model.reachable || loader.error != nil { Section { ServerBanner(); ErrorLine(text: loader.error) } }
             Section("Contact changes") {
                 if sets.isEmpty && loader.data != nil { Text("No contact changes yet.").foregroundStyle(.secondary) }
                 ForEach(rows(sets)) { r in NavigationLink(value: SetRef(id: r.id)) { SetRow(s: r.j) } }
