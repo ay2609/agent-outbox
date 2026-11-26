@@ -133,6 +133,17 @@ export function isLinkSession(db: Database, token: string | undefined, maxAgeMs:
   return !!r && Date.now() - Date.parse(r.created_at) < maxAgeMs;
 }
 
+/** A link session made without an owner proof (the app channel alone: browser-link while a sign-in key exists) is worth a session,
+ *  no more. It must not reach the "first approval key right after the sign-in key" shortcut unless that sign-in key was created in
+ *  this same session (which needed the Touch ID confirmation browser-link asks for when no sign-in key exists). True = refuse it. */
+export function linkSessionWithoutProof(db: Database, token: string | undefined): boolean {
+  if (!token) return false;
+  const r = db.query<{ created_at: string }, [string]>("SELECT created_at FROM session_links WHERE token_sha256 = ?").get(sha256Hex(token));
+  if (!r) return false;
+  const n = db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM passkeys WHERE purpose = 'login' AND created_at >= ?").get(r.created_at)?.n ?? 0;
+  return n === 0;
+}
+
 // ---------- se-verify (shared checks) ----------
 const seVerifyBody = z.object({ challenge_id: z.string().min(1).max(100), key_id: z.string().min(1).max(100), signature: z.string().min(1).max(200) });
 

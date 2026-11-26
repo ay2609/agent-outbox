@@ -564,6 +564,21 @@ describe("browser link", () => {
     expect(v.status).toBe(200);
     // once a login key exists the same route needs a reauth again
     expect((await h.call("POST", "/api/passkeys/options", { purpose: "login" }, { cookie })).json.error).toBe("reauth_required");
+    // the sign-in key was made in this (proofed) link session, so the first approval key right after it needs no extra reauth
+    expect((await h.call("POST", "/api/passkeys/options", { purpose: "approve" }, { cookie })).status).toBe(200);
+  });
+
+  test("a link made with no proof (a sign-in key exists) is a session, not an owner proof: no first-approval-key shortcut", async () => {
+    const h = makeHarness();
+    await h.signUpLoginOnly();                 // sign-in key, no approval key yet
+    const bl = await h.callApp("POST", "/api/app/browser-link", {});
+    expect(bl.status).toBe(200);
+    const code = new URL(bl.json.url.replace("/#", "/")).searchParams.get("code")!;
+    const use = await h.call("POST", "/api/auth/link", { code }, { cookie: null });
+    const cookie = (use.res.headers.get("set-cookie") ?? "").split(";")[0]!;
+    expect((await h.call("POST", "/api/passkeys/options", { purpose: "approve" }, { cookie })).json.error).toBe("reauth_required");
+    // a real sign-in session still gets the shortcut
+    expect((await h.call("POST", "/api/passkeys/options", { purpose: "approve" })).status).toBe(200);
   });
 
   test("link codes expire after 5 minutes; with a login key the link needs no extra proof; no keys at all -> setup_first", async () => {

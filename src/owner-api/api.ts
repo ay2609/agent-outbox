@@ -30,7 +30,7 @@ import { registerContactApi } from "./contact-api";
 import { registerGroupsApi } from "./groups-api";
 import { restoreContactApprovals, revokeContactApprovals } from "./contact-approval";
 import { sha256Hex } from "./b64";
-import { isLinkSession, requireReauth, seReauthSchema } from "./native";
+import { isLinkSession, linkSessionWithoutProof, requireReauth, seReauthSchema } from "./native";
 
 const OWNER = "owner";
 /** Statuses no owner edit may touch: the executor owns them. (`unknown` = sent but unconfirmed; never edit or resend.) */
@@ -59,7 +59,8 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
       return c.json(await registerOptions(cfg, db(), { label: body.label ?? "", purpose: "login", kind: "setup" }));
     }
     // Setup: the first approval key, right after the sign-in key created this session. Everything else needs a fresh assertion.
-    if (body.purpose === "approve" && passkeyCount(db(), "approve") === 0 && age !== null && age < SETUP_WINDOW_MS) {
+    if (body.purpose === "approve" && passkeyCount(db(), "approve") === 0 && age !== null && age < SETUP_WINDOW_MS
+      && !linkSessionWithoutProof(db(), getCookie(c, SESSION_COOKIE))) {
       return c.json(await registerOptions(cfg, db(), { label: body.label ?? "", purpose: "approve", kind: "setup" }));
     }
     await requireReauth(c, cfg, limiterFor, body, "passkey_add", "Confirm with your sign-in passkey to add another.");
