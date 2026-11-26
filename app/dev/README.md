@@ -10,6 +10,7 @@ swift build                       # on a Mac with only the Command Line Tools: s
 .build/debug/native-approval-selftest     # Touch ID approval module (software keys)
 dev/run-dev.sh                    # the app + dev/mock-server.ts, OUTBOX_HOME=/tmp/ao-b
 dev/shot.sh out.png [VAR=1 ...]  # same, then writes a PNG of the app window (works on a locked screen) and quits
+bash ../tests/e2e/app-smoke.sh    # after scripts/build-app.sh: the BUILT bundle + real server in a temp OUTBOX_HOME (socket modes, no TCP, quit stops the server)
 ```
 
 Environment the app honours:

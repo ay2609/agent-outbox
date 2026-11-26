@@ -71,7 +71,9 @@ struct StatusStrip: View {
                 Chip(e.bool("alive") ? "Sender running" : "Sender silent \(e.int("heartbeat_age_s") / 60) min", e.bool("alive") ? .good : .bad)
                     .help("The sender is the helper that hands approved messages to Messages.")
             } else { Chip("Sender not running", .bad).help("The sender is the helper that hands approved messages to Messages. It starts with the app; if this stays red, open Settings > This app.") }
-            Chip(s.obj("pin").obj("effective").bool("valid") ? "Approval key set" : "No approval key yet", s.obj("pin").obj("effective").bool("valid") ? .good : .warn)
+            // An empty v4 pin is valid but trusts nobody: the chip needs an active key the sender's pin also lists.
+            let keyed = s.obj("native").bool("approve_in_app") && s.obj("pin").obj("effective").bool("valid")
+            Chip(keyed ? "Approval key set" : "No approval key yet", keyed ? .good : .warn)
                 .help(s.obj("pin").obj("effective").bool("valid") ? "The sender only trusts approvals signed with your key." : "Set up approval in Settings before you approve anything.")
             Chip(model.hardened ? "Hardened" : "Simple mode", model.hardened ? .good : .neutral)
                 .help("Settings > Protection explains what this means.")
