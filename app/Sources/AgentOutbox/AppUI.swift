@@ -3,7 +3,7 @@ import AppKit
 
 // MARK: - Root window
 
-/// Shows the confirm sheet the approval bridge asks for (track C's ApprovalConfirmView, wrapped in ApprovalBridge.swift).
+/// Shows the confirm sheet the approval bridge asks for (NativeApproval's ApprovalConfirmView, wrapped in ApprovalBridge.swift).
 struct ApprovalSheetHost: ViewModifier {
     @ObservedObject var bridge: ApprovalBridge
     func body(content: Content) -> some View {

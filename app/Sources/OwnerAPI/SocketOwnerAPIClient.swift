@@ -27,7 +27,7 @@ public func outboxStateDir(env: [String: String] = ProcessInfo.processInfo.envir
     return NSHomeDirectory() + "/Library/Application Support/agent-outbox"
 }
 
-/// Owner API over the unix socket (local-docs/APP-SECURITY-C.md section 7).
+/// Owner API over the unix socket.
 public final class SocketOwnerAPIClient: OwnerAPIClient, @unchecked Sendable {
     public let socketPath: String
     private let token: @Sendable () -> String?

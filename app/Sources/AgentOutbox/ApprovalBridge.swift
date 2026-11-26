@@ -5,10 +5,10 @@ import OwnerAPI
 
 // The only file that touches NativeApproval's types. Views use ApprovalBridge, BridgeNativeStatus, ApprovalSheet and
 // ApprovalError. The app never builds its own signing UI and never calls SecureEnclave / LocalAuthentication outside
-// NativeApproval (local-docs/APP-SECURITY-C.md section 10).
+// NativeApproval.
 
 struct BridgeNativeStatus: Equatable {
-    /// This Mac can enroll a Secure Enclave key with Touch ID (C decides).
+    /// This Mac can enroll a Secure Enclave key with Touch ID (NativeApprover decides).
     var touchIDAvailable = false
     /// Active Secure Enclave keys known to the server.
     var keysActive = 0

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The confirm sheet: every recipient, every message body, every proposed contact, a LIVE banner and the counts the Touch ID reason uses,
-/// all drawn from `ApprovalPayload`, i.e. from the exact manifest bytes that get signed. Track B presents it (a sheet over the batch);
+/// all drawn from `ApprovalPayload`, i.e. from the exact manifest bytes that get signed. The app presents it (a sheet over the batch);
 /// it never builds its own signing UI. Pressing Approve is what allows the one signature that follows (valid for 60 seconds).
 public struct ApprovalConfirmView: View {
     public let payload: ApprovalPayload

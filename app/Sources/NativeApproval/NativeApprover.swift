@@ -6,7 +6,7 @@ import OwnerAPI
 /// Touch ID approval, end to end, over the owner API's app channel (`OwnerAPIClient`).
 ///
 /// The flow for an approval: ask the server for options (`signer: "secure-enclave"`) -> parse and CHECK the manifest it returned
-/// (`ApprovalPayload`) -> ask the owner through the confirm sheet (`confirmer`, which track B implements with `ApprovalConfirmView`)
+/// (`ApprovalPayload`) -> ask the owner through the confirm sheet (`confirmer`, which the app implements with `ApprovalConfirmView`)
 /// -> only if she pressed Approve in the last 60 seconds, sign M(tag, sha256(manifest_bytes)) with Touch ID -> `se-verify`.
 /// One signature at a time. The key never leaves the Secure Enclave.
 public final class NativeApprover: @unchecked Sendable {

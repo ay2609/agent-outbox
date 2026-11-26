@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-/// Fixed Touch ID reason text (local-docs/APP-SECURITY-C.md section 6). macOS renders "“<app>” is trying to <reason>." Counts and fixed
+/// Fixed Touch ID reason text. macOS renders "“<app>” is trying to <reason>." Counts and fixed
 /// words only: never a name, a number, a message body or a label, because those are agent-controlled or private.
 public enum ApprovalReason {
     static func plural(_ n: Int, _ one: String, _ many: String) -> String { n == 1 ? one : many }

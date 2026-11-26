@@ -67,7 +67,7 @@ public struct DraftSnapshot {
     }
 }
 
-/// Secure Enclave approval message (local-docs/APP-SECURITY-C.md section 2). Byte-identical to the app's `SESig`:
+/// Secure Enclave approval message. Byte-identical to the app's `SESig`:
 /// M = utf8("agent-outbox/se/v1") || 0x00 || utf8(TAG) || 0x00 || DIGEST (32 raw bytes).
 public enum SESig {
     public static let prefix = Data("agent-outbox/se/v1".utf8)

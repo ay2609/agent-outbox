@@ -1,10 +1,10 @@
-// Terminal-side owner proofs for the Secure Enclave app (local-docs/APP-SECURITY-C.md section 4):
+// Terminal-side owner proofs for the Secure Enclave app:
 //  - `agent-outbox recover`    writes <state>/recovery-token (32 random bytes, base64url, 0600, created O_EXCL|O_NOFOLLOW, valid
 //                              30 minutes, one use). It lets the app enrol ONE new Secure Enclave key when the old one is lost
 //                              or invalidated and no browser passkey is available. Honest limit: anything running as the user
 //                              can run this; in hardened mode the new key stays untrusted until the owner runs the sudo command.
 //  - `agent-outbox setup-link` prints the one-time first-run link (what `./install.sh --setup-link` prints).
-// src/bin.ts (track A) dispatches to runRecover() and runSetupLink(); both return the process exit code.
+// src/bin.ts dispatches to runRecover() and runSetupLink(); both return the process exit code.
 import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";

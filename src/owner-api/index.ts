@@ -5,7 +5,7 @@
 // redirected to localhost; every /api route except /api/auth/* needs a session cookie; every non-GET /api request needs
 // the `X-Outbox: 1` header (and an Origin, when the browser sends one, equal to this server's origin).
 //
-// Two channels (local-docs/APP-SECURITY-C.md section 7): "tcp" (loopback, the browser) and "app" (<state>/run/owner.sock, Agent
+// Two channels: "tcp" (loopback, the browser) and "app" (<state>/run/owner.sock, Agent
 // Outbox.app, only when the server was started with --app-auth-fd). The channel is set by server.ts, never by the request. On
 // tcp any `X-Outbox-App` header is refused. On app a valid `X-Outbox-App` token replaces the session cookie, and only /api is served.
 import { Hono, type Context } from "hono";

@@ -7,7 +7,7 @@
 # Env (optional):
 #   BUILD_NUMBER         CFBundleVersion (default: git commit count; the update check compares this, so it must only go up)
 #
-# Bundle layout (contract: local-docs/APP-SECURITY-C.md section 10, track A):
+# Bundle layout:
 #   Contents/MacOS/Agent Outbox          SwiftUI shell (app/ SwiftPM target AgentOutbox)
 #   Contents/MacOS/agent-outbox          bun-compiled server | mcp | cli
 #   Contents/Helpers/OutboxExec.app      the executor, unchanged (own bundle id, entitlements, runtime)
@@ -91,7 +91,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
 	<key>LSMinimumSystemVersion</key><string>13.0</string>
 	<key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
-	<!-- LSUIElement=false: a normal Dock app with a window. Track B may switch to a menu-bar-only app (true);
+	<!-- LSUIElement=false: a normal Dock app with a window. A menu-bar-only app would set true;
 	     the bundle works either way. -->
 	<key>LSUIElement</key><false/>
 	<key>NSHighResolutionCapable</key><true/>

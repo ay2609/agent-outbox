@@ -1,4 +1,4 @@
-// NativeApproval: Secure Enclave Touch ID approval for Agent Outbox.app (local-docs/APP-SECURITY-C.md).
+// NativeApproval: Secure Enclave Touch ID approval for Agent Outbox.app (SECURITY.md has the security model).
 //
 // What this module guarantees, in one place:
 //  - Keys are Secure Enclave P-256 keys with [.privateKeyUsage, .biometryCurrentSet] only: no password fallback.
@@ -58,7 +58,7 @@ public enum B64 {
     }
 }
 
-// MARK: models the app (track B) consumes
+// MARK: models the app consumes
 
 public struct NativeStatus: Sendable, Equatable {
     /// Touch ID sensor present with fingerprints enrolled (LocalAuthentication). False -> use the browser approval.

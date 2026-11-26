@@ -1,13 +1,13 @@
-// Native approval: Secure Enclave keys held by Agent Outbox.app (local-docs/APP-SECURITY-C.md).
+// Native approval: Secure Enclave keys held by Agent Outbox.app (SECURITY.md has the security model).
 //
-// Signature format (section 2): ECDSA P-256/SHA-256, DER, over
+// Signature format: ECDSA P-256/SHA-256, DER, over
 //   M = utf8("agent-outbox/se/v1") || 0x00 || utf8(TAG) || 0x00 || DIGEST     (DIGEST = 32 raw bytes)
 //   send     sha256(manifest bytes)          contacts  sha256(manifest bytes)
 //   reauth   sha256(challenge)               enroll    sha256(challenge || x963)
 // The executor only ever checks send/contacts signatures, against keys in the PIN FILE. The server verifies everything here
 // before it writes a row, but the server is not the security boundary: the executor's pin-file check is.
 //
-// Channels (section 7): the app talks over <state>/run/owner.sock ("app", per-launch token in X-Outbox-App), the browser over
+// Channels: the app talks over <state>/run/owner.sock ("app", per-launch token in X-Outbox-App), the browser over
 // loopback TCP ("tcp"). App-only and tcp-only routes are enforced in index.ts's gate via isAppOnly / isTcpOnly.
 import type { Context, Hono } from "hono";
 import type { Database } from "bun:sqlite";

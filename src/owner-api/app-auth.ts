@@ -1,4 +1,4 @@
-// The per-launch token of the app channel (local-docs/APP-SECURITY-C.md section 7). Agent Outbox.app generates 32 random
+// The per-launch token of the app channel. Agent Outbox.app generates 32 random
 // bytes, passes them to `agent-outbox server --app-auth-fd N` on an inherited descriptor, and sends them back in the
 // `X-Outbox-App` header over <state>/run/owner.sock. Only sha256(token) is kept, in memory: the token itself never reaches
 // disk, env, argv, logs or TCP.

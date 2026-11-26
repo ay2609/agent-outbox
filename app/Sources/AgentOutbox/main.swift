@@ -1,7 +1,7 @@
 import Foundation
 import AppKit
 
-// Agent Outbox (track B). `Agent Outbox --selfcheck` runs the headless checks and exits.
+// Agent Outbox. `Agent Outbox --selfcheck` runs the headless checks and exits.
 // Environment: OUTBOX_HOME / OUTBOX_PORT (state dir and port, for tests and the UX round), AGENT_OUTBOX_SERVER_BIN (server binary
 // override for development), AGENT_OUTBOX_DEV=1 (never register login items), AGENT_OUTBOX_SKIP_ONBOARDING=1,
 // AGENT_OUTBOX_FORCE_ONBOARDING=1, AGENT_OUTBOX_SKIP_MIGRATION=1 (ignore old LaunchAgents).

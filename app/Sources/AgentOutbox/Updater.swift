@@ -7,11 +7,11 @@ import Foundation
 ///
 /// Why not Sparkle: Sparkle.framework is signed by someone else, and a hardened-runtime app only loads frameworks with
 /// the same Team ID. Ad-hoc signing has none, so dyld refuses ("different Team IDs") unless the app carries
-/// `com.apple.security.cs.disable-library-validation`, which the security contract (APP-SECURITY-C section 10) forbids
-/// on the outer app. Verified 2026-11-25; see the packaging notes in CLAUDE.md. The appcast stays Sparkle-compatible, so
+/// `com.apple.security.cs.disable-library-validation`, which this app's security rules forbid
+/// on the outer app. Verified 2026-11-25. The appcast stays Sparkle-compatible, so
 /// switching later is a packaging change, not a feed change.
 ///
-/// Track B wires it up:
+/// The app wires it up:
 ///   - a "Check for Updates…" menu item calling `AppUpdater.shared.checkForUpdates()`, disabled while
 ///     `AppUpdater.shared.canCheckForUpdates` is false;
 ///   - `AppUpdater.shared.busyCheck = { supervisor.batchIsSending }` (the alert then says to update after the batch);

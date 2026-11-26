@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 /// Keeps the Agent Outbox server (Contents/MacOS/agent-outbox server --app-auth-fd 3) running while the app is open.
-/// (local-docs/APP-SECURITY-C.md section 7.)
+/// (SECURITY.md has the security model.)
 ///  - token: 32 random bytes (SecRandomCopyBytes), base64url, kept for this app launch (same across restarts);
 ///  - fd 3 of the child = read end of a pipe the app writes `token\n` into and closes;
 ///  - stdin of the child = a pipe the app keeps open: when the app dies the pipe closes and the server exits (lifeline);

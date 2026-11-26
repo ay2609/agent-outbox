@@ -8,7 +8,7 @@ public protocol Signer: Sendable {
     func sign(_ message: Data, reason: String) async throws -> Data
 }
 
-/// Signed message M (local-docs/APP-SECURITY-C.md section 2), byte-identical to the executor's `SESig` and the server's `seMessage`:
+/// Signed message M, byte-identical to the executor's `SESig` and the server's `seMessage`:
 /// M = utf8("agent-outbox/se/v1") || 0x00 || utf8(TAG) || 0x00 || DIGEST (32 raw bytes).
 public enum SESig {
     public static let prefix = Data("agent-outbox/se/v1".utf8)
