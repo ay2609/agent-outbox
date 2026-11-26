@@ -10,6 +10,8 @@ let package = Package(
         .executableTarget(name: "AgentOutbox", dependencies: ["OwnerAPI", "NativeApproval"]),
         .target(name: "OwnerAPI"),
         .target(name: "NativeApproval", dependencies: ["OwnerAPI"]),
+        // The NativeApproval checks without XCTest (see Sources/native-approval-selftest): `swift run native-approval-selftest`.
+        .executableTarget(name: "native-approval-selftest", dependencies: ["NativeApproval"]),
         .testTarget(name: "NativeApprovalTests", dependencies: ["NativeApproval"]),
     ]
 )
