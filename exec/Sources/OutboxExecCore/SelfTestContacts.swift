@@ -51,7 +51,7 @@ extension Harness {
         return ChangeSpec(id: id, setId: set, kind: kind, target: target, payloadJson: json)
     }
 
-    /// Fabricates a WebAuthn assertion over a contacts manifest, exactly as an authenticator would, and stores the approval.
+    /// Fabricates a Secure Enclave signature over a contacts manifest, exactly as the app does, and stores the approval.
     /// `v` / `kind` let a test build a manifest of the wrong flavour; items are marked `approved` like the dashboard API does.
     @discardableResult
     func approveContacts(set: String, items: [ChangeSpec], _ o: ApprovalOpts = ApprovalOpts(), v: Int = 1, kind: String? = "contacts", markApproved: Bool = true) throws -> String {
@@ -61,20 +61,12 @@ extension Harness {
              "payload_sha256": i.signedSha ?? Hex.sha256Hex(i.payloadJson)]
         }
         var m: [String: Any] = ["v": v, "transport": o.transport, "approval_id": o.approvalId, "set_id": set, "created_at": Time.iso(clock.now),
-                                "not_after": Time.iso(notAfter), "rp_id": o.manifestRpId ?? rpId, "origin": origin, "contact_items": itemObjs]
+                                "not_after": Time.iso(notAfter), "rp_id": o.manifestRpId ?? rpId, "origin": o.manifestOrigin ?? origin, "contact_items": itemObjs]
         if let kind { m["kind"] = kind }
         let manifest = o.rawManifest ?? JSON.string(m)
         let digest = Hex.sha256(Data(manifest.utf8))
-        let cd: [String: Any] = ["type": o.type, "challenge": B64.encodeURL(o.challenge ?? digest), "origin": o.origin ?? origin, "crossOrigin": o.crossOrigin]
-        let cdj = JSON.data(cd)!
-        var auth = Hex.sha256(Data((o.rpIdForAuth ?? rpId).utf8))
-        auth.append(o.flags)
-        auth.append(contentsOf: [0, 0, 0, 0])
-        var signed = auth
-        signed.append(Hex.sha256(cdj))
-        let sig = try (o.signer ?? key).signature(for: o.signOver ?? signed).derRepresentation
-        var fields = (cred: B64.encodeURL(o.credentialId ?? credId), auth: B64.encodeURL(auth), cdj: B64.encodeURL(cdj), sig: B64.encodeURL(sig))
-        if let se = o.se { fields = se.fields(manifest: manifest, defaultTag: "contacts") }
+        let (cred, sigD) = try o.sign(manifest: manifest, defaultTag: "contacts", harnessKey: key)
+        let fields = (cred: B64.encodeURL(cred), auth: o.authB64, cdj: o.cdjB64, sig: o.enc(sigD))
         try db.exec("""
             INSERT INTO contact_approvals(id, set_id, manifest, manifest_sha256, credential_id, authenticator_data_b64, client_data_json_b64, signature_b64, not_after, created_at, revoked_at)
             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -224,19 +216,22 @@ extension SelfTest {
                        && back.phones == [LabeledValue("+15559876543", "home"), LabeledValue("ext. 12", "other")] && back.groups == ["Friends", "Team \u{1F41A}"], "round trip: \(back)")
             try expect(ContactSnapshot.parse("BEGIN:VCARD\r\nEND:VCARD") == nil && ContactSnapshot.parse("{\"v\":2}") == nil, "only v1 JSON is a snapshot")
         }
-        test("contacts: pin policy contacts_live_allowed (missing or wrong type is false, and never disturbs live_allowed)") { h in
+        test("contacts: pin policy contacts_live_allowed is a mandatory boolean (wrong type refuses the whole pin) and independent of live_allowed") { h in
             let p = h.dir + "/pins/p.json"
             try h.writePin(to: p, mode: 0o600)
             var pf = try PinFileLoader.load(path: p, mode: .simple)
-            try expect(!pf.policy.contactsLiveAllowed && !pf.policy.liveAllowed, "the installed pin (no field) must read as false")
+            try expect(!pf.policy.contactsLiveAllowed && !pf.policy.liveAllowed, "default pin reads false/false")
             try h.writePin(to: p, mode: 0o600, policy: ["live_allowed": true, "contacts_live_allowed": true])
             pf = try PinFileLoader.load(path: p, mode: .simple)
             try expect(pf.policy.contactsLiveAllowed && pf.policy.liveAllowed, "both true")
             for bad: Any in ["yes", 1, NSNull(), ["x": 1]] {
                 try h.writePin(to: p, mode: 0o600, policy: ["live_allowed": true, "contacts_live_allowed": bad])
-                pf = try PinFileLoader.load(path: p, mode: .simple)
-                try expect(!pf.policy.contactsLiveAllowed && pf.policy.liveAllowed, "wrong type \(bad) must be false for contacts and leave live_allowed alone")
+                do { _ = try PinFileLoader.load(path: p, mode: .simple); throw CaseFailure(message: "wrong type \(bad) accepted") }
+                catch let e as ExecError { try expect("\(e)".contains("not a boolean"), "wrong type \(bad): \(e)") }
             }
+            try h.writePin(to: p, mode: 0o600, rawPolicy: ["live_allowed": true] as [String: Any])
+            do { _ = try PinFileLoader.load(path: p, mode: .simple); throw CaseFailure(message: "missing contacts_live_allowed accepted") }
+            catch let e as ExecError { try expect("\(e)".contains("exactly live_allowed and contacts_live_allowed"), "missing field: \(e)") }
             try h.writePin(to: p, mode: 0o600, policy: ["live_allowed": false, "contacts_live_allowed": true])
             pf = try PinFileLoader.load(path: p, mode: .simple)
             try expect(pf.policy.contactsLiveAllowed && !pf.policy.liveAllowed, "contacts live is independent of message live")
@@ -773,7 +768,8 @@ extension SelfTest {
             let card = h.contacts.add(given: "Sam", phones: ["+15551234567"])
             let set = try h.makeSet()
             let u = try h.addChange(set: set, kind: "update", target: card.identifier, payload: CP.update(set: ["given_name": "Sam🐚"]), position: 0)
-            let ap = try h.approveContacts(set: set, items: [u], markApproved: false)
+            var asSend = ApprovalOpts(); asSend.tag = "send"      // signed with the send tag so only the manifest-kind check can refuse it
+            let ap = try h.approveContacts(set: set, items: [u], asSend, markApproved: false)
             try h.db.exec("""
                 INSERT INTO approvals(id, batch_id, manifest, manifest_sha256, credential_id, authenticator_data_b64, client_data_json_b64, signature_b64, not_after, created_at)
                 SELECT id, ?, manifest, manifest_sha256, credential_id, authenticator_data_b64, client_data_json_b64, signature_b64, not_after, created_at FROM contact_approvals WHERE id = ?
@@ -788,7 +784,8 @@ extension SelfTest {
             // 2. a send manifest copied into `contact_approvals` can't apply a change
             let b2 = try h.makeBatch()
             let d2 = try h.makeDraft(batch: b2, handle: "+15550002222")
-            let sendAp = try h.approve(batch: b2, items: [d2])
+            var asContacts = ApprovalOpts(); asContacts.tag = "contacts"
+            let sendAp = try h.approve(batch: b2, items: [d2], asContacts)
             try h.db.exec("UPDATE drafts SET status = 'review' WHERE id = ?", [.text(d2.draftId)])    // this test is about contacts, not about sending it
             let set2 = try h.makeSet()
             let u2 = try h.addChange(set: set2, kind: "update", target: card.identifier, payload: CP.update(set: ["nickname": "S"]), status: "approved")
@@ -826,9 +823,9 @@ extension SelfTest {
             try expect(try verdict({ _ in }, v: 2)?.contains("manifest.v is not 1") == true, "v 2")
             try expect(try verdict({ _ in }, kind: nil)?.contains("kind") == true, "no kind")
             try expect(try verdict({ _ in }, items: false)?.contains("contact_items") == true, "no items")
-            try expect(try verdict({ $0.signer = P256.Signing.PrivateKey() })?.contains("does not verify") == true, "unpinned signature")
-            try expect(try verdict({ $0.origin = "https://evil.example" })?.contains("origin") == true, "wrong origin")
-            try expect(try verdict({ $0.flags = 0x01 })?.contains("UV") == true, "no UV")
+            try expect(try verdict({ $0.signer = P256.Signing.PrivateKey() })?.contains("not in the pin file") == true, "unpinned key")
+            try expect(try verdict({ $0.manifestOrigin = "https://evil.example" })?.contains("origin") == true, "wrong origin")
+            try expect(try verdict({ $0.authB64 = "AAAA" })?.contains("WebAuthn fields") == true, "webauthn fields")
             try expect(try verdict({ $0.transport = "maybe" })?.contains("transport") == true, "bad transport")
             // a manifest naming another set than the row
             let set = try h.makeSet(), other = try h.makeSet()

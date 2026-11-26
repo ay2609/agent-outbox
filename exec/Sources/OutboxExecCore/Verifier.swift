@@ -79,8 +79,8 @@ public enum SESig {
 public enum Verifier {
     static let services: Set<String> = ["iMessage", "SMS", "auto"]
 
-    /// The part of verification shared by send and contacts approvals: stored fields decode, the assertion is bound to the manifest
-    /// bytes, origin / rp_id / UP / UV, the signature verifies against a pinned approve-purpose key, not revoked. Returns the parsed
+    /// The part of verification shared by send and contacts approvals: the key is in the pin, the hash column matches, the row has no
+    /// WebAuthn fields, the Secure Enclave signature over M(tag, sha256(manifest)) verifies, not revoked. Returns the parsed
     /// manifest object (only after the signature held, so its bytes are authentic) and the row's expiry. Each caller then checks
     /// the manifest's own fields, including which KIND of manifest it is.
     struct Envelope {
@@ -101,47 +101,12 @@ public enum Verifier {
         // b. the stored hash column is advisory, but a mismatch means someone touched the row
         if manifestSha256.lowercased() != Hex.encode(manifestHash) { throw Rejection("manifest_sha256 column does not match the manifest bytes") }
 
-        switch key.kind {
-        case .webauthn:
-            // 1. decode the stored fields
-            guard let authData = B64.decodeURL(authenticatorDataB64) else { throw Rejection("authenticator_data is not valid base64url") }
-            guard let cdj = B64.decodeURL(clientDataJSONB64) else { throw Rejection("client_data_json is not valid base64url") }
-
-            // 3. clientDataJSON: parsed as JSON, then type / challenge / origin
-            guard let client = JSON.object(cdj) else { throw Rejection("clientDataJSON is not a JSON object") }
-            guard let type = client["type"] as? String else { throw Rejection("clientDataJSON.type missing") }
-            guard type == "webauthn.get" else { throw Rejection("clientDataJSON.type is \(type), expected webauthn.get") }
-            guard let challenge = client["challenge"] as? String else { throw Rejection("clientDataJSON.challenge missing") }
-            guard let challengeBytes = B64.decodeURL(challenge) else { throw Rejection("clientDataJSON.challenge is not valid base64url") }
-            guard challengeBytes == manifestHash else { throw Rejection("challenge does not equal sha256(manifest)") }
-            guard let origin = client["origin"] as? String else { throw Rejection("clientDataJSON.origin missing") }
-            guard origin == pin.origin else { throw Rejection("origin \(origin) does not match pinned origin \(pin.origin)") }
-            if let cross = client["crossOrigin"] {
-                guard let b = cross as? Bool, b == false else { throw Rejection("clientDataJSON.crossOrigin is set") }
-            }
-
-            // 4. authenticatorData: rpIdHash + flags
-            guard authData.count >= 37 else { throw Rejection("authenticatorData too short (\(authData.count) bytes)") }
-            let rpHash = authData.prefix(32)
-            guard Data(rpHash) == Hex.sha256(Data(pin.rpId.utf8)) else { throw Rejection("rpIdHash does not match sha256(pinned rp_id)") }
-            let flags = authData[authData.startIndex + 32]
-            guard flags & 0x01 != 0 else { throw Rejection("user-presence (UP) flag not set") }
-            guard flags & 0x04 != 0 else { throw Rejection("user-verification (UV) flag not set") }
-
-            // 5. signature over authData || sha256(clientDataJSON)
-            let signature: P256.Signing.ECDSASignature
-            do { signature = try P256.Signing.ECDSASignature(derRepresentation: sigDER) } catch { throw Rejection("signature is not a valid DER ECDSA signature") }
-            var signed = Data(authData)
-            signed.append(Hex.sha256(cdj))
-            guard key.publicKey.isValidSignature(signature, for: signed) else { throw Rejection("signature does not verify against the pinned key") }
-        case .secureEnclave:
-            // A Secure Enclave approval has no WebAuthn fields; the signature is over the domain-separated message M(tag, sha256(manifest)).
-            guard authenticatorDataB64.isEmpty && clientDataJSONB64.isEmpty else { throw Rejection("secure-enclave approval carries WebAuthn fields") }
-            let signature: P256.Signing.ECDSASignature
-            do { signature = try P256.Signing.ECDSASignature(derRepresentation: sigDER) } catch { throw Rejection("signature is not a valid DER ECDSA signature") }
-            guard key.publicKey.isValidSignature(signature, for: SESig.message(tag: tag, digest: manifestHash)) else {
-                throw Rejection("secure-enclave signature does not verify against the pinned key")
-            }
+        // Secure Enclave only: a row has no WebAuthn fields; the signature is over the domain-separated message M(tag, sha256(manifest)).
+        guard authenticatorDataB64.isEmpty && clientDataJSONB64.isEmpty else { throw Rejection("approval carries WebAuthn fields") }
+        let signature: P256.Signing.ECDSASignature
+        do { signature = try P256.Signing.ECDSASignature(derRepresentation: sigDER) } catch { throw Rejection("signature is not a valid DER ECDSA signature") }
+        guard key.publicKey.isValidSignature(signature, for: SESig.message(tag: tag, digest: manifestHash)) else {
+            throw Rejection("secure-enclave signature does not verify against the pinned key")
         }
 
         // d. time and revocation
@@ -174,7 +139,7 @@ public enum Verifier {
         guard let mBatch = m["batch_id"] as? String, mBatch == a.batchId else { throw Rejection("manifest.batch_id does not match approvals.batch_id") }
         guard let mNotAfterStr = m["not_after"] as? String, let manifestExpiry = Time.parse(mNotAfterStr) else { throw Rejection("manifest.not_after missing or invalid") }
         guard let mRp = m["rp_id"] as? String, mRp == pin.rpId else { throw Rejection("manifest.rp_id does not match the pinned rp_id") }
-        if let mo = m["origin"] { guard let s = mo as? String, s == pin.origin else { throw Rejection("manifest.origin does not match the pinned origin") } }
+        guard let mo = m["origin"] as? String, mo == pin.origin else { throw Rejection("manifest.origin missing or not the pinned origin") }
         let notAfter = min(columnExpiry, manifestExpiry)
         guard now < notAfter else { throw Rejection("approval expired at \(Time.iso(notAfter))") }
         guard let rawItems = m["items"] as? [Any], !rawItems.isEmpty else { throw Rejection("manifest.items missing or empty") }
