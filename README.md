@@ -51,7 +51,7 @@ The app shows this exact line with a Copy button. It opens a 30-minute window in
 
 ## Dry run and live
 
-To try things without sending anything, open Settings and switch **Sending** to **Dry run**: approved messages are only written to `~/Library/Application Support/agent-outbox/logs/dry-sends.jsonl` and Contacts is not touched. Switching back to **Live** asks for Touch ID.
+Setup asks whether to start **Live** (the default) or in **Dry run**. To change it later, open Settings and switch **Sending** to **Dry run**: approved messages are only written to `~/Library/Application Support/agent-outbox/logs/dry-sends.jsonl` and Contacts is not touched. Switching back to **Live** asks for Touch ID.
 
 Approved messages go out right away, 2 seconds apart (unless you turn on spreading, below). **Stop** halts everything and revokes unused approvals.
 

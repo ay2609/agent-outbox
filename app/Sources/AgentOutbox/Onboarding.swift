@@ -57,7 +57,6 @@ struct OnboardingView: View {
     @State private var connectOK = false
     @State private var configCopied = false
     @State private var loginProblem: String?
-    @State private var testSet = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -199,17 +198,23 @@ struct OnboardingView: View {
         }
     }
 
-    // 5. Dry-run test
+    // 5. Start mode + test. Fresh installs start Live; the owner can pick Dry run here (or later in Settings).
     private var testStep: some View {
         VStack(alignment: .leading, spacing: 10) {
-            header("checkmark.seal", "Send a test in Dry run", "Dry run records what would be sent but sends nothing. Ask Claude to draft a message to yourself and watch it arrive in the Inbox.")
+            header("checkmark.seal", "Choose how to start", "Live sends the messages you approve. Dry run records what would be sent and sends nothing, which is a safe way to try it first. Either way, nothing goes out without your Touch ID.")
+            Picker("Start in", selection: Binding(get: { model.isLive ? "live" : "dry" }, set: { m in
+                action.run { try await model.setMode(m) }
+            })) {
+                Text("Live").tag("live"); Text("Dry run").tag("dry")
+            }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 260).disabled(action.busy)
+            Text(model.isLive ? "Live: messages you approve with Touch ID are really sent." : "Dry run: approved messages are recorded but nothing is sent. Switch to Live in Settings when you're ready.")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("Try it: ask Claude to draft a message to yourself and watch it arrive in the Inbox.").font(.callout).padding(.top, 6)
             Text("“Use Agent Outbox to draft a text to me that says hi.”").font(.callout.italic())
                 .padding(10).frame(maxWidth: .infinity, alignment: .leading).background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
             Button("Copy this prompt") { copyToPasteboard("Use Agent Outbox to draft a text to me that says hi.") }
             if model.pendingCount > 0 { Label("A draft arrived. You're all set.", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
-            if testSet { Text("Dry run is on for now, so nothing is sent. Switch to Live in Settings when you're ready; every message still needs your approval.").font(.caption).foregroundStyle(.secondary) }
             nav(next: "Finish") { model.finishOnboarding() }
         }
-        .task { do { try await model.setMode("dry"); testSet = true } catch { testSet = false } }
     }
 }
