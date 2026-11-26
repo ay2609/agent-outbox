@@ -6,6 +6,8 @@ Let AI agents draft your iMessages, but never send them. Claude Code, or any oth
 
 The gate holds even when the agent is confused or prompt-injected: there is no send tool, no send API and no approve call for an agent to use, and the executor refuses anything not signed with the Touch ID key in your Mac's Secure Enclave.
 
+![Agent Outbox: the Inbox, with drafts waiting for review](docs/screenshots/inbox.png)
+
 ## Get it
 
 1. Download Agent Outbox from the [latest release](https://github.com/ay2609/agent-outbox/releases/latest) and move it to Applications.
