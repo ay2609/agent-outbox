@@ -79,7 +79,8 @@ final class AppUpdater: NSObject {
         alert.informativeText = text
         alert.addButton(withTitle: "Download")
         alert.addButton(withTitle: "Later")
-        if alert.runModal() == .alertFirstButtonReturn, let url = item.pageURL { NSWorkspace.shared.open(url) }
+        // Only ever an https page (the release page): the feed can't make the app open a file, an app or another scheme.
+        if alert.runModal() == .alertFirstButtonReturn, let url = item.pageURL, url.scheme?.lowercased() == "https" { NSWorkspace.shared.open(url) }
     }
 
     private func info(_ title: String, _ text: String) {
