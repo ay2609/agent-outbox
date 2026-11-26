@@ -148,7 +148,6 @@ export function pinStatus(cfg: OwnerConfig, db: Database, kind: PinKind): PinSta
   s.valid = s.problems.length === 0;
   return s;
 }
-export const rootPinStatus = (cfg: OwnerConfig, db: Database): PinStatus => pinStatus(cfg, db, "root");
 
 /** Key ids (credential_id) of the Secure Enclave keys in the EFFECTIVE pin, or an empty set when there is no usable pin. */
 export function effectiveNativeKeyIds(cfg: OwnerConfig): Set<string> {

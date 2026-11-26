@@ -157,7 +157,7 @@ final class AppModel: ObservableObject {
         guard !checkedMigrationNotice else { return }
         checkedMigrationNotice = true
         guard !UserDefaults.standard.bool(forKey: Self.noticeKey) else { return }
-        guard let r = try? await get("/api/activity?limit=200") else { checkedMigrationNotice = false; return }
+        guard let r = try? await get("/api/activity?limit=1&action=migration.v7") else { checkedMigrationNotice = false; return }
         UserDefaults.standard.set(true, forKey: Self.noticeKey)
         if let row = r.arr("audit").first(where: { $0.str("action") == "migration.v7" }) {
             let d = row.obj("details")

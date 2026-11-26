@@ -161,7 +161,7 @@ struct ImportDetailView: View {
 
             Section("2. What matched") {
                 Picker("Show", selection: $matchFilter) {
-                    Text("All \(imp.int("row_count"))").tag("")
+                    Text("All \(imp.int("rows_total"))").tag("")
                     Text("\(counts.int("matched")) matched").tag("matched")
                     Text("\(counts.int("new")) new").tag("new")
                     Text("\(counts.int("ambiguous")) ambiguous").tag("ambiguous")

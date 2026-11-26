@@ -44,7 +44,7 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
 
   // ---------- pin policy ----------
   // Always written to the user pin. Simple mode: takes effect at once, so turning live (sending or contacts) ON needs a fresh
-  // sign-in assertion. Hardened mode: only the candidate changes; the root pin changes when the user re-runs the harden command.
+  // Touch ID confirmation (se_reauth). Hardened mode: only the candidate changes; the root pin changes when the user re-runs the harden command.
   const policySchema = z.object({
     live_allowed: z.boolean(),
     /** v4. Left out = keep what the stored policy already says. */
@@ -102,7 +102,7 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
       batch,
       drafts: drafts.map((d) => ({
         ...d, last_send: lastSend.get(d.id) ?? null,
-        /** Id of the LIVE approval that covers this draft right now (null = free to approve). The SPA leaves covered drafts out of the selection. */
+        /** Id of the LIVE approval that covers this draft right now (null = free to approve). The app leaves covered drafts out of the selection. */
         covered_by: cover.get(d.id) ?? null,
         contact: contactInfo(db(), d.contact_id),
         number_in_contact: numberInContact(db(), d),
@@ -361,7 +361,7 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
   });
 
   // ---------- mode: the one Live / Dry run switch ----------
-  // dry: both transports to dry, no Touch ID (it can only make sending safer). live: needs a fresh sign-in assertion whenever it
+  // dry: both transports to dry, no Touch ID (it can only make sending safer). live: needs a fresh Touch ID confirmation (se_reauth) whenever it
   // changes anything. Simple mode: turns the policy on too (what PUT /api/pin-policy does) and both transports live, ONE Touch ID.
   // Hardened mode: never touches the policy or the root pin; it only flips a transport the installed pin already allows.
   // Sending itself is unchanged: every message still needs a Touch ID approval of its exact text.
@@ -609,7 +609,11 @@ export function registerApi(app: Hono, cfg: OwnerConfig, limiterFor: LimiterFor)
     const sends = db().query<any, [string, number]>(
       `SELECT s.*, d.handle, d.recipient_name, d.batch_id, substr(d.body, 1, 120) AS preview
        FROM sends s JOIN drafts d ON d.id = s.draft_id WHERE s.started_at < ? ORDER BY s.started_at DESC LIMIT ?`).all(sendsBefore, limit);
-    const auditRows = db().query<any, [number, number]>("SELECT * FROM audit_log WHERE id < ? ORDER BY id DESC LIMIT ?").all(auditBefore, limit);
+    // `action` (optional): only audit rows with that action (the app looks up its one-time migration.v7 row this way).
+    const action = c.req.query("action");
+    const auditRows = action
+      ? db().query<any, [number, string, number]>("SELECT * FROM audit_log WHERE id < ? AND action = ? ORDER BY id DESC LIMIT ?").all(auditBefore, action.slice(0, 100), limit)
+      : db().query<any, [number, number]>("SELECT * FROM audit_log WHERE id < ? ORDER BY id DESC LIMIT ?").all(auditBefore, limit);
     return c.json({
       sends,
       audit: auditRows.map((a) => ({ ...a, details: safeJson(a.details_json), details_json: undefined })),

@@ -68,7 +68,7 @@ item = f"""    <item>
       <link>{page}</link>
       <sparkle:version>{build}</sparkle:version>
       <sparkle:shortVersionString>{version}</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
       <enclosure url="{dl}" length="{size}" type="application/x-apple-diskimage"/>
     </item>
 """
@@ -102,7 +102,7 @@ open(p, "w").write(s)
 PY
 fi
 
-NOTES="Agent Outbox $VERSION for Apple silicon Macs (macOS 13+). Free and not notarized: on first launch use System Settings > Privacy & Security > Open Anyway. sha256: $(cut -d' ' -f1 "$DMG.sha256")"
+NOTES="Agent Outbox $VERSION for Apple silicon Macs (macOS 14+). Free and not notarized: on first launch use System Settings > Privacy & Security > Open Anyway. sha256: $(cut -d' ' -f1 "$DMG.sha256")"
 GH=(gh release create "$TAG" "$DMG" "$DMG.sha256" --repo "$REPO" --title "Agent Outbox $VERSION" --notes "$NOTES")
 if [ "$DRY" = 1 ]; then
   echo "== dry run: nothing published. Would run:"

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds dist/Agent Outbox.app (Apple silicon, macOS 13+, ad-hoc signed). Needs bun, swift and Xcode command line tools.
+# Builds dist/Agent Outbox.app (Apple silicon, macOS 14+, ad-hoc signed). Needs bun, swift and Xcode command line tools.
 # Run with the Bash sandbox off when driven by Claude (swift, codesign and bun write outside the working directory).
 #
 #   scripts/build-app.sh
@@ -89,7 +89,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
 	<key>CFBundleShortVersionString</key><string>$VERSION</string>
 	<key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
-	<key>LSMinimumSystemVersion</key><string>13.0</string>
+	<key>LSMinimumSystemVersion</key><string>14.0</string>
 	<key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
 	<!-- LSUIElement=false: a normal Dock app with a window. A menu-bar-only app would set true;
 	     the bundle works either way. -->

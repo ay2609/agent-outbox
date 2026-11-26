@@ -121,7 +121,7 @@ public enum Pacing {
         pace.maxS <= pace.minS ? pace.minS : pace.minS + (pace.maxS - pace.minS) * min(max(random(), 0), 1)
     }
 
-    /// "9:00 pm" style local time for messages and the log (the dashboard formats the ISO time itself).
+    /// "9:00 pm" style local time for messages and the log (the app formats the ISO time itself).
     static func clockText(_ d: Date, _ tz: TimeZone) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = tz; f.dateFormat = "HH:mm"

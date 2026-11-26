@@ -270,7 +270,7 @@ export function cancelContactSet(db: Database, setId: string, actor: string): { 
 // ---------- revocation (Stop) ----------
 export interface ContactRevokeResult { approvals: number; changes: number; approval_ids: string[]; change_ids: string[]; at: string }
 /** Revokes contact approvals and drops their still-`approved`, unconsumed changes back to review (the executor refuses a revoked
- *  approval anyway; this keeps the dashboard honest). IMMEDIATE. */
+ *  approval anyway; this keeps the app honest). IMMEDIATE. */
 export function revokeContactApprovals(db: Database, where: { setId?: string; credentialId?: string; exceptCredentialIds?: string[]; all?: boolean }, actor: string, why: string): ContactRevokeResult {
   return db.transaction((): ContactRevokeResult => {
     let rows = db.query<ContactApprovalRow & { credential_id: string }, []>("SELECT * FROM contact_approvals WHERE revoked_at IS NULL").all();

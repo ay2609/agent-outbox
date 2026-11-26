@@ -401,6 +401,11 @@ describe("drafts, settings, status", () => {
     expect((await h.call("GET", "/api/contacts?q=zzz")).json.contacts).toEqual([]);
     const a = (await h.call("GET", "/api/activity?limit=2")).json;
     expect(a.audit.length).toBe(2); expect(a.next.audit_before).toBeTruthy();
+    // ?action= filters the audit rows (the app finds its one-time migration.v7 row this way, however old it is)
+    h.db.query("INSERT INTO audit_log(at, actor, action, target, details_json) VALUES (?, 'system', 'migration.v7', NULL, ?)").run(new Date().toISOString(), JSON.stringify({ revoked_approvals: 2, revoked_contact_approvals: 1 }));
+    for (let i = 0; i < 5; i++) h.db.query("INSERT INTO audit_log(at, actor, action, target, details_json) VALUES (?, 'owner', 'x.y', NULL, '{}')").run(new Date().toISOString());
+    const m = (await h.call("GET", "/api/activity?limit=1&action=migration.v7")).json;
+    expect(m.audit.map((r: any) => [r.action, r.details])).toEqual([["migration.v7", { revoked_approvals: 2, revoked_contact_approvals: 1 }]]);
   });
 
   test("no SPA and no static files: non-/api paths are 404 not_found, even with the token", async () => {

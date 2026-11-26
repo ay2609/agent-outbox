@@ -2,7 +2,7 @@ import Foundation
 import OwnerAPI
 
 // MARK: - Loose JSON
-// The owner API is the web dashboard's API; the windows read it as plain JSON dictionaries so a new field never breaks them.
+// The owner API (over run/owner.sock); the windows read it as plain JSON dictionaries so a new field never breaks them.
 
 typealias J = [String: Any]
 

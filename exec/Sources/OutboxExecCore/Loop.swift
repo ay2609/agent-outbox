@@ -328,7 +328,7 @@ public final class Executor {
         return Pacing.evaluate(now: now, pace: pace, nextSendAt: next, sentToday: try sendsStartedToday(now: now), tz: timeZone)
     }
 
-    /// Tells the dashboard why approved messages are waiting (exec_state pace_hold / pace_until; "" = not holding).
+    /// Tells the app why approved messages are waiting (exec_state pace_hold / pace_until; "" = not holding).
     func publishPace(_ hold: PaceHold?) {
         let kind = hold?.kind.rawValue ?? "", until = hold.map { Time.iso($0.until) } ?? ""
         let key = kind + "|" + until
@@ -695,7 +695,7 @@ public final class Executor {
                 try db.exec("UPDATE drafts SET status = ?, updated_at = ? WHERE id = ?", [.text(status), .text(ts), .text(d.id)])
                 try audit("send_\(result)", target: d.id, ["approval_id": claim.approval.approvalId, "attempt": claim.attempt, "transport": laneName, "service_used": serviceUsed ?? "", "error": error ?? ""])
                 if result != "sent" && settings.breakerOnFailure {
-                    // the breaker stops sending but revokes nothing: the user resumes it from the dashboard
+                    // the breaker stops sending but revokes nothing: the user resumes it from the app
                     try db.exec("INSERT INTO settings(key, value) VALUES('kill_switch', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value")
                     try db.exec("INSERT INTO settings(key, value) VALUES('kill_reason', 'breaker') ON CONFLICT(key) DO UPDATE SET value = excluded.value")
                     try audit("breaker_tripped", target: d.id, ["reason": error ?? result])

@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "OutboxExec",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v14)],
     targets: [
         // All logic lives here; `outbox-exec selftest` tests it.
         .target(name: "OutboxExecCore", path: "Sources/OutboxExecCore"),

@@ -12,6 +12,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
+      - name: No TCP listener in the server
+        run: |
+          if grep -rnE 'Bun\.serve\(' src | grep -v '\.test\.ts' | grep -E 'port|hostname'; then echo "Bun.serve with a port or hostname under src/"; exit 1; fi
       - name: Typecheck
         run: bunx tsc --noEmit -p .
       - name: Unit tests

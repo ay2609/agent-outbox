@@ -113,7 +113,7 @@ struct OnboardingView: View {
         #else
         let arm = false
         #endif
-        let ok = v.majorVersion >= 13 && arm
+        let ok = v.majorVersion >= 14 && arm
         return VStack(alignment: .leading) {
             header("macwindow", "Welcome to Agent Outbox", "AI agents draft your messages. You read them here and approve them. Only then does your Mac send them.", appIcon: true)
             VStack(alignment: .leading, spacing: 8) {
@@ -125,7 +125,7 @@ struct OnboardingView: View {
             }.foregroundStyle(.secondary).padding(.bottom, 14)
             Label("macOS \(v.majorVersion).\(v.minorVersion) on \(arm ? "Apple silicon" : "an Intel Mac")", systemImage: ok ? "checkmark.circle.fill" : "xmark.octagon.fill")
                 .foregroundStyle(ok ? Color.green : Color.red)
-            if !ok { Text("Agent Outbox needs macOS 13 or later on a Mac with Apple silicon.").foregroundStyle(.secondary) }
+            if !ok { Text("Agent Outbox needs macOS 14 or later on a Mac with Apple silicon.").foregroundStyle(.secondary) }
             Label(model.native.touchIDAvailable ? "Touch ID is ready" : "Touch ID isn't ready", systemImage: model.native.touchIDAvailable ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                 .foregroundStyle(model.native.touchIDAvailable ? Color.green : Color.orange).padding(.top, 4)
             if !model.native.touchIDAvailable, let r = model.native.touchIDReason { Text(r).font(.caption).foregroundStyle(.secondary) }

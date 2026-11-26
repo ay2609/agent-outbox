@@ -32,7 +32,7 @@ You only need to do this once per version. Managed Macs may not allow the except
 Apple's instructions: https://support.apple.com/102445
 
 REQUIREMENTS
-Apple silicon Mac (M1 or newer), macOS 13 or later.
+Apple silicon Mac (M1 or newer), macOS 14 or later.
 
 UPDATES
 Each new version is a new download from

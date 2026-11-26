@@ -49,10 +49,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
 	<key>CFBundleShortVersionString</key><string>$VERSION</string>
 	<key>CFBundleVersion</key><string>$VERSION</string>
-	<key>LSMinimumSystemVersion</key><string>13.0</string>
+	<key>LSMinimumSystemVersion</key><string>14.0</string>
 	<key>LSUIElement</key><true/>
-	<key>NSAppleEventsUsageDescription</key><string>Agent Outbox sends the iMessages you approved in the agent-outbox dashboard through Messages.</string>
-	<key>NSContactsUsageDescription</key><string>Agent Outbox reads your contacts for the agent-outbox dashboard and adds contacts you approved.</string>
+	<key>NSAppleEventsUsageDescription</key><string>Agent Outbox sends the iMessages you approved, through Messages.</string>
+	<key>NSContactsUsageDescription</key><string>Agent Outbox reads your contacts so you can review drafts, and adds the contacts you approved.</string>
 </dict>
 </plist>
 PLIST
