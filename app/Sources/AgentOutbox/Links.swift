@@ -51,8 +51,7 @@ enum HoldReason {
     static func plain(_ raw: String) -> String? {
         let t = raw.lowercased()
         if t.isEmpty { return nil }
-        let oldPin = t.contains("pin version") && (t.contains("passkey") || t.contains("1") || t.contains("2") || t.contains("3"))
-        if oldPin {
+        if t.contains("holds browser passkeys") || t.contains("no longer accepts") {
             return "Your approval key file is from the browser version of Agent Outbox. Set up Touch ID in the app. If this Mac is hardened, run the harden command again afterwards."
         }
         if t.contains("webauthn") {
@@ -61,7 +60,7 @@ enum HoldReason {
         if t.contains("credential_id is not in the pin") || t.contains("no approval key") {
             return "The sender doesn't trust any approval key yet. Set up Touch ID in Settings (hardened Macs: then run the harden command)."
         }
-        if t.contains("unsupported version") { return "The approval key file is in a format this sender doesn't understand. Open Agent Outbox and set up Touch ID again." }
+        if t.contains("unsupported version") || t.contains("v4 pin must have exactly") { return "The approval key file is in a format this sender doesn't understand. Open Agent Outbox and set up Touch ID again." }
         return nil
     }
 }
