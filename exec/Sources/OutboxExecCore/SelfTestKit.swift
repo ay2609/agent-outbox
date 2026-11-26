@@ -160,12 +160,14 @@ final class Harness {
     }
 
     func rebuild() throws {
+        // unowned: the harness owns the executor, so strong captures would leak every test's database handle
+        // (and run out of file descriptors under a 256 limit, e.g. an ssh session).
         let h = self
-        exec = Executor(db: db, config: config, contacts: contacts, clock: { h.clock.now }) { name, cfg, clk in
+        exec = Executor(db: db, config: config, contacts: contacts, clock: { [unowned h] in h.clock.now }) { [unowned h] name, cfg, clk in
             if name == "live" { return h.live }
             return h.scriptedDry ?? DryTransport(logPath: cfg.dryLogPath, clock: clk)
         }
-        exec.random = { h.rand }
+        exec.random = { [unowned h] in h.rand }
         exec.timeZone = zone
         try exec.prepare()
     }
