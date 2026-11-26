@@ -54,11 +54,11 @@ async function run(argv: string[]): Promise<number | undefined> {
     }
     case "recover": {
       const { runRecover } = await import("./owner-api/recovery");
-      return runRecover(rest);
+      return runRecover();
     }
     case "setup-link": {
       const { runSetupLink } = await import("./owner-api/recovery");
-      return runSetupLink(rest);
+      return runSetupLink();
     }
     case "--version":
     case "version": {

@@ -126,8 +126,9 @@ final class AppModel: ObservableObject {
     var killSwitch: Bool { status.bool("kill_switch") }
     var isLive: Bool { status.str("transport") == "live" }
     var hardened: Bool { status.obj("pin").str("mode") == "hardened" }
-    /// C's `/api/status` `native.approve_in_app`: sign in the app (true) or approve in the browser (false / absent).
-    var approveInApp: Bool { status.obj("native").bool("approve_in_app") }
+    /// Sign in the app only when NativeApprover says so (Touch ID, a local active key, and the server's
+    /// `native.approve_in_app`); otherwise approve in the browser.
+    var approveInApp: Bool { native.canApproveInApp && status.obj("native").bool("approve_in_app") }
     var origin: String { status.str("origin", AppEnv.origin) }
 
     // MARK: Actions

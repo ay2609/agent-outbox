@@ -39,8 +39,16 @@ echo "== 2/6 bun binary (src/bin.ts -> agent-outbox)"
 bun build --compile --target=bun-darwin-arm64 src/bin.ts --outfile "$STAGE/agent-outbox" >/dev/null
 
 echo "== 3/6 SwiftUI shell (swift build -c release --arch arm64)"
-(cd app && swift build -c release --arch arm64 2>&1 | grep -v '^\[' | grep -v "ld: warning: search path" || true)
-SWIFT_BIN="$(cd app && swift build -c release --arch arm64 --show-bin-path 2>/dev/null)"
+# With only the Command Line Tools, the newest SDK can lack the SwiftUI macro plugin (@State fails to expand). Then fall back
+# to the newest MacOSX26*.sdk. Override with SWIFT_SDK=/path/to/MacOSX.sdk. Full Xcode (CI) builds with the default SDK.
+SDK_ARGS=()
+if [ -n "${SWIFT_SDK:-}" ]; then SDK_ARGS=(--sdk "$SWIFT_SDK")
+elif xcode-select -p 2>/dev/null | grep -q CommandLineTools; then
+  FALLBACK_SDK="$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX26*.sdk 2>/dev/null | grep -v 'MacOSX26.sdk$' | sort -V | tail -1)"
+  [ -n "$FALLBACK_SDK" ] && SDK_ARGS=(--sdk "$FALLBACK_SDK")
+fi
+(cd app && swift build -c release --arch arm64 ${SDK_ARGS[@]+"${SDK_ARGS[@]}"} 2>&1 | grep -v '^\[' | grep -v "ld: warning: search path" || true)
+SWIFT_BIN="$(cd app && swift build -c release --arch arm64 ${SDK_ARGS[@]+"${SDK_ARGS[@]}"} --show-bin-path 2>/dev/null)"
 [ -x "$SWIFT_BIN/AgentOutbox" ] || { echo "swift build failed: $SWIFT_BIN/AgentOutbox not found" >&2; exit 1; }
 
 echo "== 4/6 executor (exec/build.sh)"
@@ -53,6 +61,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
 cp "$SWIFT_BIN/AgentOutbox" "$APP/Contents/MacOS/$APP_NAME"
 cp "$STAGE/agent-outbox" "$APP/Contents/MacOS/agent-outbox"
 ditto "$EXEC_APP" "$APP/Contents/Helpers/OutboxExec.app"
+# The executor's login item (SMAppService.agent(plistName:) looks in Contents/Library/LaunchAgents).
+mkdir -p "$APP/Contents/Library/LaunchAgents"
+cp "$ROOT/app/Resources/LaunchAgents/io.github.ay2609.agent-outbox.exec.plist" "$APP/Contents/Library/LaunchAgents/"
 ditto web/dist "$APP/Contents/Resources/web"
 # Icon: the dashboard's mark, from the 512 px PNG (the 1024 px slot is upscaled).
 ICONSET="$STAGE/AppIcon.iconset"
