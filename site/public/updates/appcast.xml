@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Agent Outbox</title>
+    <link>https://agent-outbox.halcyn.dev</link>
+    <item>
+      <title>Agent Outbox 0.1.0</title>
+      <pubDate>Thu, 26 Nov 2026 20:38:52 +0000</pubDate>
+      <link>https://github.com/ay2609/agent-outbox/releases/tag/v0.1.0</link>
+      <sparkle:version>67</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/ay2609/agent-outbox/releases/download/v0.1.0/Agent-Outbox-0.1.0-apple-silicon.dmg" length="28960038" type="application/x-apple-diskimage"/>
+    </item>
+  </channel>
+</rss>
