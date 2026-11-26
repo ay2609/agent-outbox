@@ -154,9 +154,10 @@ final class Supervisor: ObservableObject, @unchecked Sendable {
 
     private func exited(pid: pid_t, gen: Int, ranFor: TimeInterval) {
         lock.lock()
-        if _pid == pid { _pid = nil }
-        let fd = lifelineFD
-        lifelineFD = -1
+        // Only the CURRENT child's lifeline is ours to close: after stop() + start() a newer child owns lifelineFD, and closing it
+        // would make that server exit (stdin EOF).
+        var fd: Int32 = -1
+        if _pid == pid { _pid = nil; fd = lifelineFD; lifelineFD = -1 }
         let again = wanted && gen == generation
         lock.unlock()
         if fd >= 0 { close(fd) }
