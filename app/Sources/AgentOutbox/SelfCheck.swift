@@ -175,17 +175,17 @@ enum SelfCheck {
     static func migration() {
         print("migration (temp folder, recording runner; the real LaunchAgents are never touched)")
         let root = tempDir(); defer { try? FileManager.default.removeItem(atPath: root) }
-        check("nothing to migrate in an empty folder", Migration.detect(agentsDir: root).isEmpty)
+        check("nothing to migrate in an empty folder", Migration.detect(agentsDir: root, loaded: { _ in false }).isEmpty)
         for l in Migration.labels { FileManager.default.createFile(atPath: root + "/\(l).plist", contents: Data("<plist/>".utf8)) }
         FileManager.default.createFile(atPath: root + "/com.claude.imessage-outbox.plist", contents: Data("<plist/>".utf8))
-        check("both old agents detected, the private install ignored", Migration.detect(agentsDir: root) == Migration.labels)
+        check("both old agents detected, the private install ignored", Migration.detect(agentsDir: root, loaded: { _ in false }) == Migration.labels)
         nonisolated(unsafe) var calls: [String] = []
-        let res = Migration.perform(agentsDir: root, uid: 501) { exe, args in calls.append(([exe] + args).joined(separator: " ")); return (0, "") }
+        let res = Migration.perform(agentsDir: root, uid: 501, loaded: { _ in false }) { exe, args in calls.append(([exe] + args).joined(separator: " ")); return (0, "") }
         check("bootout gui/<uid>/<label> for each", calls == Migration.labels.map { "/bin/launchctl bootout gui/501/\($0)" }, "\(calls)")
         check("plists removed, others kept", res.removed == Migration.labels && !FileManager.default.fileExists(atPath: root + "/io.github.ay2609.agent-outbox.plist") && FileManager.default.fileExists(atPath: root + "/com.claude.imessage-outbox.plist"))
-        check("detect is empty afterwards", Migration.detect(agentsDir: root).isEmpty)
+        check("detect is empty afterwards", Migration.detect(agentsDir: root, loaded: { _ in false }).isEmpty)
         FileManager.default.createFile(atPath: root + "/io.github.ay2609.agent-outbox.plist", contents: Data("<plist/>".utf8))
-        let failing = Migration.perform(agentsDir: root, uid: 501) { _, _ in (5, "Boot-out failed: 5") }
+        let failing = Migration.perform(agentsDir: root, uid: 501, loaded: { _ in false }) { _, _ in (5, "Boot-out failed: 5") }
         check("a failing bootout keeps the plist and reports", failing.removed.isEmpty && failing.problems.count == 1 && FileManager.default.fileExists(atPath: root + "/io.github.ay2609.agent-outbox.plist"))
     }
 

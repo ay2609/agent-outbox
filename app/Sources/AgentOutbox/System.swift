@@ -91,15 +91,26 @@ let realRunner: CommandRunner = { exe, args in runCommand(exe, args) }
 enum Migration {
     static let labels = ["io.github.ay2609.agent-outbox", "io.github.ay2609.agent-outbox.exec"]
 
-    static func detect(agentsDir: String = AppEnv.launchAgentsDir) -> [String] {
-        labels.filter { FileManager.default.fileExists(atPath: agentsDir + "/" + $0 + ".plist") }
+    /// A label counts when its plist exists, or (real runs only) launchd still has it loaded with the plist already gone.
+    static func detect(agentsDir: String = AppEnv.launchAgentsDir, uid: uid_t = getuid(),
+                       loaded: (String) -> Bool = { label in !AppEnv.isDev && isLoaded(label, uid: getuid()) }) -> [String] {
+        labels.filter { FileManager.default.fileExists(atPath: agentsDir + "/" + $0 + ".plist") || loaded($0) }
     }
+
+    static func isLoaded(_ label: String, uid: uid_t) -> Bool {
+        realRunner("/bin/launchctl", ["print", "gui/\(uid)/\(label)"]).code == 0
+    }
+
+    /// Dev runs stub launchctl, so they must not delete the real plists either (only an injected test folder).
+    static var mayDeleteIn: (String) -> Bool = { dir in !AppEnv.isDev || dir != NSHomeDirectory() + "/Library/LaunchAgents" }
 
     struct Result: Equatable { var removed: [String]; var problems: [String]; var commands: [String] }
 
-    static func perform(agentsDir: String = AppEnv.launchAgentsDir, uid: uid_t = getuid(), run: CommandRunner = AppEnv.isDev ? devNoopRunner : realRunner) -> Result {
+    static func perform(agentsDir: String = AppEnv.launchAgentsDir, uid: uid_t = getuid(),
+                        loaded: (String) -> Bool = { label in !AppEnv.isDev && isLoaded(label, uid: getuid()) },
+                        run: CommandRunner = AppEnv.isDev ? devNoopRunner : realRunner) -> Result {
         var res = Result(removed: [], problems: [], commands: [])
-        for label in detect(agentsDir: agentsDir) {
+        for label in detect(agentsDir: agentsDir, uid: uid, loaded: loaded) {
             let args = ["bootout", "gui/\(uid)/\(label)"]
             res.commands.append("launchctl " + args.joined(separator: " "))
             let r = run("/bin/launchctl", args)
@@ -108,7 +119,10 @@ enum Migration {
                 res.problems.append("\(label): \(r.out.trimmingCharacters(in: .whitespacesAndNewlines))")
                 continue
             }
-            do { try FileManager.default.removeItem(atPath: agentsDir + "/" + label + ".plist"); res.removed.append(label) }
+            let plist = agentsDir + "/" + label + ".plist"
+            guard mayDeleteIn(agentsDir) else { res.removed.append(label); continue }
+            if !FileManager.default.fileExists(atPath: plist) { res.removed.append(label); continue }
+            do { try FileManager.default.removeItem(atPath: plist); res.removed.append(label) }
             catch { res.problems.append("\(label).plist: \(error.localizedDescription)") }
         }
         return res

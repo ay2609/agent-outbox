@@ -47,7 +47,12 @@ elif xcode-select -p 2>/dev/null | grep -q CommandLineTools; then
   FALLBACK_SDK="$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX26*.sdk 2>/dev/null | grep -v 'MacOSX26.sdk$' | sort -V | tail -1)"
   [ -n "$FALLBACK_SDK" ] && SDK_ARGS=(--sdk "$FALLBACK_SDK")
 fi
-(cd app && swift build -c release --arch arm64 ${SDK_ARGS[@]+"${SDK_ARGS[@]}"} 2>&1 | grep -v '^\[' | grep -v "ld: warning: search path" || true)
+# A failed compile must stop the build (a stale binary from an earlier run would otherwise be bundled).
+SWIFT_LOG="$(mktemp)"
+if ! (cd app && swift build -c release --arch arm64 ${SDK_ARGS[@]+"${SDK_ARGS[@]}"} >"$SWIFT_LOG" 2>&1); then
+  grep -v '^\[' "$SWIFT_LOG" | grep -v "ld: warning: search path" >&2; rm -f "$SWIFT_LOG"; echo "swift build failed" >&2; exit 1
+fi
+grep -v '^\[' "$SWIFT_LOG" | grep -v "ld: warning: search path" | grep -E "error|warning: .*AgentOutbox" || true; rm -f "$SWIFT_LOG"
 SWIFT_BIN="$(cd app && swift build -c release --arch arm64 ${SDK_ARGS[@]+"${SDK_ARGS[@]}"} --show-bin-path 2>/dev/null)"
 [ -x "$SWIFT_BIN/AgentOutbox" ] || { echo "swift build failed: $SWIFT_BIN/AgentOutbox not found" >&2; exit 1; }
 
