@@ -2,6 +2,8 @@ node_modules/
 dist/
 web/dist/
 exec/.build/
+app/.build/
+*.bun-build
 exec/build/
 *.db
 *.db-*

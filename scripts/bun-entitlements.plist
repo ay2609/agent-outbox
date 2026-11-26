@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Bun's JavaScriptCore JIT. Tested 2026-11-25 on the compiled agent-outbox under the hardened runtime:
+	     with NO entitlements it still runs but JIT is off (a hot loop took 5.2 s instead of 0.9 s);
+	     allow-jit alone restores full speed, so nothing else (allow-unsigned-executable-memory,
+	     disable-executable-page-protection, disable-library-validation) is requested. -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+</dict>
+</plist>

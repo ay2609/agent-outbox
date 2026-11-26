@@ -1,6 +1,7 @@
 // swift-tools-version:5.9
 // Agent Outbox.app: SwiftUI shell (AgentOutbox), owner-API client (OwnerAPI), Secure Enclave approval (NativeApproval).
 // Assembled into a bundle by scripts/build-app.sh. Apple silicon, macOS 13+.
+// No Sparkle: see Sources/AgentOutbox/Updater.swift (library validation vs ad-hoc signing).
 import PackageDescription
 
 let package = Package(
