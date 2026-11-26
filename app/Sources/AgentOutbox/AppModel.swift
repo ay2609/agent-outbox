@@ -34,6 +34,8 @@ final class AppModel: ObservableObject {
     private let sending = SendingFlag()
 
     @Published var status: J = [:]
+    /// Set when the sender (outbox-exec) isn't running and macOS won't start it: shown as a banner with a Login Items button.
+    @Published var senderOff: String?
     @Published var reachable = false
     @Published var connectionError: String?
     @Published var native = BridgeNativeStatus()
@@ -53,6 +55,10 @@ final class AppModel: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var ticks = 0
     private var checkedExecVersion = false
+    private var ensuredSender = false
+    private var healedSender = false
+    private var senderProblem: String?
+    private let launchedAt = Date()
     private var checkedMigrationNotice = false
     private var wasChanged = false
 
@@ -144,13 +150,35 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// An old sender from a previous bundle can still be running: restart the login item so the bundled one takes over (once per launch).
+    /// The sender is a login item the app owns, so make sure it is running, whatever the "Open at login" choice:
+    /// 1. once per launch, register it if macOS says it isn't;
+    /// 2. if it hasn't sent a heartbeat 20 s after launch, unregister + register once (macOS can keep a stale "enabled" record,
+    ///    e.g. after the app was deleted and reinstalled, and then never loads the job);
+    /// 3. if an old sender from a previous bundle is running, restart it so the bundled one takes over (once per launch).
     private func checkExecutorVersion(_ s: J) async {
-        guard !checkedExecVersion, !AppEnv.isDev else { return }
+        guard !AppEnv.isDev else { return }
+        if !ensuredSender { ensuredSender = true; senderProblem = LoginItems.ensureSender() }
         let e = s.obj("exec")
-        guard !e.isEmpty, e.bool("alive") else { return }
+        let alive = !e.isEmpty && e.bool("alive")
+        if alive { senderOff = nil; senderProblem = nil }
+        else {
+            if !healedSender, Date().timeIntervalSince(launchedAt) > 20 {
+                healedSender = true
+                if let p = await LoginItems.restartExecutor() { senderProblem = p }
+            }
+            if Date().timeIntervalSince(launchedAt) > 30 {
+                let st = LoginItems.senderStatus
+                if st == .requiresApproval || senderProblem != nil || st == .notRegistered {
+                    senderOff = "macOS isn't letting Agent Outbox run its sender in the background, so nothing can be sent and Contacts can't sync. Open Login Items, turn on Agent Outbox under Allow in the Background, then quit and reopen Agent Outbox."
+                } else {
+                    senderOff = "The sender isn't running yet, so nothing can be sent and Contacts can't sync. Quit and reopen Agent Outbox; if this stays, check Agent Outbox under Login Items › Allow in the Background."
+                }
+            }
+            return
+        }
+        guard !checkedExecVersion else { return }
         checkedExecVersion = true
-        if let bundled = LoginItems.bundledExecutorVersion(), !bundled.isEmpty, e.str("version") != bundled { _ = LoginItems.restartExecutor() }
+        if let bundled = LoginItems.bundledExecutorVersion(), !bundled.isEmpty, e.str("version") != bundled { _ = await LoginItems.restartExecutor() }
     }
 
     private func checkMigrationNotice() async {

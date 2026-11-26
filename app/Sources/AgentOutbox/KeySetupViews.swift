@@ -170,6 +170,11 @@ struct BannerStack: View {
                 .padding(12).frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
             }
+            if let off = model.senderOff {
+                banner(.orange, "exclamationmark.triangle", "The sender isn't running", off) {
+                    Button("Open Login Items") { LoginItems.openSystemSettings() }
+                }
+            }
             if let hold = model.senderHold {
                 banner(.orange, "pause.circle", "The sender is holding approved messages", hold) { EmptyView() }
             }

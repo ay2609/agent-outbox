@@ -36,6 +36,14 @@ enum LoginItems {
         return problems.isEmpty ? nil : problems.joined(separator: " ")
     }
 
+    /// Registers only the sender (not "Open at login"): the app can't send or read Contacts without it. Returns a problem, or nil.
+    @discardableResult
+    static func ensureSender() -> String? {
+        if AppEnv.isDev || !execPlistPresent { return nil }
+        let svc = SMAppService.agent(plistName: execPlistName)
+        do { if svc.status != .enabled { try svc.register() }; return nil } catch { return "Sender: \(error.localizedDescription)" }
+    }
+
     /// The version of the executor shipped in this bundle (its Info.plist), to compare with what the running sender reports.
     static func bundledExecutorVersion() -> String? {
         let p = AppEnv.bundlePath + "/Contents/Helpers/OutboxExec.app/Contents/Info.plist"
@@ -43,13 +51,19 @@ enum LoginItems {
     }
 
     /// Unregister and register the sender's login item again, so the executor from THIS bundle is the one running. Never in dev runs.
+    /// Waits for the unregister to finish: registering straight after a synchronous unregister fails.
     @discardableResult
-    static func restartExecutor() -> String? {
+    static func restartExecutor() async -> String? {
         if AppEnv.isDev || !execPlistPresent { return nil }
         let svc = SMAppService.agent(plistName: execPlistName)
-        try? svc.unregister()
+        try? await svc.unregister()
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
         do { try svc.register(); return nil } catch { return "Sender: \(error.localizedDescription)" }
     }
+
+    /// Whether macOS currently lets the sender run. `.notRegistered` after a failed register usually means the user (or macOS)
+    /// turned Agent Outbox off under System Settings › General › Login Items & Extensions › Allow in the Background.
+    static var senderStatus: SMAppService.Status { SMAppService.agent(plistName: execPlistName).status }
 
     static func unregister() {
         if AppEnv.isDev { return }
