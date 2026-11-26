@@ -57,7 +57,7 @@ export function createOutboxMcpServer(o: McpOptions = {}): McpServer {
     ...(o.socketPath ? { socketPath: o.socketPath } : {}),
     ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}),
   });
-  const server = new McpServer({ name: "outbox", version: "0.1.0" }, {
+  const server = new McpServer({ name: "agent-outbox", version: "0.1.0" }, {
     instructions: `iMessage outbox. ${GATE} Use these tools to prepare messages for the user to approve. ${STYLE}`,
   });
 
