@@ -37,26 +37,21 @@
     <img src="/dashboard.jpg" width="1230" height="1200" alt="The Agent Outbox dashboard showing a batch of drafted messages waiting for approval" loading="lazy" decoding="async">
   </figure>
 
-  <section>
-    <h2>Install</h2>
-    <p>Paste this into Claude Code or another coding agent:</p>
-    <div class="copy">
-      <pre id="prompt">Set up Agent Outbox on this Mac: clone https://github.com/ay2609/agent-outbox (or pull it if I already have it), read its README and run ./install.sh. Never use sudo. When it finishes, give me the setup link it printed and stop: I create the passkeys with Touch ID myself. Don't open that link, don't edit anything in ~/Library/Application Support/agent-outbox, don't run the harden command and don't change Settings. Then tell me to start a new session so the agent-outbox MCP tools load. From then on, draft messages with the outbox_* tools for me to approve in the dashboard; you can't send, so don't try.</pre>
-      <button type="button" data-copy="prompt">Copy</button>
-    </div>
-    <p class="fine">Or by hand: <code>git clone https://github.com/ay2609/agent-outbox.git &amp;&amp; cd agent-outbox &amp;&amp; ./install.sh</code>. Needs macOS 14+, Bun and Xcode Command Line Tools.</p>
+  <section id="download">
+    <h2>Download</h2>
+    <p class="dl"><a class="button" id="dl-link" href="https://github.com/ay2609/agent-outbox/releases/latest">Download for Mac</a>
+      <span class="fine"><span data-ao="version">v0.1.0</span> · Apple silicon · macOS 13+ · <span data-ao="size">about 30 MB</span></span></p>
+    <ol class="steps">
+      <li>Open the DMG and drag <strong>Agent Outbox</strong> into Applications.</li>
+      <li>Open it. It is free and not notarized by Apple, so macOS blocks the first launch: go to <strong>System Settings, Privacy &amp; Security</strong>, click <strong>Open Anyway</strong> next to Agent Outbox and confirm.</li>
+      <li>Click <strong>Connect Claude Code</strong> (or copy the command for another agent), then create your approval key with Touch ID.</li>
+    </ol>
+    <p class="fine">Updates are new downloads from the same page, and macOS asks for Messages access again after each one. Agents connect to the app over MCP; it never lets them send.</p>
   </section>
 
   <p class="links"><a href="https://github.com/ay2609/agent-outbox">GitHub</a> · <a href="https://github.com/ay2609/agent-outbox#readme">README</a> · <a href="https://github.com/ay2609/agent-outbox/blob/main/SECURITY.md">Security</a></p>
 
   <footer>Local only. Open source, MIT. Made by <a href="https://aviyadava.com">Avi Yadava</a>.</footer>
 </main>
-<script>
-document.querySelectorAll("[data-copy]").forEach((b) => b.addEventListener("click", async () => {
-  try { await navigator.clipboard.writeText(document.getElementById(b.dataset.copy).textContent); b.textContent = "Copied"; }
-  catch { b.textContent = "Select and copy"; }
-  setTimeout(() => { b.textContent = "Copy"; }, 2000);
-}));
-</script>
 </body>
 </html>

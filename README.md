@@ -15,39 +15,38 @@ The gate holds even when the agent is confused or prompt-injected: there is no s
 3. Touch ID signs a manifest listing every message's recipient and the SHA-256 of its exact text.
 4. The executor checks the signature and that every message still matches, then hands it to Messages.app. A message edited after approval no longer matches and needs a new approval.
 
-## Requirements
+## Download
 
-- macOS 14 or newer, Apple silicon or Intel
-- [Bun](https://bun.sh) 1.4 or newer (`brew install oven-sh/bun/bun`; already have an older one? `bun upgrade` or `brew upgrade oven-sh/bun/bun`)
-- Xcode Command Line Tools with Swift 6.0 or newer (`xcode-select --install`)
-- Messages signed in to your Apple ID (for SMS to non-iPhones, turn on Text Message Forwarding on your iPhone)
-- Safari or Chrome. Macs without Touch ID unlock the passkey with your Mac password, or with your phone.
+[**Download the latest Agent Outbox**](https://github.com/ay2609/agent-outbox/releases/latest) (a DMG for Apple silicon Macs, macOS 13 or newer).
 
-## Install
+1. Open the DMG and drag **Agent Outbox** into Applications.
+2. Open it. The app is free and not notarized by Apple, so macOS blocks the first launch: open **System Settings > Privacy & Security**, click **Open Anyway** next to Agent Outbox, and confirm.
+3. Follow the first-run steps in the app: connect your agent, then create your approval key with Touch ID.
 
-**Let your agent do it.** Paste this into Claude Code (or any coding agent):
+You also need Messages signed in to your Apple ID (for SMS to non-iPhones, turn on Text Message Forwarding on your iPhone). Macs without Touch ID unlock approvals with the Mac password.
 
-```text
-Set up Agent Outbox on this Mac: clone https://github.com/ay2609/agent-outbox (or pull it if I already have it), read its README and run ./install.sh. Never use sudo. When it finishes, give me the setup link it printed and stop: I create the passkeys with Touch ID myself. Don't open that link, don't edit anything in ~/Library/Application Support/agent-outbox, don't run the harden command and don't change Settings. Then tell me to start a new session so the agent-outbox MCP tools load. From then on, draft messages with the outbox_* tools for me to approve in the dashboard; you can't send, so don't try.
-```
+## Connect your agent
 
-**Or by hand:**
+The app's **Connect Claude Code** button runs this for you:
 
 ```sh
-git clone https://github.com/ay2609/agent-outbox.git
-cd agent-outbox
-./install.sh
+claude mcp add --scope user agent-outbox -- "/Applications/Agent Outbox.app/Contents/MacOS/agent-outbox" mcp
 ```
 
-The installer builds the dashboard and the executor, starts two per-user LaunchAgents, and registers the `agent-outbox` MCP server with Claude Code if `claude` is installed. It never uses sudo; re-running it upgrades. Options: `--port N`, `--no-mcp`, `--dry-run`, `--setup-link`, `--help`.
+For Claude Desktop, Cursor or any other MCP client, add a stdio server with that command and the argument `mcp`:
+
+```json
+{ "mcpServers": { "agent-outbox": { "command": "/Applications/Agent Outbox.app/Contents/MacOS/agent-outbox", "args": ["mcp"] } } }
+```
+
+Start a new agent session afterwards so the `outbox_*` tools load.
 
 ## First run
 
-1. Open the setup link the installer printed (`http://localhost:7477/#/setup?token=…`). Lost it? `./install.sh --setup-link`.
-2. Create the two passkeys it asks for: one to sign in, one to approve sending.
-3. You start **live**: a message you approve with Touch ID is really sent. Nothing goes out without that approval, and every message needs its own. Contacts work the same way: new contacts, edits and undos your agent proposes wait for your Touch ID approval, and nothing is ever added to your Contacts automatically. Ask your agent to draft a text to yourself and try it. On the first send macOS asks whether "Agent Outbox" may control Messages, and on the first contacts sync it asks for Contacts. Allow both only for "Agent Outbox".
+1. Create your approval key when the app asks. Touch ID is what authorises every send.
+2. You start **live**: a message you approve with Touch ID is really sent. Nothing goes out without that approval, and every message needs its own. Contacts work the same way: new contacts, edits and undos your agent proposes wait for your Touch ID approval, and nothing is ever added to your Contacts automatically. Ask your agent to draft a text to yourself and try it. On the first send macOS asks whether "Agent Outbox" may control Messages, and on the first contacts sync it asks for Contacts. Allow both only for "Agent Outbox".
 
-The dashboard's **AI draft** tab has ready-made prompts to paste into your agent (text one person, personalise a batch, work from a spreadsheet, add contacts, check what was sent), each with a Copy button.
+The **AI draft** page has ready-made prompts to paste into your agent (text one person, personalise a batch, work from a spreadsheet, add contacts, check what was sent), each with a Copy button.
 
 ## Simple and hardened mode
 
@@ -83,7 +82,7 @@ All draft-only.
 | `outbox_list_groups`, `outbox_get_group`, `outbox_create_group`, `outbox_add_to_group`, `outbox_update_group`, `outbox_batch_from_group` | Saved groups of people (see below) |
 | `outbox_sync_contacts` | Refresh the contact list |
 
-Other MCP clients: run `bun run <repo>/src/mcp/index.ts` as a stdio server. The same API is available as a CLI: `bun run cli --help`.
+The same API is available as a CLI: `"/Applications/Agent Outbox.app/Contents/MacOS/agent-outbox" cli --help`.
 
 ## Groups
 
@@ -97,24 +96,31 @@ Optional `~/Library/Application Support/agent-outbox/config.json`:
 { "port": 7477 }
 ```
 
-Environment overrides: `OUTBOX_HOME`, `OUTBOX_PORT`. After changing the port, re-run `./install.sh`.
+Environment overrides: `OUTBOX_HOME`, `OUTBOX_PORT`. Restart the app after changing the port.
 
 ## Uninstall
 
-```sh
-./uninstall.sh            # remove the services and MCP registration, keep your data
-./uninstall.sh --purge    # also delete ~/Library/Application Support/agent-outbox
-```
+Quit Agent Outbox, turn off its login items in System Settings > General > Login Items, and drag it to the Trash. Your data stays in `~/Library/Application Support/agent-outbox` until you delete that folder.
 
 ## FAQ
 
 **Why not give the agent AppleScript?** Then it can send anything, including text an attacker slipped into a file it read. Here the only program that can send checks a signature made with your finger.
 
-**Why does macOS ask for permission again after an update?** The executor is ad-hoc signed, so each build is a new app to macOS. That's deliberate: a long-lived signing key on your Mac could sign a rogue app. If sends fail with error -1743, run `tccutil reset AppleEvents io.github.ay2609.agent-outbox.exec` and allow the prompt again.
+**Why does macOS ask for permission again after an update?** The app and its sender are ad-hoc signed, so each build is a new app to macOS. That's deliberate: a long-lived signing key on your Mac could sign a rogue app. If sends fail with error -1743, run `tccutil reset AppleEvents io.github.ay2609.agent-outbox.exec` and allow the prompt again.
 
 **Can it read my replies or send group messages?** No and no.
 
-## Development
+## Acceptable use
+
+Only send messages you'd send yourself, to people who expect to hear from you. No spam or unsolicited bulk texting. You're responsible for everything sent from your account, and bulk texting from a personal number can get your Apple ID flagged.
+
+MIT licensed. Security reports: see [SECURITY.md](SECURITY.md). Not affiliated with Apple; iMessage and Messages are Apple trademarks.
+
+## Developers
+
+Build the app yourself: `scripts/build-app.sh` (needs Bun and the Xcode Command Line Tools with Swift 6) writes `dist/Agent Outbox.app`; `scripts/build-dmg.sh` makes the DMG.
+
+Or skip the app and run it from a checkout (macOS 14+, [Bun](https://bun.sh) 1.4+, Swift 6): `git clone https://github.com/ay2609/agent-outbox.git && cd agent-outbox && ./install.sh`. The installer builds the dashboard and the executor, starts two per-user LaunchAgents and registers the MCP server with Claude Code if `claude` is installed. It never uses sudo; re-running it upgrades. Options: `--port N`, `--no-mcp`, `--dry-run`, `--setup-link`, `--help`. Undo with `./uninstall.sh` (`--purge` also deletes the state folder). Then open the setup link it printed (`./install.sh --setup-link` reprints it).
 
 ```sh
 bun install && bunx tsc --noEmit -p . && bun test
@@ -124,9 +130,3 @@ OUTBOX_HOME=$TMPDIR/ao OUTBOX_PORT=7478 bun run src/server.ts   # dev server on 
 ```
 
 Never weaken the send gate: no agent-facing tool may send, approve or change settings. Keep the Touch ID approval for every send.
-
-## Acceptable use
-
-Only send messages you'd send yourself, to people who expect to hear from you. No spam or unsolicited bulk texting. You're responsible for everything sent from your account, and bulk texting from a personal number can get your Apple ID flagged.
-
-MIT licensed. Security reports: see [SECURITY.md](SECURITY.md). Not affiliated with Apple; iMessage and Messages are Apple trademarks.

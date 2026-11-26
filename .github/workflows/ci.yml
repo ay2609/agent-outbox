@@ -23,3 +23,19 @@ jobs:
           cd exec
           ./build.sh
           build/OutboxExec.app/Contents/MacOS/outbox-exec selftest
+
+  app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Build Agent Outbox.app (ad-hoc signed, no secrets)
+        run: scripts/build-app.sh
+      - name: Zip the app
+        run: ditto -c -k --keepParent "dist/Agent Outbox.app" dist/Agent-Outbox-app.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Agent-Outbox-app
+          path: dist/Agent-Outbox-app.zip
+          if-no-files-found: error
