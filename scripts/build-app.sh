@@ -81,6 +81,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key><string>$APP_ID</string>
+	<key>NSContactsUsageDescription</key><string>Agent Outbox reads your contacts so you can review drafts, and adds the contacts you approved.</string>
+	<key>NSAppleEventsUsageDescription</key><string>Agent Outbox sends the iMessages you approved, through Messages.</string>
 	<key>CFBundleName</key><string>$APP_NAME</string>
 	<key>CFBundleDisplayName</key><string>$APP_NAME</string>
 	<key>CFBundleExecutable</key><string>$APP_NAME</string>
@@ -119,8 +121,10 @@ SIGN=(codesign --force --sign - --options runtime)
 "${SIGN[@]}" --identifier "io.github.ay2609.agent-outbox.exec" --entitlements "$ROOT/exec/entitlements.plist" "$APP/Contents/Helpers/OutboxExec.app"
 # 2. the bun server: only the JIT entitlement (see scripts/bun-entitlements.plist for the test that proves it is enough)
 "${SIGN[@]}" --identifier "$APP_ID.server" --entitlements "$ROOT/scripts/bun-entitlements.plist" "$APP/Contents/MacOS/agent-outbox"
-# 3. the outer app: hardened runtime, NO entitlements (it must never gain get-task-allow / allow-jit / allow-dyld-environment-variables)
-"${SIGN[@]}" --identifier "$APP_ID" "$APP"
+# 3. the outer app: hardened runtime, only the two permission-request entitlements in scripts/app-entitlements.plist (macOS
+#    attributes the login-item sender's Contacts/Automation prompts to this app). It must never gain get-task-allow /
+#    allow-jit / allow-dyld-environment-variables / disable-library-validation (checked below).
+"${SIGN[@]}" --identifier "$APP_ID" --entitlements "$ROOT/scripts/app-entitlements.plist" "$APP"
 
 echo "== verify"
 codesign --verify --deep --strict --verbose=1 "$APP"
@@ -128,7 +132,7 @@ codesign -dvv "$APP" 2>&1 | grep -E 'Identifier|flags|Signature|TeamIdentifier' 
 if codesign -d --entitlements :- "$APP" 2>/dev/null | grep -E 'get-task-allow|allow-jit|allow-dyld-environment-variables|disable-library-validation'; then
   echo "outer app has forbidden entitlements" >&2; exit 1
 fi
-echo "   outer app entitlements: none"
+echo "   outer app entitlements: addressbook + apple-events only"
 for f in "$APP/Contents/MacOS/$APP_NAME" "$APP/Contents/MacOS/agent-outbox"; do
   [ "$(lipo -archs "$f")" = arm64 ] || { echo "$f is not arm64-only" >&2; exit 1; }
 done

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The sender (OutboxExec) runs as this app's login item, so macOS attributes its Contacts and Automation requests to
+	     THIS app. Under the hardened runtime tccd won't even show the prompt unless the attributed app has these. They only
+	     let the app ask for permission; nothing here weakens code signing (no get-task-allow / allow-jit / dyld / library validation). -->
+	<key>com.apple.security.personal-information.addressbook</key>
+	<true/>
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>
