@@ -16,6 +16,8 @@ public final class NativeApprover: @unchecked Sendable {
     private let stateDir: URL
     private let lock = NSLock()
     private var signing = false
+    /// Keys being enrolled right now: their blob exists before the server has a row for them, so `status()` must not treat them as dead.
+    private var enrolling = Set<String>()
     private var _confirmer: ApprovalConfirming?
 
     /// How long a press of Approve stays good for signing.
@@ -85,7 +87,8 @@ public final class NativeApprover: @unchecked Sendable {
                 guard let id = k["key_id"] as? String, let status = k["status"] as? String, status == "active" || status == "pending" else { return nil }
                 return id
             })
-            for id in local where !live.contains(id) { keys.delete(keyId: id) }          // expired, refused or revoked: the blob is useless
+            lock.lock(); let busy = enrolling; lock.unlock()
+            for id in local where !live.contains(id) && !busy.contains(id) { keys.delete(keyId: id) }   // expired, refused or revoked: the blob is useless
             let active = Set(arr.compactMap { k -> String? in (k["status"] as? String) == "active" ? k["key_id"] as? String : nil })
             s.localKeyId = keys.localKeyIds().first { active.contains($0) }
             s.needsReenroll = s.localKeyId == nil && !local.isEmpty
@@ -100,6 +103,8 @@ public final class NativeApprover: @unchecked Sendable {
     /// browser (the result is then `status: "pending"` with a `confirmURL` to open).
     public func enroll(label: String) async throws -> NativeKeyInfo {
         let handle = try keys.create()                      // no prompt; fails cleanly without Touch ID
+        lock.lock(); enrolling.insert(handle.keyId); lock.unlock()
+        defer { lock.lock(); enrolling.remove(handle.keyId); lock.unlock() }
         do {
             let o = try await call("POST", "/api/native-keys/enroll/options", ["x963": B64.encode(handle.x963), "label": label])
             guard (o["key_id"] as? String) == handle.keyId, let challengeB64 = o["challenge"] as? String, let challenge = B64.decode(challengeB64), challenge.count == 32,
