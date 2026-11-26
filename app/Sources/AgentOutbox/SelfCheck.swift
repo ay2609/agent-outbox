@@ -13,7 +13,7 @@ enum SelfCheck {
 
     static func run() -> Int32 {
         print("Agent Outbox self-check")
-        parser(); preflight(); socketClient(); supervisor(); migration(); setupToken(); claude()
+        parser(); preflight(); socketClient(); supervisor(); migration(); setupAndLinks(); claude()
         print("\n\(passed) passed, \(failed) failed")
         return failed == 0 ? 0 : 1
     }
@@ -42,7 +42,7 @@ enum SelfCheck {
         check("bad chunk size rejected", (try? HTTPParser.parse(crlf("HTTP/1.1 200 OK\nTransfer-Encoding: chunked\n\nzz\nabc\n0\n\n"), eof: true)) == nil)
         let req = String(decoding: HTTPParser.request(method: "POST", path: "/api/stop", json: Data("{}".utf8), token: "TOK"), as: UTF8.self)
         check("request carries Host, Connection, X-Outbox, X-Outbox-App, Content-Length",
-              req.hasPrefix("POST /api/stop HTTP/1.1\r\n") && req.contains("Host: localhost\r\n") && req.contains("Connection: close\r\n")
+              req.hasPrefix("POST /api/stop HTTP/1.1\r\n") && req.contains("Host: agent-outbox\r\n") && req.contains("Connection: close\r\n")
               && req.contains("X-Outbox: 1\r\n") && req.contains("X-Outbox-App: TOK\r\n") && req.contains("Content-Length: 2\r\n") && req.hasSuffix("\r\n\r\n{}"))
     }
 
@@ -120,8 +120,8 @@ enum SelfCheck {
             check("request returns status and the de-chunked body", r.status == 200 && r.body == body)
         } else { check("request returns status and the de-chunked body", false, "\(String(describing: result))") }
         cap.l.lock(); let sent = String(decoding: cap.bytes, as: UTF8.self); cap.l.unlock()
-        check("server saw X-Outbox-App token, X-Outbox, Host: localhost, body",
-              sent.contains("X-Outbox-App: TOKEN-123") && sent.contains("X-Outbox: 1") && sent.contains("Host: localhost") && sent.hasSuffix("{\"mode\":\"dry\"}"), sent)
+        check("server saw X-Outbox-App token, X-Outbox, Host: agent-outbox, body",
+              sent.contains("X-Outbox-App: TOKEN-123") && sent.contains("X-Outbox: 1") && sent.contains("Host: agent-outbox") && sent.hasSuffix("{\"mode\":\"dry\"}"), sent)
 
         cap.l.lock(); cap.bytes = Data(); cap.l.unlock()
         let bad = SocketOwnerAPIClient(stateDir: root, token: { "TOKEN-123" }, expectedPID: { getpid() &+ 1 })
@@ -189,17 +189,28 @@ enum SelfCheck {
         check("a failing bootout keeps the plist and reports", failing.removed.isEmpty && failing.problems.count == 1 && FileManager.default.fileExists(atPath: root + "/io.github.ay2609.agent-outbox.plist"))
     }
 
-    static func setupToken() {
-        print("first-run setup token (temp folder)")
-        let root = tempDir(); defer { try? FileManager.default.removeItem(atPath: root) }
-        let tok = String(repeating: "aB3-_", count: 8) + "xyz"   // 43 characters
-        check("no file, no token", AppModel.firstRunSetupToken(stateDir: root) == nil)
-        FileManager.default.createFile(atPath: root + "/setup-token", contents: Data((tok + "\n").utf8), attributes: [.posixPermissions: 0o600])
-        check("a private, well-formed token file is read", AppModel.firstRunSetupToken(stateDir: root) == tok)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: root + "/setup-token")
-        check("a token others can read is refused", AppModel.firstRunSetupToken(stateDir: root) == nil)
-        FileManager.default.createFile(atPath: root + "/setup-token", contents: Data("short".utf8), attributes: [.posixPermissions: 0o600])
-        check("a malformed token is refused", AppModel.firstRunSetupToken(stateDir: root) == nil)
+    static func setupAndLinks() {
+        print("setup, recover command, deep links, hold reasons")
+        let bin = "/Applications/Agent Outbox.app/Contents/MacOS/agent-outbox"
+        check("recover command is the bundle's own binary, single-quoted", AppEnv.recoverCommand(bin: bin, home: nil) == "'\(bin)' recover")
+        check("recover command carries OUTBOX_HOME when set", AppEnv.recoverCommand(bin: bin, home: "/tmp/it's") == "OUTBOX_HOME='/tmp/it'\\''s' '\(bin)' recover")
+        let su = SetupInfo(["setup": ["done": true, "proof_available": "recovery_token", "recovery_expires_at": "2026-11-26T10:30:00.000Z"]])
+        check("status.setup: done, recovery token open, opened 30 minutes before it expires",
+              su.done && su.recoveryOpen && su.recoveryOpenedAt == parseISO("2026-11-26T10:00:00.000Z"))
+        let none = SetupInfo(["setup": ["done": true, "proof_available": NSNull(), "recovery_expires_at": NSNull()]])
+        check("status.setup: done with no proof means the Terminal step", none.done && none.proof == nil && !none.recoveryOpen)
+        func link(_ s: String) -> DeepLink? { URL(string: s).flatMap(DeepLink.parse) }
+        check("deep link: inbox", link("agent-outbox://inbox") == .inbox)
+        check("deep link: batch", link("agent-outbox://batch/01HX-abc_9") == .batch("01HX-abc_9"))
+        check("deep link: contact changes", link("agent-outbox://contacts/changes/s1") == .contactChanges("s1"))
+        check("deep link: imports and groups", link("agent-outbox://imports/i1") == .importRef("i1") && link("agent-outbox://groups/g1") == .group("g1"))
+        check("deep link: other schemes, unknown routes, odd ids and extra parts are ignored",
+              link("https://batch/b1") == nil && link("agent-outbox://settings") == nil && link("agent-outbox://batch/b1/approve") == nil
+              && link("agent-outbox://batch/a%20b") == nil && link("agent-outbox://batch") == nil && link("agent-outbox://contacts/s1") == nil)
+        check("hold reasons: old pin, browser keys, no key", HoldReason.plain("pin version 2 holds browser passkeys, which Agent Outbox no longer accepts")?.contains("Touch ID") == true
+              && HoldReason.plain("WebAuthn keys are no longer accepted")?.contains("passkey") == true
+              && HoldReason.plain("credential_id is not in the pin file")?.contains("doesn't trust any approval key") == true
+              && HoldReason.plain("something unrelated") == nil && HoldReason.plain("") == nil)
     }
 
     static func claude() {

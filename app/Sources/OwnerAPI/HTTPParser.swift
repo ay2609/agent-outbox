@@ -93,9 +93,9 @@ public enum HTTPParser {
         return nil
     }
 
-    /// Builds the request bytes for one call (Connection: close, Host: localhost, X-Outbox, X-Outbox-App).
+    /// Builds the request bytes for one call (Connection: close, Host: agent-outbox, X-Outbox, X-Outbox-App).
     public static func request(method: String, path: String, json: Data?, token: String) -> Data {
-        var head = "\(method) \(path) HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAccept: application/json\r\nX-Outbox: 1\r\nX-Outbox-App: \(token)\r\n"
+        var head = "\(method) \(path) HTTP/1.1\r\nHost: agent-outbox\r\nConnection: close\r\nAccept: application/json\r\nX-Outbox: 1\r\nX-Outbox-App: \(token)\r\n"
         if let j = json { head += "Content-Type: application/json\r\nContent-Length: \(j.count)\r\n" }
         else if method != "GET" && method != "HEAD" { head += "Content-Length: 0\r\n" }
         head += "\r\n"

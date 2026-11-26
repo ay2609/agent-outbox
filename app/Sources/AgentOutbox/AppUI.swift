@@ -18,6 +18,7 @@ struct RootView: View {
         Group {
             if !model.oldAgents.isEmpty { MigrationView() }
             else if !model.onboarded { OnboardingView(supervisor: model.supervisor) }
+            else if model.needsKeySetup && !model.gateDismissed { KeySetupGate() }
             else { MainView() }
         }
         .frame(minWidth: 760, minHeight: 520)
@@ -54,21 +55,29 @@ struct MainView: View {
                 }.padding(10)
             }
         } detail: {
-            NavigationStack(path: $model.path) {
-                Group {
-                    switch model.nav {
-                    case .inbox: InboxView()
-                    case .contacts: ContactsView()
-                    case .groups: GroupsView()
-                    case .changes: ContactChangeSetsView()
-                    case .settings: SettingsView()
+            VStack(spacing: 0) {
+                BannerStack()
+                NavigationStack(path: $model.path) {
+                    Group {
+                        switch model.nav {
+                        case .inbox: InboxView()
+                        case .contacts: ContactsView()
+                        case .groups: GroupsView()
+                        case .changes: ContactChangeSetsView()
+                        case .imports: ImportsView()
+                        case .activity: ActivityView()
+                        case .aiDraft: AiDraftView()
+                        case .settings: SettingsView()
+                        }
                     }
+                    .navigationDestination(for: BatchRef.self) { BatchView(id: $0.id) }
+                    .navigationDestination(for: SetRef.self) { ContactSetView(id: $0.id) }
+                    .navigationDestination(for: GroupRef.self) { GroupDetailView(id: $0.id) }
+                    .navigationDestination(for: ImportRef.self) { ImportDetailView(id: $0.id) }
+                    .navigationDestination(for: ContactRef.self) { ContactDetailView(id: $0.id) }
                 }
-                .navigationDestination(for: BatchRef.self) { BatchView(id: $0.id) }
-                .navigationDestination(for: SetRef.self) { ContactSetView(id: $0.id) }
-                .navigationDestination(for: GroupRef.self) { GroupDetailView(id: $0.id) }
+                .onChange(of: model.nav) { _ in model.path = NavigationPath() }
             }
-            .onChange(of: model.nav) { _ in model.path = NavigationPath() }
         }
     }
 }
@@ -89,7 +98,6 @@ struct MenuBarContent: View {
         Divider()
         Button("Open Agent Outbox") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
             .keyboardShortcut("o")
-        Button("Open dashboard in browser") { Task { await model.openBrowser() } }
         Divider()
         if model.killSwitch {
             Button("Resume sending") { Task { await model.resume() } }
@@ -122,6 +130,7 @@ struct AgentOutboxApp: App {
     var body: some Scene {
         Window("Agent Outbox", id: "main") {
             RootView().environmentObject(model)
+                .onOpenURL { model.handle(url: $0) }
         }
         .defaultSize(width: 940, height: 640)
         .commands {

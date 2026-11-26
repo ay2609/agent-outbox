@@ -196,19 +196,36 @@ final class ApproverFlowTests {
         expectEq(store.localKeyIds(), [info.keyId])
     }
 
-    func testEnrollFallsBackToTheBrowserAndCleansUpOnFailure() async throws {
+    func testEnrollWithRecoveryTokenAndWithoutAnyProof() async throws {
         let store = SoftwareKeyStore()
+        let token = B64.encode(Data((0..<32).map { UInt8($0 &+ 7) }))
+        let f = dir.appendingPathComponent("recovery-token")
+        try (token + "\n").write(to: f, atomically: true, encoding: .utf8)
+        chmod(f.path, 0o600)
         let api = StubAPI { _, path, body in
             switch path {
             case "/api/native-keys/enroll/options":
                 let x = B64.decode(body["x963"] as! String)!
-                return (200, ["key_id": B64.encode(SESig.sha256(x)), "challenge": B64.encode(Data(repeating: 9, count: 32)), "fingerprint": "F", "expires_at": "2099", "proof": "browser"])
-            case "/api/native-keys/enroll/verify": return (200, ["status": "awaiting_browser", "confirm_url": "http://localhost:7477/#/native-enroll/x"])
+                return (200, ["key_id": B64.encode(SESig.sha256(x)), "challenge": B64.encode(Data(repeating: 9, count: 32)), "fingerprint": "F", "expires_at": "2099", "proof": "recovery_token"])
+            case "/api/native-keys/enroll/verify":
+                expectEq(body["recovery_token"] as? String, token); expectNil(body["setup_token"])
+                return (200, ["ok": true, "status": "active"])
             default: return (404, [:])
             }
         }
         let info = try await approver(api, store: store).enroll(label: "Mac")
-        expectEq(info.status, "pending"); expectEq(info.confirmURL, "http://localhost:7477/#/native-enroll/x")
+        expectEq(info.status, "active")
+        // no proof available: the server says null, the app stops and leaves no key behind
+        let store0 = SoftwareKeyStore()
+        let none = StubAPI { _, path, body in
+            if path.hasSuffix("/enroll/options") {
+                let x = B64.decode(body["x963"] as! String)!
+                return (200, ["key_id": B64.encode(SESig.sha256(x)), "challenge": B64.encode(Data(repeating: 9, count: 32)), "fingerprint": "F", "expires_at": "2099", "proof": NSNull()])
+            }
+            fail("verify must not be called without a proof"); return (500, [:])
+        }
+        do { _ = try await approver(none, store: store0).enroll(label: "Mac"); fail("enrolled without a proof") } catch let e as NativeError { expectEq(e, .proofRequired) }
+        expectTrue(store0.localKeyIds().isEmpty)
         // a refused enrolment leaves no key behind
         let store2 = SoftwareKeyStore()
         let bad = StubAPI { _, path, body in
@@ -218,13 +235,40 @@ final class ApproverFlowTests {
         do { _ = try await approver(bad, store: store2).enroll(label: "Mac"); fail("expected an error") } catch { }
         expectTrue(store2.localKeyIds().isEmpty)
         // a server answer for a different key id is refused too
-        let liar = StubAPI { _, _, _ in (200, ["key_id": "x", "challenge": B64.encode(Data(repeating: 1, count: 32)), "fingerprint": "F", "proof": "browser"]) }
+        let liar = StubAPI { _, _, _ in (200, ["key_id": "x", "challenge": B64.encode(Data(repeating: 1, count: 32)), "fingerprint": "F", "proof": "recovery_token"]) }
         let store3 = SoftwareKeyStore()
         do { _ = try await approver(liar, store: store3).enroll(label: "Mac"); fail("accepted another key id") } catch let e as NativeError { guard case .mismatch = e else { return fail("\(e)") } }
         expectTrue(store3.localKeyIds().isEmpty)
     }
 
-    func testEnrollWithoutTouchIDIsACleanBrowserFallback() async throws {
+    func testEnrollWithAnExistingKeyBindsTheReauthToTheNewKey() async throws {
+        let store = SoftwareKeyStore(); let old = try store.create()
+        let reauthChallenge = Data((0..<32).map { UInt8($0 &+ 40) })
+        let api = StubAPI { _, path, body in
+            switch path {
+            case "/api/native-keys/enroll/options":
+                let x = B64.decode(body["x963"] as! String)!
+                return (200, ["key_id": B64.encode(SESig.sha256(x)), "challenge": B64.encode(Data(repeating: 5, count: 32)), "fingerprint": "F", "expires_at": "2099", "proof": "se_reauth"])
+            case "/api/native-keys/reauth/options":
+                expectEq(body["action"] as? String, "native_key_add")
+                expectEq((body["target"] as? String)?.count, 43)          // the pending key's id
+                expectTrue((body["target"] as? String) != old.keyId)
+                return (200, ["challenge_id": "rc9", "challenge": B64.encode(reauthChallenge)])
+            case "/api/native-keys/enroll/verify":
+                let re = body["se_reauth"] as! [String: Any]
+                expectEq(re["key_id"] as? String, old.keyId)               // signed by the EXISTING key, never the new one
+                let pub = try! P256.Signing.PublicKey(x963Representation: old.x963)
+                let sig = try! P256.Signing.ECDSASignature(derRepresentation: B64.decode(re["signature"] as! String)!)
+                expectTrue(pub.isValidSignature(sig, for: SESig.reauthMessage(challenge: reauthChallenge)))
+                return (200, ["ok": true, "status": "active"])
+            default: return (404, [:])
+            }
+        }
+        let info = try await approver(api, store: store).enroll(label: "Mac 2")
+        expectEq(info.status, "active"); expectEq(store.localKeyIds().count, 2)
+    }
+
+    func testEnrollWithoutTouchIDIsACleanRefusalWithNoFallback() async throws {
         struct NoTouchID: KeyProviding {
             func create() throws -> SEKeyHandle { throw NativeError.touchIDNotAvailable("Failed to get bio database hash.") }
             func load(keyId: String) throws -> SEKeyHandle { throw NativeError.noLocalKey }
@@ -236,7 +280,11 @@ final class ApproverFlowTests {
         do { _ = try await a.enroll(label: "Mac"); fail("enrolled without Touch ID") }
         catch let e as NativeError {
             guard case .touchIDNotAvailable = e else { return fail("\(e)") }
-            expectEq(e.errorDescription, "Touch ID isn't available on this Mac, so approval has to happen in the browser.")
+            expectEq(e.errorDescription, "Failed to get bio database hash.")
+            expectEq(NativeError.touchIDNotAvailable("").errorDescription, TouchID.generic)
+            expectTrue(TouchID.generic.contains("no password fallback"))
+            expectTrue(TouchID.reason(for: NSError(domain: "com.apple.LocalAuthentication", code: -7)).contains("Add a fingerprint"))
+            expectTrue(TouchID.reason(for: NSError(domain: "com.apple.LocalAuthentication", code: -8)).contains("locked"))
         }
         expectTrue(api.paths().isEmpty)
     }
@@ -272,7 +320,8 @@ final class ApproverFlowTests {
         expectEq(s.localKeyId, mine.keyId)
         expectEq(store.localKeyIds(), [mine.keyId])               // the revoked key's blob is gone
         expectFalse(s.needsReenroll)
-        expectEq(s.canApproveInApp, s.touchIDAvailable && s.secureEnclaveAvailable)   // Touch ID decides: the CI/mini case falls back to the browser
+        expectEq(s.canApproveInApp, s.touchIDAvailable && s.secureEnclaveAvailable)   // Touch ID decides; a Mac without it simply can't approve
+        expectEq(s.touchIDReason == nil, s.touchIDAvailable)                          // no Touch ID always comes with a plain reason
         // server down
         let down = StubAPI { _, _, _ in (503, [:]) }
         let d = await approver(down, store: store).status()

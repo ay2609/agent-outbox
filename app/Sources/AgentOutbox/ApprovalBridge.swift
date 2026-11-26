@@ -15,14 +15,18 @@ struct BridgeNativeStatus: Equatable {
     var keysActive = 0
     /// Touch ID here, a key on this Mac that the server has active, and the effective pin trusts it (hardened: after sudo).
     var canApproveInApp = false
+    /// Why Touch ID can't be used here, in plain words (nil when it can). There is no password fallback.
+    var touchIDReason: String?
+    /// The fingerprint set changed since the key was made: the key is dead; set up approval again.
+    var touchIDChanged = false
+    /// An active key on the server whose blob is on this Mac.
+    var hasLocalKey = false
 }
 
 enum ApprovalError: LocalizedError {
-    case unavailable
     case failed(String)
     var errorDescription: String? {
         switch self {
-        case .unavailable: return "Touch ID isn't available on this Mac, so approvals use the browser."
         case .failed(let m): return m
         }
     }
@@ -85,30 +89,34 @@ final class ApprovalBridge: ObservableObject {
 
     func nativeStatus() async -> BridgeNativeStatus {
         let s = await approver.status()
-        return BridgeNativeStatus(touchIDAvailable: s.touchIDAvailable && s.secureEnclaveAvailable, keysActive: s.keysActive,
-                                  canApproveInApp: s.canApproveInApp)
+        let ok = s.touchIDAvailable && s.secureEnclaveAvailable
+        return BridgeNativeStatus(touchIDAvailable: ok, keysActive: s.keysActive, canApproveInApp: s.canApproveInApp,
+                                  touchIDReason: ok ? nil : (s.touchIDReason ?? "This Mac has no Secure Enclave."),
+                                  touchIDChanged: s.touchIDChanged || changedByError, hasLocalKey: s.localKeyId != nil)
     }
+    /// Set when a signature failed because Touch ID's fingerprint set changed.
+    private var changedByError = false
 
-    /// Enrolls this Mac's Touch ID key. A "pending" result means the browser must confirm it: its page is opened.
+    /// Enrolls this Mac's Touch ID key. The proof of owner (setup token, recovery token, or an existing key) is chosen by the server.
     func enroll(label: String) async throws -> String {
         do {
             let info = try await approver.enroll(label: label)
-            if info.status != "active", let u = info.confirmURL, let url = URL(string: u) { openExternal(url) }
+            changedByError = false
             return info.keyId
-        } catch { throw Self.map(error) }
+        } catch { throw map(error) }
     }
 
     /// True = approved, false = the owner cancelled.
     func approveBatch(_ batchId: String, draftIds: [String], includeAnyway: [String]) async throws -> Bool {
         do { _ = try await approver.approveBatch(batchId, draftIds: draftIds, includeAnyway: includeAnyway); return true }
         catch let e as NativeError where e == .cancelled || e == .notConfirmed { return false }
-        catch { throw Self.map(error) }
+        catch { throw map(error) }
     }
 
     func approveContacts(_ setId: String, changeIds: [String]) async throws -> Bool {
         do { _ = try await approver.approveContacts(setId, changeIds: changeIds); return true }
         catch let e as NativeError where e == .cancelled || e == .notConfirmed { return false }
-        catch { throw Self.map(error) }
+        catch { throw map(error) }
     }
 
     /// The `se_reauth` object ({challenge_id, key_id, signature}) for a live switch.
@@ -116,15 +124,15 @@ final class ApprovalBridge: ObservableObject {
         do {
             let r = try await approver.seReauth(action: action)
             return ["challenge_id": r.challengeId, "key_id": r.keyId, "signature": r.signature]
-        } catch { throw Self.map(error) }
+        } catch { throw map(error) }
     }
 
     func revoke(keyId: String) async throws {
-        do { try await approver.revoke(keyId: keyId) } catch { throw Self.map(error) }
+        do { try await approver.revoke(keyId: keyId) } catch { throw map(error) }
     }
 
-    private static func map(_ error: Error) -> Error {
-        if case NativeError.touchIDNotAvailable = error { return ApprovalError.unavailable }
+    private func map(_ error: Error) -> Error {
+        if case NativeError.keyInvalidated = error { changedByError = true }
         return ApprovalError.failed(error.localizedDescription)
     }
 }

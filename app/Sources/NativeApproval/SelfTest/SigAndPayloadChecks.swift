@@ -92,14 +92,14 @@ func sendManifest(batch: String = "b1", approval: String = "a1", transport: Stri
         #"{"draft_id":"\#(i.id)","to":"\#(i.to)","service":"\#(i.service)","body_sha256":"\#(i.shaOverride ?? sha(i.body))","name":"\#(i.name)","create_contact":\#(i.contact ?? "null")}"#
     }.joined(separator: ",")
     let k = kind.map { #","kind":"\#($0)""# } ?? ""
-    return #"{"v":\#(v),"transport":"\#(transport)","approval_id":"\#(approval)","batch_id":"\#(batch)","created_at":"2026-11-25T00:00:00.000Z","not_after":"\#(notAfter)","rp_id":"localhost","origin":"http://localhost:7477"\#(k),"items":[\#(its)]}"#
+    return #"{"v":\#(v),"transport":"\#(transport)","approval_id":"\#(approval)","batch_id":"\#(batch)","created_at":"2026-11-25T00:00:00.000Z","not_after":"\#(notAfter)","rp_id":"agent-outbox","origin":"agent-outbox:app"\#(k),"items":[\#(its)]}"#
 }
 
 func contactsManifest(set: String = "s1", approval: String = "a1", transport: String = "dry", notAfter: String = "2099-01-01T00:00:00.000Z", changes: [(id: String, kind: String, payload: String)],
                       v: Int = 1, kind: String? = "contacts", shaOverride: [String: String] = [:]) -> String {
     let its = changes.map { c in #"{"change_id":"\#(c.id)","kind":"\#(c.kind)","target_macos_id":null,"payload_sha256":"\#(shaOverride[c.id] ?? sha(c.payload))"}"# }.joined(separator: ",")
     let k = kind.map { #""kind":"\#($0)","# } ?? ""
-    return #"{\#(k)"v":\#(v),"transport":"\#(transport)","approval_id":"\#(approval)","set_id":"\#(set)","created_at":"2026-11-25T00:00:00.000Z","not_after":"\#(notAfter)","rp_id":"localhost","origin":"http://localhost:7477","contact_items":[\#(its)]}"#
+    return #"{\#(k)"v":\#(v),"transport":"\#(transport)","approval_id":"\#(approval)","set_id":"\#(set)","created_at":"2026-11-25T00:00:00.000Z","not_after":"\#(notAfter)","rp_id":"agent-outbox","origin":"agent-outbox:app","contact_items":[\#(its)]}"#
 }
 
 final class PayloadTests {
@@ -134,9 +134,9 @@ final class PayloadTests {
         expectEq(ApprovalReason.enroll, "set up Touch ID approval for Agent Outbox")
         expectEq(ApprovalReason.reauth(action: "mode_live"), "turn on live sending")
         expectEq(ApprovalReason.reauth(action: "policy_live"), "allow live sending")
-        expectEq(ApprovalReason.reauth(action: "passkey_add"), "add a passkey")
+        expectNil(ApprovalReason.reauth(action: "passkey_add"))     // actions from the old dashboard are gone
+        expectNil(ApprovalReason.reauth(action: "browser_" + "link"))
         expectEq(ApprovalReason.reauth(action: "native_key_add"), "add an approval key")
-        expectEq(ApprovalReason.reauth(action: "browser_link"), "open the dashboard in your browser")
         expectNil(ApprovalReason.reauth(action: "anything else"))
     }
 

@@ -191,7 +191,7 @@ struct BatchView: View {
                         DraftRow(d: r.j, wants: wantsApproval(r.j), unsendable: isUnsendable(r.j), held: isHeld(r.j),
                                  heldOut: isHeld(r.j) && !anyway,
                                  selected: Binding(get: { selected.contains(r.id) && !(isHeld(r.j) && !anyway) }, set: { on in if on { selected.insert(r.id) } else { selected.remove(r.id) } }),
-                                 onSkip: { toggleSkip(r.j) })
+                                 onSkip: { toggleSkip(r.j) }, onChanged: { Task { await reload(); await model.refresh() } })
                     }
                 }
             }
@@ -206,9 +206,9 @@ struct BatchView: View {
                 Spacer()
                 if !closed {
                     Button("Cancel batch", role: .destructive) { confirmCancel = true }.disabled(action.busy)
-                    Button(model.approveInApp ? "Approve \(ids.count) with Touch ID…" : "Approve \(ids.count) in browser…") { approve(ids, heldIds) }
+                    Button("Approve \(ids.count) with Touch ID…") { approve(ids, heldIds) }
                         .keyboardShortcut(.defaultAction)
-                        .disabled(ids.isEmpty || action.busy || model.killSwitch)
+                        .disabled(ids.isEmpty || action.busy || model.killSwitch || !model.approveInApp)
                 }
                 }
             }.padding(12)
@@ -246,14 +246,10 @@ struct BatchView: View {
     }
     private func approve(_ ids: [String], _ heldIds: [String]) {
         action.run {
-            if model.approveInApp {
-                let ok = try await model.approval.approveBatch(id, draftIds: ids, includeAnyway: heldIds)
-                action.note = ok ? "Approved." : "Not approved."
-                await reload(); await model.refresh()
-            } else {
-                action.note = "Approve in your browser, then come back."
-                await model.openBrowser(then: "/batch/\(id)")
-            }
+            guard model.approveInApp else { throw APIFailure(status: 0, code: "approval_off", message: model.approvalHint ?? "Approving isn't possible right now.") }
+            let ok = try await model.approval.approveBatch(id, draftIds: ids, includeAnyway: heldIds)
+            action.note = ok ? "Approved." : "Not approved."
+            await reload(); await model.refresh()
         }
     }
 }
@@ -267,6 +263,24 @@ struct DraftRow: View {
     var heldOut = false
     @Binding var selected: Bool
     let onSkip: () -> Void
+    var onChanged: () -> Void = {}
+    @EnvironmentObject var model: AppModel
+    @StateObject private var action = Action()
+    @State private var editing = false
+    @State private var text = ""
+    @State private var service = "auto"
+    @State private var createContact = false
+
+    private var editable: Bool { ["draft", "review", "approved", "skipped", "failed"].contains(d.str("status")) }
+
+    private func save() {
+        var patch: J = [:]
+        if text != d.str("body") { patch["body"] = text }
+        if service != d.str("service", "auto") { patch["service"] = service }
+        if d["proposed_contact"] is J, createContact != d.bool("create_contact") { patch["create_contact"] = createContact }
+        if patch.isEmpty { editing = false; return }
+        action.run { _ = try await model.call("PATCH", "/api/drafts/\(d.id)", patch); editing = false; onChanged() }
+    }
 
     var body: some View {
         let status = d.str("status")
@@ -283,16 +297,50 @@ struct DraftRow: View {
                     if covered { Chip("Approved", .good) } else if status != "review" && status != "draft" { Chip(statusLabel(status), status == "failed" ? .bad : (status == "sent" ? .good : .neutral)) }
                     if d.bool("create_contact") { Chip("New contact", .info) }
                 }
-                Text(d.str("body")).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                if editing {
+                    TextEditor(text: $text).font(.body).frame(minHeight: 90).padding(4)
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.4)))
+                    HStack {
+                        Picker("Send as", selection: $service) { Text("Automatic").tag("auto"); Text("iMessage").tag("iMessage"); Text("SMS").tag("SMS") }
+                            .pickerStyle(.menu).fixedSize()
+                        if d["proposed_contact"] is J { Toggle("Offer to add as a contact", isOn: $createContact).toggleStyle(.checkbox) }
+                        Spacer()
+                        Button("Cancel") { editing = false; action.error = nil }
+                        Button("Save") { save() }.keyboardShortcut(.defaultAction).disabled(action.busy || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                    if status == "approved" { Text("Saving changes drops this message back to review: its approval no longer matches.").font(.caption).foregroundStyle(.secondary) }
+                    ErrorLine(text: action.error)
+                } else {
+                    Text(d.str("body")).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                }
                 ForEach(Array(d.arr("warnings").enumerated()), id: \.offset) { _, w in
                     Label(w.str("message"), systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                }
+                let cands = d.arr("candidates")
+                if !cands.isEmpty && editable && !editing {
+                    Text("This could be one of your contacts:").font(.caption).foregroundStyle(.secondary)
+                    ForEach(rows(cands, idKey: "contact_id")) { c in
+                        Button("Use \(c.j.str("display_name"))\(c.j.str("org").isEmpty ? "" : " (\(c.j.str("org")))")") {
+                            action.run { _ = try await model.call("PATCH", "/api/drafts/\(d.id)", ["contact_id": c.id]); onChanged() }
+                        }.buttonStyle(.link).font(.caption).disabled(action.busy)
+                    }
+                    ErrorLine(text: action.error)
                 }
                 if unsendable { Text("Can't be sent as it is.").font(.caption).foregroundStyle(.red) }
                 else if held { Text("Left out of this approval until you include it anyway.").font(.caption).foregroundStyle(.secondary) }
             }
             Spacer(minLength: 0)
-            if ["draft", "review", "failed", "skipped"].contains(status) {
-                Button(skipped ? "Include" : "Skip", action: onSkip).buttonStyle(.link).font(.caption)
+            VStack(alignment: .trailing, spacing: 6) {
+                if editable && !editing {
+                    Button("Edit") { text = d.str("body"); service = d.str("service", "auto"); createContact = d.bool("create_contact"); editing = true }
+                        .buttonStyle(.link).font(.caption)
+                }
+                if ["draft", "review", "failed", "skipped"].contains(status) {
+                    Button(skipped ? "Include" : "Skip", action: onSkip).buttonStyle(.link).font(.caption)
+                }
+                if !d.str("contact_id").isEmpty {
+                    NavigationLink(value: ContactRef(id: d.str("contact_id"))) { Text("Contact") }.buttonStyle(.link).font(.caption)
+                }
             }
         }
         .padding(.vertical, 4)

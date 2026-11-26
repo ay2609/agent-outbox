@@ -14,14 +14,12 @@ public enum ApprovalReason {
         live ? "change \(n) \(plural(n, "contact", "contacts"))" : "approve a dry run of \(n) contact \(plural(n, "change", "changes"))"
     }
     public static let enroll = "set up Touch ID approval for Agent Outbox"
-    /// reauth actions the server knows: mode_live, policy_live, passkey_add, native_key_add, browser_link.
+    /// reauth actions the server knows: mode_live, policy_live, native_key_add.
     public static func reauth(action: String) -> String? {
         switch action {
         case "mode_live": return "turn on live sending"
         case "policy_live": return "allow live sending"
-        case "passkey_add": return "add a passkey"
         case "native_key_add": return "add an approval key"
-        case "browser_link": return "open the dashboard in your browser"
         default: return nil
         }
     }

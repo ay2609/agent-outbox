@@ -1,15 +1,14 @@
 import SwiftUI
 
 extension AppModel {
-    /// Live / Dry run. Dry needs no confirmation. Live needs a sign-in confirmation when something changes: Touch ID through the app's
-    /// Secure Enclave key when one is active (se_reauth), otherwise the browser.
+    /// Live / Dry run. Dry needs no confirmation. Live needs a Touch ID confirmation when something changes (se_reauth with the app's
+    /// Secure Enclave key). Without a key, or without Touch ID on this Mac, going live is off.
     func setMode(_ mode: String) async throws {
         do { _ = try await post("/api/mode", ["mode": mode]) }
         catch let e as APIFailure where e.code == "reauth_required" {
-            let haveKey = native.keysActive > 0 || status.obj("native").int("keys_active") > 0
-            guard haveKey else {
-                await openBrowser(then: "/settings")
-                throw APIFailure(status: 403, code: e.code, message: "Going live needs Touch ID. Finish it in your browser, or set up Touch ID in this app first.")
+            guard native.touchIDAvailable else { throw APIFailure(status: 403, code: e.code, message: "Going live needs Touch ID. " + (native.touchIDReason ?? "")) }
+            guard keysActive > 0, native.hasLocalKey else {
+                throw APIFailure(status: 403, code: e.code, message: "Going live needs Touch ID. Set up Touch ID in Settings first.")
             }
             let r = try await approval.seReauth(action: "mode_live")
             _ = try await post("/api/mode", ["mode": mode, "se_reauth": r])
@@ -34,18 +33,18 @@ private func describePacing(_ p: J) -> String {
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
     @StateObject private var settings = Loader()
-    @StateObject private var passkeys = Loader()
     @StateObject private var nativeKeys = Loader()
     @StateObject private var action = Action()
     @State private var loginSummary = LoginItems.summary()
     @State private var copied = false
+    @State private var revokeTarget: J?
 
     var body: some View {
         let st = settings.data?.obj("settings") ?? [:]
         let pacing = st.obj("pacing")
         let pin = model.status.obj("pin")
         let keys = nativeKeys.data?.arr("keys") ?? []
-        let pk = passkeys.data?.arr("passkeys") ?? []
+        let activeCount = keys.filter { $0.str("status") == "active" }.count
         Form {
             if !model.reachable || action.error != nil || settings.error != nil || action.note != nil {
                 Section { ServerBanner(); ErrorLine(text: action.error ?? settings.error); if let n = action.note { Text(n).foregroundStyle(.secondary) } }
@@ -56,7 +55,8 @@ struct SettingsView: View {
                     action.run { try await model.setMode(m); await settings.load(model, "/api/settings") }
                 })) {
                     Text("Dry run").tag("dry"); Text("Live").tag("live")
-                }.pickerStyle(.segmented).disabled(action.busy)
+                }.pickerStyle(.segmented).disabled(action.busy || (!model.isLive && !model.native.touchIDAvailable))
+                if !model.native.touchIDAvailable && !model.isLive { Text("Going live needs Touch ID. " + (model.native.touchIDReason ?? "")).font(.caption).foregroundStyle(.orange) }
                 Text(model.isLive ? "Live: messages you approve with Touch ID are really sent." : "Dry run: approved messages are recorded but nothing is sent.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
@@ -81,37 +81,21 @@ struct SettingsView: View {
             }
 
             Section("Approval keys") {
-                if keys.isEmpty && pk.isEmpty { Text("No approval key yet. You need one before anything can be approved.").foregroundStyle(.secondary) }
+                if keys.isEmpty { Text("No approval key yet. You need one before anything can be approved.").foregroundStyle(.secondary) }
                 ForEach(rows(keys, idKey: "key_id")) { r in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(r.j.str("label", "Touch ID key")).font(.headline)
-                            Text("Touch ID on this Mac, \(r.j.str("status"))\(r.j.bool("in_effective_pin") ? ", in the sender's pin" : "")").font(.caption).foregroundStyle(.secondary)
+                            Text("Touch ID, \(r.j.str("status"))\(r.j.bool("in_effective_pin") ? ", in the sender's pin" : "")").font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
                         if r.j.str("status") != "revoked" {
-                            Button("Revoke", role: .destructive) { action.run { _ = try await model.post("/api/native-keys/\(r.id)/revoke"); await nativeKeys.load(model, "/api/native-keys") } }
+                            Button("Revoke", role: .destructive) { revokeTarget = r.j }
                         }
                     }
                 }
-                ForEach(rows(pk, idKey: "credential_id")) { r in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(r.j.str("label", "Passkey")).font(.headline)
-                            Text("Browser passkey, \(r.j.str("purpose") == "approve" ? "approval" : "sign-in")").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                HStack {
-                    Button("Set up Touch ID in this app") {
-                        action.run {
-                            _ = try await model.approval.enroll(label: Host.current().localizedName ?? "This Mac")
-                            await nativeKeys.load(model, "/api/native-keys"); await model.refresh()
-                        }
-                    }.disabled(!model.native.touchIDAvailable || action.busy)
-                    Button("Add a browser passkey") { Task { await model.openBrowser(then: "/settings") } }
-                }
-                if !model.native.touchIDAvailable { Text("Touch ID setup in the app isn't available here; approvals use the browser.").font(.caption).foregroundStyle(.secondary) }
+                if model.keysActive == 0 || model.native.touchIDChanged || !model.native.hasLocalKey { KeySetupCard() }
+                if !model.native.touchIDAvailable && model.keysActive > 0 { TouchIDNeededCard() }
             }
 
             Section("Protection") {
@@ -124,15 +108,18 @@ struct SettingsView: View {
                      : "Simple mode is how Agent Outbox starts. Its limit: a program running as you, outside its sandbox, could swap in its own approval key and approve its own messages. Hardening closes that by keeping the trusted key where only an administrator can change it.")
                     .font(.callout).foregroundStyle(.secondary)
                 if let cmd = pin["install_command"] as? String, !cmd.isEmpty {
-                    Text(cmd).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                        .padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
-                    HStack {
-                        Button(copied ? "Copied" : "Copy harden command") { copyToPasteboard(cmd); copied = true }
-                        Text("Paste it into Terminal. It asks for your Mac password.").font(.caption).foregroundStyle(.secondary)
+                    CommandBox(command: cmd, label: "Copy harden command")
+                    Text("Paste it into Terminal. It asks for your Mac password. Afterwards `plutil` prints the installed keys; compare them with these:").font(.caption).foregroundStyle(.secondary)
+                    ForEach(rows(pin.arr("expected_keys"), idKey: "credential_id")) { r in
+                        Text("\(r.j.str("label", "Touch ID key"))  \(String(r.id.prefix(10)))…").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
                     }
                 } else {
-                    Text("Set up an approval key first; the command to harden appears here afterwards.").font(.caption).foregroundStyle(.secondary)
+                    Text("The command to harden appears here once the first key is set up.").font(.caption).foregroundStyle(.secondary)
+                }
+                if let why = HoldReason.plain(pin.obj("effective").strs("problems").joined(separator: " ")) {
+                    Label(why, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                } else if !pin.obj("effective").strs("problems").isEmpty && pin.obj("effective").bool("present") {
+                    ForEach(pin.obj("effective").strs("problems"), id: \.self) { Text($0).font(.caption).foregroundStyle(.orange) }
                 }
             }
 
@@ -150,13 +137,21 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
-        .task(id: model.reachable) {
-            if model.reachable {
-                await settings.load(model, "/api/settings"); await passkeys.load(model, "/api/passkeys")
-                await nativeKeys.load(model, "/api/native-keys")   // 404 before the native-approval server lands: the list stays empty
-                if nativeKeys.data == nil { nativeKeys.error = nil }
+        .alert("Revoke this key?", isPresented: Binding(get: { revokeTarget != nil }, set: { if !$0 { revokeTarget = nil } })) {
+            Button("Revoke", role: .destructive) {
+                if let t = revokeTarget { action.run { try await model.approval.revoke(keyId: t.str("key_id")); await nativeKeys.load(model, "/api/native-keys"); await model.refresh() } }
+                revokeTarget = nil
             }
+            Button("Keep", role: .cancel) { revokeTarget = nil }
+        } message: {
+            Text(activeCount <= 1 && revokeTarget?.str("status") == "active"
+                 ? "You won't be able to approve until you set Touch ID up again, which needs Terminal (the recover command). Approvals already made with this key are cancelled."
+                 : "Approvals already made with this key are cancelled.")
         }
+        .task(id: model.reachable) {
+            if model.reachable { await settings.load(model, "/api/settings"); await nativeKeys.load(model, "/api/native-keys") }
+        }
+        .task(id: model.keysActive) { if model.reachable { await nativeKeys.load(model, "/api/native-keys") } }
     }
 
     private func presetName(_ p: J) -> String {
